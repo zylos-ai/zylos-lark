@@ -18,6 +18,9 @@ import { downloadImage, downloadFile } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 
 const __filename = fileURLToPath(import.meta.url);
+
+// C4 receive interface path
+const C4_RECEIVE = path.join(process.env.HOME, '.claude/skills/comm-bridge/c4-receive.js');
 const __dirname = path.dirname(__filename);
 
 // Initialize
@@ -185,9 +188,27 @@ function isBotMentioned(mentions, botOpenId) {
   });
 }
 
-// Trigger Claude via tmux
-function triggerClaude(user, message, chatId, messageId, contextMessages = []) {
-  const sessionName = 'claude-main';
+/**
+ * Send message to Claude via C4
+ */
+function sendToC4(source, endpoint, content) {
+  const safeContent = content.replace(/'/g, "'\\''");
+  const cmd = `node "${C4_RECEIVE}" --source "${source}" --endpoint "${endpoint}" --content '${safeContent}'`;
+
+  exec(cmd, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`[lark] C4 receive error: ${error.message}`);
+    } else {
+      console.log(`[lark] Sent to C4: ${content.substring(0, 50)}...`);
+    }
+  });
+}
+
+/**
+ * Format message for C4
+ */
+function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null) {
+  let prefix = chatType === 'p2p' ? '[Lark DM]' : '[Lark GROUP]';
 
   let contextPrefix = '';
   if (contextMessages.length > 0) {
@@ -195,35 +216,13 @@ function triggerClaude(user, message, chatId, messageId, contextMessages = []) {
     contextPrefix = `[Group context - recent messages before this @mention:]\n${contextLines}\n\n[Current message:] `;
   }
 
-  // Get the skill path for send-reply
-  const skillPath = path.join(process.env.HOME, '.claude/skills/lark');
-  const prompt = `${user} said: ${contextPrefix}${message} ---- reply via: ${skillPath}/send.js "${chatId}"`;
+  let message = `${prefix} ${userName} said: ${contextPrefix}${text}`;
 
-  exec(`tmux has-session -t ${sessionName} 2>/dev/null`, (error) => {
-    if (error) {
-      console.log('[!] Could not trigger Claude (tmux session not found)');
-      return;
-    }
+  if (mediaPath) {
+    message += ` ---- file: ${mediaPath}`;
+  }
 
-    const tempFile = `/tmp/lark-prompt-${Date.now()}.txt`;
-    fs.writeFileSync(tempFile, prompt);
-
-    exec(`tmux load-buffer -b lark-msg ${tempFile}`, (err1) => {
-      if (err1) {
-        fs.unlinkSync(tempFile);
-        return;
-      }
-      exec(`tmux paste-buffer -b lark-msg -t ${sessionName}`, (err2) => {
-        setTimeout(() => {
-          exec(`tmux send-keys -t ${sessionName} Enter`, () => {
-            console.log('[+] Triggered Claude with Lark message');
-            fs.unlinkSync(tempFile);
-            exec(`tmux delete-buffer -b lark-msg`, () => {});
-          });
-        }, 300);
-      });
-    });
-  });
+  return message;
 }
 
 // Extract content from Lark message
@@ -316,9 +315,11 @@ app.post('/webhook', async (req, res) => {
         const localPath = path.join(PHOTOS_DIR, `lark-${timestamp}.png`);
         const result = await downloadImage(messageId, imageKey, localPath);
         if (result.success) {
-          triggerClaude(senderName, `[image]${text ? ' ' + text : ''} ---- saved to: ${localPath}`, chatId, messageId);
+          const message = formatMessage('p2p', senderName, `[image]${text ? ' ' + text : ''}`, [], localPath);
+          sendToC4('lark', chatId, message);
         } else {
-          triggerClaude(senderName, '[image download failed]', chatId, messageId);
+          const message = formatMessage('p2p', senderName, '[image download failed]');
+          sendToC4('lark', chatId, message);
         }
         return res.json({ code: 0 });
       }
@@ -328,14 +329,17 @@ app.post('/webhook', async (req, res) => {
         const localPath = path.join(FILES_DIR, `lark-${timestamp}-${fileName}`);
         const result = await downloadFile(messageId, fileKey, localPath);
         if (result.success) {
-          triggerClaude(senderName, `[file: ${fileName}] ---- saved to: ${localPath}`, chatId, messageId);
+          const message = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath);
+          sendToC4('lark', chatId, message);
         } else {
-          triggerClaude(senderName, `[file download failed: ${fileName}]`, chatId, messageId);
+          const message = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`);
+          sendToC4('lark', chatId, message);
         }
         return res.json({ code: 0 });
       }
 
-      triggerClaude(senderName, text, chatId, messageId);
+      const message = formatMessage('p2p', senderName, text);
+      sendToC4('lark', chatId, message);
       return res.json({ code: 0 });
     }
 
@@ -366,12 +370,14 @@ app.post('/webhook', async (req, res) => {
         const localPath = path.join(PHOTOS_DIR, `lark-group-${timestamp}.png`);
         const result = await downloadImage(messageId, imageKey, localPath);
         if (result.success) {
-          triggerClaude(senderName, `[image]${cleanText ? ' ' + cleanText : ''} ---- saved to: ${localPath}`, chatId, messageId, contextMessages);
+          const message = formatMessage('group', senderName, `[image]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
+          sendToC4('lark', chatId, message);
         }
         return res.json({ code: 0 });
       }
 
-      triggerClaude(senderName, cleanText || text, chatId, messageId, contextMessages);
+      const message = formatMessage('group', senderName, cleanText || text, contextMessages);
+      sendToC4('lark', chatId, message);
       return res.json({ code: 0 });
     }
   }
