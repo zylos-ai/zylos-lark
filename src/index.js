@@ -241,11 +241,11 @@ function extractMessageContent(message) {
   }
 }
 
-// Check whitelist
-function isWhitelisted(userId) {
+// Check whitelist (supports both user_id and open_id)
+function isWhitelisted(userId, openId) {
   if (!config.whitelist?.enabled) return true;
   const allowedUsers = [...(config.whitelist.private_users || []), ...(config.whitelist.group_users || [])];
-  return allowedUsers.includes(userId);
+  return allowedUsers.includes(userId) || (openId && allowedUsers.includes(openId));
 }
 
 // Express app
@@ -294,7 +294,7 @@ app.post('/webhook', async (req, res) => {
 
     // Private chat handling
     if (chatType === 'p2p') {
-      if (!isWhitelisted(senderUserId)) {
+      if (!isWhitelisted(senderUserId, senderOpenId)) {
         console.log(`[lark] Private message from non-whitelisted user ${senderUserId}, ignoring`);
         return res.json({ code: 0 });
       }
@@ -344,7 +344,7 @@ app.post('/webhook', async (req, res) => {
         return res.json({ code: 0 });
       }
 
-      if (!isWhitelisted(senderUserId)) {
+      if (!isWhitelisted(senderUserId, senderOpenId)) {
         console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
         return res.json({ code: 0 });
       }

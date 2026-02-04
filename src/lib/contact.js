@@ -58,11 +58,14 @@ export async function getUserId(identifier) {
 }
 
 /**
- * Get user info by user_id
- * @param {string} userId - User ID (ou_xxx)
+ * Get user info by user_id or open_id
+ * @param {string} userId - User ID (user_id) or Open ID (ou_xxx)
  */
 export async function getUserInfo(userId) {
   const client = getClient();
+
+  // Auto-detect ID type: ou_ prefix means open_id
+  const idType = userId.startsWith('ou_') ? 'open_id' : 'user_id';
 
   try {
     const res = await client.contact.user.get({
@@ -70,7 +73,7 @@ export async function getUserInfo(userId) {
         user_id: userId,
       },
       params: {
-        user_id_type: 'user_id',
+        user_id_type: idType,
       },
     });
 
@@ -79,6 +82,7 @@ export async function getUserInfo(userId) {
         success: true,
         user: {
           userId: res.data.user?.user_id,
+          openId: res.data.user?.open_id,
           name: res.data.user?.name,
           email: res.data.user?.email,
           mobile: res.data.user?.mobile,

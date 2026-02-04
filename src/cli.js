@@ -49,7 +49,7 @@ Commands:
   search-chat <query>            Search chats by keyword
 
   user <email_or_mobile>         Get user ID by email or mobile
-  user-info <user_id>            Get user info by user_id
+  user-info <id>                 Get user info by user_id or open_id (ou_xxx)
 
 Examples:
   lark-cli test
@@ -323,12 +323,13 @@ async function main() {
 
       case 'user-info':
         if (args.length < 2) {
-          console.error('Usage: lark-cli user-info <user_id>');
+          console.error('Usage: lark-cli user-info <user_id_or_open_id>');
           process.exit(1);
         }
         result = await getUserInfo(args[1]);
         if (result.success && result.user) {
           console.log(`user_id: ${result.user.userId}`);
+          console.log(`open_id: ${result.user.openId}`);
           console.log(`name: ${result.user.name}`);
           process.exit(0);
         }
