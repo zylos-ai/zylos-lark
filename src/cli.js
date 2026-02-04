@@ -27,7 +27,7 @@ Commands:
   send-user <user_id> <msg>      Send message to a user
   send-image <chat_id> <path>    Send image to a chat
   send-file <chat_id> <path>     Send file to a chat
-  download-image <key> <path>    Download image by image_key
+  download-image <msg_id> <key> <path>  Download image from message
   messages <chat_id> [options]   List messages in a chat
                                  --limit N    Max messages (default: 50)
                                  --today      Only today's messages
@@ -117,7 +117,7 @@ async function main() {
         break;
 
       case 'download-image':
-        if (args.length < 3) {
+        if (args.length < 4) {
           console.error('Usage: lark-cli download-image <message_id> <image_key> <save_path>');
           process.exit(1);
         }
