@@ -115,12 +115,13 @@ function decrypt(encrypt, encryptKey) {
 }
 
 // Log message
-async function logMessage(chatType, chatId, userId, text, messageId, timestamp) {
+async function logMessage(chatType, chatId, userId, openId, text, messageId, timestamp) {
   const userName = await resolveUserName(userId);
   const logEntry = {
     timestamp: timestamp || new Date().toISOString(),
     message_id: messageId,
     user_id: userId,
+    open_id: openId,
     user_name: userName,
     text: text
   };
@@ -280,6 +281,7 @@ app.post('/webhook', async (req, res) => {
     const mentions = message.mentions;
 
     const senderUserId = sender.sender_id?.user_id;
+    const senderOpenId = sender.sender_id?.open_id;
     const chatId = message.chat_id;
     const messageId = message.message_id;
     const chatType = message.chat_type;
@@ -288,7 +290,7 @@ app.post('/webhook', async (req, res) => {
     console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
 
     // Log message
-    logMessage(chatType, chatId, senderUserId, text, messageId, event.header.create_time);
+    logMessage(chatType, chatId, senderUserId, senderOpenId, text, messageId, event.header.create_time);
 
     // Private chat handling
     if (chatType === 'p2p') {
