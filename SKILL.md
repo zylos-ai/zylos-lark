@@ -77,8 +77,7 @@ npm run cli chats
 
 - Config: `~/zylos/components/lark/config.json`
 - Logs: `~/zylos/components/lark/logs/`
-- Photos: `~/zylos/components/lark/photos/`
-- Files: `~/zylos/components/lark/files/`
+- Media: `~/zylos/components/lark/media/`
 
 ## Environment Variables
 

@@ -41,12 +41,10 @@ console.log('[post-install] Running lark-specific setup...\n');
 console.log('Creating subdirectories...');
 fs.mkdirSync(path.join(DATA_DIR, 'logs/private'), { recursive: true });
 fs.mkdirSync(path.join(DATA_DIR, 'logs/group'), { recursive: true });
-fs.mkdirSync(path.join(DATA_DIR, 'files'), { recursive: true });
-fs.mkdirSync(path.join(DATA_DIR, 'photos'), { recursive: true });
+fs.mkdirSync(path.join(DATA_DIR, 'media'), { recursive: true });
 console.log('  - logs/private/');
 console.log('  - logs/group/');
-console.log('  - files/');
-console.log('  - photos/');
+console.log('  - media/');
 
 // 2. Create default config if not exists
 const configPath = path.join(DATA_DIR, 'config.json');

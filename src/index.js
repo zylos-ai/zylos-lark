@@ -29,12 +29,10 @@ console.log(`[lark] Data directory: ${DATA_DIR}`);
 
 // Ensure directories exist
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
-const FILES_DIR = path.join(DATA_DIR, 'files');
-const PHOTOS_DIR = path.join(DATA_DIR, 'photos');
+const MEDIA_DIR = path.join(DATA_DIR, 'media');
 fs.mkdirSync(path.join(LOGS_DIR, 'private'), { recursive: true });
 fs.mkdirSync(path.join(LOGS_DIR, 'group'), { recursive: true });
-fs.mkdirSync(FILES_DIR, { recursive: true });
-fs.mkdirSync(PHOTOS_DIR, { recursive: true });
+fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
 // State files
 const CURSORS_PATH = path.join(DATA_DIR, 'group-cursors.json');
@@ -312,7 +310,7 @@ app.post('/webhook', async (req, res) => {
 
       if (imageKey) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const localPath = path.join(PHOTOS_DIR, `lark-${timestamp}.png`);
+        const localPath = path.join(MEDIA_DIR, `lark-${timestamp}.png`);
         const result = await downloadImage(messageId, imageKey, localPath);
         if (result.success) {
           const message = formatMessage('p2p', senderName, `[image]${text ? ' ' + text : ''}`, [], localPath);
@@ -326,7 +324,7 @@ app.post('/webhook', async (req, res) => {
 
       if (fileKey) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const localPath = path.join(FILES_DIR, `lark-${timestamp}-${fileName}`);
+        const localPath = path.join(MEDIA_DIR, `lark-${timestamp}-${fileName}`);
         const result = await downloadFile(messageId, fileKey, localPath);
         if (result.success) {
           const message = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath);
@@ -367,7 +365,7 @@ app.post('/webhook', async (req, res) => {
 
       if (imageKey) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const localPath = path.join(PHOTOS_DIR, `lark-group-${timestamp}.png`);
+        const localPath = path.join(MEDIA_DIR, `lark-group-${timestamp}.png`);
         const result = await downloadImage(messageId, imageKey, localPath);
         if (result.success) {
           const message = formatMessage('group', senderName, `[image]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
