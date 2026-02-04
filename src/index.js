@@ -11,17 +11,13 @@ import crypto from 'crypto';
 import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 
 import { getConfig, watchConfig, DATA_DIR, getCredentials } from './lib/config.js';
 import { downloadImage, downloadFile } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 
-const __filename = fileURLToPath(import.meta.url);
-
 // C4 receive interface path
 const C4_RECEIVE = path.join(process.env.HOME, '.claude/skills/comm-bridge/c4-receive.js');
-const __dirname = path.dirname(__filename);
 
 // Initialize
 console.log(`[lark] Starting...`);
@@ -100,7 +96,7 @@ async function resolveUserName(userId) {
       return result.user.name;
     }
   } catch (err) {
-    console.log(`[!] Failed to lookup user ${userId}: ${err.message}`);
+    console.log(`[lark] Failed to lookup user ${userId}: ${err.message}`);
   }
   return userId;
 }
@@ -134,7 +130,7 @@ async function logMessage(chatType, chatId, userId, text, messageId, timestamp) 
   const logId = chatType === 'p2p' ? userId : chatId;
   const logFile = path.join(LOGS_DIR, `${logId}.log`);
   fs.appendFileSync(logFile, logLine);
-  console.log(`[*] Logged: [${userName}] ${text.substring(0, 30)}...`);
+  console.log(`[lark] Logged: [${userName}] ${(text || '').substring(0, 30)}...`);
 }
 
 // Get group context messages
@@ -257,7 +253,7 @@ app.use(express.json());
 
 // Webhook endpoint
 app.post('/webhook', async (req, res) => {
-  console.log('[*] Received webhook request');
+  console.log('[lark] Received webhook request');
 
   let event = req.body;
 
@@ -266,14 +262,14 @@ app.post('/webhook', async (req, res) => {
     try {
       event = decrypt(event.encrypt, config.bot.encrypt_key);
     } catch (err) {
-      console.error('[!] Decryption failed:', err.message);
+      console.error('[lark] Decryption failed:', err.message);
       return res.status(400).json({ error: 'Decryption failed' });
     }
   }
 
   // URL Verification Challenge
   if (event.type === 'url_verification') {
-    console.log('[+] URL verification challenge received');
+    console.log('[lark] URL verification challenge received');
     return res.json({ challenge: event.challenge });
   }
 
@@ -284,13 +280,12 @@ app.post('/webhook', async (req, res) => {
     const mentions = message.mentions;
 
     const senderUserId = sender.sender_id?.user_id;
-    const senderOpenId = sender.sender_id?.open_id;
     const chatId = message.chat_id;
     const messageId = message.message_id;
     const chatType = message.chat_type;
 
     const { text, imageKey, fileKey, fileName } = extractMessageContent(message);
-    console.log(`[*] ${chatType} message from ${senderUserId}: ${text.substring(0, 50) || '[media]'}...`);
+    console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
 
     // Log message
     logMessage(chatType, chatId, senderUserId, text, messageId, event.header.create_time);
@@ -298,7 +293,7 @@ app.post('/webhook', async (req, res) => {
     // Private chat handling
     if (chatType === 'p2p') {
       if (!isWhitelisted(senderUserId)) {
-        console.log(`[!] Private message from non-whitelisted user ${senderUserId}, ignoring`);
+        console.log(`[lark] Private message from non-whitelisted user ${senderUserId}, ignoring`);
         return res.json({ code: 0 });
       }
 
@@ -343,16 +338,16 @@ app.post('/webhook', async (req, res) => {
       const mentioned = isBotMentioned(mentions, creds.app_id);
 
       if (!mentioned) {
-        console.log(`[*] Group message without @mention, logged but not responding`);
+        console.log(`[lark] Group message without @mention, logged only`);
         return res.json({ code: 0 });
       }
 
       if (!isWhitelisted(senderUserId)) {
-        console.log(`[!] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
+        console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
         return res.json({ code: 0 });
       }
 
-      console.log(`[+] Bot @mentioned in group ${chatId}`);
+      console.log(`[lark] Bot @mentioned in group ${chatId}`);
       const contextMessages = getGroupContext(chatId, messageId);
       updateCursor(chatId, messageId);
 
@@ -365,6 +360,17 @@ app.post('/webhook', async (req, res) => {
         const result = await downloadImage(messageId, imageKey, localPath);
         if (result.success) {
           const message = formatMessage('group', senderName, `[image]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
+          sendToC4('lark', chatId, message);
+        }
+        return res.json({ code: 0 });
+      }
+
+      if (fileKey) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const localPath = path.join(MEDIA_DIR, `lark-group-${timestamp}-${fileName}`);
+        const result = await downloadFile(messageId, fileKey, localPath);
+        if (result.success) {
+          const message = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
           sendToC4('lark', chatId, message);
         }
         return res.json({ code: 0 });
@@ -400,6 +406,5 @@ process.on('SIGTERM', shutdown);
 // Start server
 const PORT = config.webhook_port || 3457;
 app.listen(PORT, () => {
-  console.log(`[+] Lark Bot webhook server running on port ${PORT}`);
-  console.log(`[*] Webhook URL: Configure in Lark app settings`);
+  console.log(`[lark] Webhook server running on port ${PORT}`);
 });
