@@ -30,8 +30,7 @@ console.log(`[lark] Data directory: ${DATA_DIR}`);
 // Ensure directories exist
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
-fs.mkdirSync(path.join(LOGS_DIR, 'private'), { recursive: true });
-fs.mkdirSync(path.join(LOGS_DIR, 'group'), { recursive: true });
+fs.mkdirSync(LOGS_DIR, { recursive: true });
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
 // State files
@@ -131,19 +130,16 @@ async function logMessage(chatType, chatId, userId, text, messageId, timestamp) 
   };
   const logLine = JSON.stringify(logEntry) + '\n';
 
-  if (chatType === 'p2p') {
-    const logFile = path.join(LOGS_DIR, 'private', `${userId}.log`);
-    fs.appendFileSync(logFile, logLine);
-  } else {
-    const logFile = path.join(LOGS_DIR, 'group', `${chatId}.log`);
-    fs.appendFileSync(logFile, logLine);
-  }
+  // Use chatId for groups (oc_xxx), userId for private chats
+  const logId = chatType === 'p2p' ? userId : chatId;
+  const logFile = path.join(LOGS_DIR, `${logId}.log`);
+  fs.appendFileSync(logFile, logLine);
   console.log(`[*] Logged: [${userName}] ${text.substring(0, 30)}...`);
 }
 
 // Get group context messages
 function getGroupContext(chatId, currentMessageId) {
-  const logFile = path.join(LOGS_DIR, 'group', `${chatId}.log`);
+  const logFile = path.join(LOGS_DIR, `${chatId}.log`);
   if (!fs.existsSync(logFile)) return [];
 
   const MIN_CONTEXT = 5;
