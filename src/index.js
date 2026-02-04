@@ -183,6 +183,10 @@ function isBotMentioned(mentions, botOpenId) {
  * Send message to Claude via C4
  */
 function sendToC4(source, endpoint, content) {
+  if (!content) {
+    console.error('[lark] sendToC4 called with empty content');
+    return;
+  }
   const safeContent = content.replace(/'/g, "'\\''");
   const cmd = `node "${C4_RECEIVE}" --source "${source}" --endpoint "${endpoint}" --content '${safeContent}'`;
 
