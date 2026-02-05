@@ -1,6 +1,6 @@
 ---
 name: lark
-version: 0.1.0
+version: 0.1.1
 description: Lark and Feishu communication channel
 type: communication
 
@@ -18,6 +18,14 @@ lifecycle:
 upgrade:
   repo: zylos-ai/zylos-lark
   branch: main
+
+config:
+  required:
+    - name: LARK_APP_ID
+      description: 飞书/Lark 应用的 App ID
+    - name: LARK_APP_SECRET
+      description: 飞书/Lark 应用的 App Secret
+      sensitive: true
 
 dependencies:
   - comm-bridge
