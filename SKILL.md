@@ -1,6 +1,6 @@
 ---
 name: lark
-version: 0.2.0
+version: 0.1.0-beta.1
 description: Lark and Feishu communication channel
 type: communication
 
