@@ -140,6 +140,23 @@ Groups where the bot receives ALL messages without needing @mention:
 }
 ```
 
+## Group Context
+
+When responding to @mentions in groups, the bot includes recent message context
+so Claude understands the conversation. Context is retrieved from logged messages
+since the last response.
+
+Configuration in `config.json`:
+```json
+{
+  "message": {
+    "context_messages": 10
+  }
+}
+```
+
+Message logs are stored in `~/zylos/components/lark/logs/<chat_id>.log`.
+
 ## Service Management
 
 ```bash
