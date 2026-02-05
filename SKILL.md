@@ -1,6 +1,6 @@
 ---
 name: lark
-version: 0.1.1
+version: 0.1.0-beta.1
 description: Lark and Feishu communication channel
 type: communication
 
@@ -95,6 +95,67 @@ Add to `~/zylos/.env`:
 LARK_APP_ID=your_app_id
 LARK_APP_SECRET=your_app_secret
 ```
+
+## Owner
+
+First user to send a private message becomes the owner (primary partner).
+Owner is automatically whitelisted and can always communicate with the bot.
+
+Owner info stored in config.json:
+```json
+{
+  "owner": {
+    "bound": true,
+    "user_id": "xxx",
+    "open_id": "ou_xxx",
+    "name": "Howard"
+  }
+}
+```
+
+## Group Settings
+
+### Allowed Groups (respond to @mentions)
+
+Groups where the bot responds when @mentioned.
+Owner can @mention bot in any group, even if not in allowed_groups.
+
+```json
+{
+  "allowed_groups": [
+    {"chat_id": "oc_xxx", "name": "研发群", "added_at": "2026-01-01T00:00:00Z"}
+  ]
+}
+```
+
+### Smart Groups (receive all messages)
+
+Groups where the bot receives ALL messages without needing @mention:
+
+```json
+{
+  "smart_groups": [
+    {"chat_id": "oc_zzz", "name": "核心群", "added_at": "2026-01-01T00:00:00Z"}
+  ]
+}
+```
+
+## Group Context
+
+When responding to @mentions in groups, the bot includes recent message context
+so Claude understands the conversation. Context is retrieved from logged messages
+since the last response.
+
+Configuration in `config.json`:
+```json
+{
+  "message": {
+    "context_messages": 10
+  }
+}
+```
+
+Message logs are stored in `~/zylos/components/lark/logs/<chat_id>.log`.
 
 ## Service Management
 

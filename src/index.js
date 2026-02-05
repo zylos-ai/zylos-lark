@@ -12,7 +12,7 @@ import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { getConfig, watchConfig, DATA_DIR, getCredentials } from './lib/config.js';
+import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials } from './lib/config.js';
 import { downloadImage, downloadFile } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 
@@ -245,8 +245,32 @@ function extractMessageContent(message) {
   }
 }
 
+// Bind owner (first private chat user)
+async function bindOwner(userId, openId) {
+  const userName = await resolveUserName(userId);
+  config.owner = {
+    bound: true,
+    user_id: userId,
+    open_id: openId,
+    name: userName
+  };
+  saveConfig(config);
+  console.log(`[lark] Owner bound: ${userName} (${userId})`);
+  return userName;
+}
+
+// Check if user is owner
+function isOwner(userId, openId) {
+  if (!config.owner?.bound) return false;
+  return config.owner.user_id === userId || config.owner.open_id === openId;
+}
+
 // Check whitelist (supports both user_id and open_id)
+// Owner is always allowed
 function isWhitelisted(userId, openId) {
+  // Owner is always whitelisted
+  if (isOwner(userId, openId)) return true;
+  // If whitelist disabled, allow all
   if (!config.whitelist?.enabled) return true;
   const allowedUsers = [...(config.whitelist.private_users || []), ...(config.whitelist.group_users || [])];
   return allowedUsers.includes(userId) || (openId && allowedUsers.includes(openId));
@@ -298,6 +322,11 @@ app.post('/webhook', async (req, res) => {
 
     // Private chat handling
     if (chatType === 'p2p') {
+      // Auto-bind first private chat user as owner
+      if (!config.owner?.bound) {
+        await bindOwner(senderUserId, senderOpenId);
+      }
+
       if (!isWhitelisted(senderUserId, senderOpenId)) {
         console.log(`[lark] Private message from non-whitelisted user ${senderUserId}, ignoring`);
         return res.json({ code: 0 });
@@ -342,18 +371,33 @@ app.post('/webhook', async (req, res) => {
     if (chatType === 'group') {
       const creds = getCredentials();
       const mentioned = isBotMentioned(mentions, creds.app_id);
+      const isSmartGroup = (config.smart_groups || []).some(g => g.chat_id === chatId);
+      const isAllowedGroup = (config.allowed_groups || []).some(g => g.chat_id === chatId);
 
-      if (!mentioned) {
+      // Smart groups: receive all messages
+      // Allowed groups: only respond to @mentions
+      // Other groups: log only
+      if (!isSmartGroup && !mentioned) {
         console.log(`[lark] Group message without @mention, logged only`);
         return res.json({ code: 0 });
       }
 
-      if (!isWhitelisted(senderUserId, senderOpenId)) {
-        console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
-        return res.json({ code: 0 });
+      // For non-smart groups, need @mention and whitelist check
+      if (!isSmartGroup) {
+        const senderIsOwner = isOwner(senderUserId, senderOpenId);
+
+        // Owner can @mention bot in any group (even non-allowed)
+        if (!isAllowedGroup && !senderIsOwner) {
+          console.log(`[lark] @mention in non-allowed group ${chatId}, ignoring`);
+          return res.json({ code: 0 });
+        }
+        if (!senderIsOwner && !isWhitelisted(senderUserId, senderOpenId)) {
+          console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
+          return res.json({ code: 0 });
+        }
       }
 
-      console.log(`[lark] Bot @mentioned in group ${chatId}`);
+      console.log(`[lark] ${isSmartGroup ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
       const contextMessages = getGroupContext(chatId, messageId);
       updateCursor(chatId, messageId);
 
