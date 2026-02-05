@@ -384,11 +384,14 @@ app.post('/webhook', async (req, res) => {
 
       // For non-smart groups, need @mention and whitelist check
       if (!isSmartGroup) {
-        if (!isAllowedGroup) {
+        const senderIsOwner = isOwner(senderUserId, senderOpenId);
+
+        // Owner can @mention bot in any group (even non-allowed)
+        if (!isAllowedGroup && !senderIsOwner) {
           console.log(`[lark] @mention in non-allowed group ${chatId}, ignoring`);
           return res.json({ code: 0 });
         }
-        if (!isWhitelisted(senderUserId, senderOpenId)) {
+        if (!senderIsOwner && !isWhitelisted(senderUserId, senderOpenId)) {
           console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
           return res.json({ code: 0 });
         }
