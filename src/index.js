@@ -371,8 +371,8 @@ app.post('/webhook', async (req, res) => {
     if (chatType === 'group') {
       const creds = getCredentials();
       const mentioned = isBotMentioned(mentions, creds.app_id);
-      const isSmartGroup = (config.smart_groups || []).includes(chatId);
-      const isAllowedGroup = (config.allowed_groups || []).includes(chatId);
+      const isSmartGroup = (config.smart_groups || []).some(g => g.chat_id === chatId);
+      const isAllowedGroup = (config.allowed_groups || []).some(g => g.chat_id === chatId);
 
       // Smart groups: receive all messages
       // Allowed groups: only respond to @mentions

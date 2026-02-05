@@ -117,11 +117,14 @@ Owner info stored in config.json:
 
 ### Allowed Groups (respond to @mentions)
 
-Groups where the bot responds when @mentioned:
+Groups where the bot responds when @mentioned.
+Owner can @mention bot in any group, even if not in allowed_groups.
 
 ```json
 {
-  "allowed_groups": ["oc_xxx", "oc_yyy"]
+  "allowed_groups": [
+    {"chat_id": "oc_xxx", "name": "研发群", "added_at": "2026-01-01T00:00:00Z"}
+  ]
 }
 ```
 
@@ -131,7 +134,9 @@ Groups where the bot receives ALL messages without needing @mention:
 
 ```json
 {
-  "smart_groups": ["oc_zzz"]
+  "smart_groups": [
+    {"chat_id": "oc_zzz", "name": "核心群", "added_at": "2026-01-01T00:00:00Z"}
+  ]
 }
 ```
 

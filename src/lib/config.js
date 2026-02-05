@@ -35,8 +35,10 @@ export const DEFAULT_CONFIG = {
     group_users: []
   },
   // Allowed groups (respond to @mentions)
+  // Format: [{chat_id: "oc_xxx", name: "Group Name", added_at: "ISO timestamp"}]
   allowed_groups: [],
   // Smart groups (receive all messages, no @mention needed)
+  // Format: [{chat_id: "oc_xxx", name: "Group Name", added_at: "ISO timestamp"}]
   smart_groups: [],
   // Proxy settings (optional)
   proxy: {
