@@ -21,12 +21,23 @@ export const DEFAULT_CONFIG = {
     verification_token: '',
     encrypt_key: ''
   },
+  // Owner (primary partner) - auto-bound on first private chat
+  owner: {
+    bound: false,
+    user_id: '',
+    open_id: '',
+    name: ''
+  },
   // Whitelist settings (disabled by default)
   whitelist: {
     enabled: false,
     private_users: [],
     group_users: []
   },
+  // Allowed groups (respond to @mentions)
+  allowed_groups: [],
+  // Smart groups (receive all messages, no @mention needed)
+  smart_groups: [],
   // Proxy settings (optional)
   proxy: {
     enabled: false,

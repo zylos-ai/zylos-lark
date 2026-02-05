@@ -1,6 +1,6 @@
 ---
 name: lark
-version: 0.1.1
+version: 0.2.0
 description: Lark and Feishu communication channel
 type: communication
 
@@ -94,6 +94,45 @@ Add to `~/zylos/.env`:
 ```bash
 LARK_APP_ID=your_app_id
 LARK_APP_SECRET=your_app_secret
+```
+
+## Owner
+
+First user to send a private message becomes the owner (primary partner).
+Owner is automatically whitelisted and can always communicate with the bot.
+
+Owner info stored in config.json:
+```json
+{
+  "owner": {
+    "bound": true,
+    "user_id": "xxx",
+    "open_id": "ou_xxx",
+    "name": "Howard"
+  }
+}
+```
+
+## Group Settings
+
+### Allowed Groups (respond to @mentions)
+
+Groups where the bot responds when @mentioned:
+
+```json
+{
+  "allowed_groups": ["oc_xxx", "oc_yyy"]
+}
+```
+
+### Smart Groups (receive all messages)
+
+Groups where the bot receives ALL messages without needing @mention:
+
+```json
+{
+  "smart_groups": ["oc_zzz"]
+}
 ```
 
 ## Service Management
