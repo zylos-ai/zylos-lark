@@ -1,12 +1,13 @@
 ---
 name: lark
-version: 0.1.0-beta.1
+version: 0.1.0-beta.2
 description: Lark and Feishu communication channel
 type: communication
 
 lifecycle:
   npm: true
   service:
+    type: pm2
     name: zylos-lark
     entry: src/index.js
   data_dir: ~/zylos/components/lark
@@ -14,6 +15,10 @@ lifecycle:
     post-install: hooks/post-install.js
     pre-upgrade: hooks/pre-upgrade.js
     post-upgrade: hooks/post-upgrade.js
+  preserve:
+    - config.json
+    - .env
+    - data/
 
 upgrade:
   repo: zylos-ai/zylos-lark
@@ -80,6 +85,40 @@ npm run cli calendar --days 7
 # Groups
 npm run cli chats
 ```
+
+## Admin CLI
+
+Manage bot configuration via `admin.js`:
+
+```bash
+# Show full config
+node ~/zylos/.claude/skills/lark/src/admin.js show
+
+# Allowed Groups (respond to @mentions)
+node ~/zylos/.claude/skills/lark/src/admin.js list-allowed-groups
+node ~/zylos/.claude/skills/lark/src/admin.js add-allowed-group <chat_id> <name>
+node ~/zylos/.claude/skills/lark/src/admin.js remove-allowed-group <chat_id>
+
+# Smart Groups (receive all messages, no @mention needed)
+node ~/zylos/.claude/skills/lark/src/admin.js list-smart-groups
+node ~/zylos/.claude/skills/lark/src/admin.js add-smart-group <chat_id> <name>
+node ~/zylos/.claude/skills/lark/src/admin.js remove-smart-group <chat_id>
+
+# Whitelist
+node ~/zylos/.claude/skills/lark/src/admin.js list-whitelist
+node ~/zylos/.claude/skills/lark/src/admin.js add-whitelist <user_id_or_open_id>
+node ~/zylos/.claude/skills/lark/src/admin.js remove-whitelist <user_id_or_open_id>
+node ~/zylos/.claude/skills/lark/src/admin.js enable-whitelist
+node ~/zylos/.claude/skills/lark/src/admin.js disable-whitelist
+
+# Owner info
+node ~/zylos/.claude/skills/lark/src/admin.js show-owner
+
+# Help
+node ~/zylos/.claude/skills/lark/src/admin.js help
+```
+
+After changes, restart: `pm2 restart zylos-lark`
 
 ## Config Location
 

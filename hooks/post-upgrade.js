@@ -36,13 +36,83 @@ if (fs.existsSync(configPath)) {
       migrations.push('Added enabled field');
     }
 
-    // Add more migrations as needed for future versions
-    // Migration N: Example
-    // if (config.newField === undefined) {
-    //   config.newField = 'default';
-    //   migrated = true;
-    //   migrations.push('Added newField');
-    // }
+    // Migration 2: Ensure webhook_port
+    if (config.webhook_port === undefined) {
+      config.webhook_port = 3457;
+      migrated = true;
+      migrations.push('Added webhook_port');
+    }
+
+    // Migration 3: Ensure bot settings
+    if (!config.bot) {
+      config.bot = { verification_token: '', encrypt_key: '' };
+      migrated = true;
+      migrations.push('Added bot settings');
+    }
+
+    // Migration 4: Ensure owner structure
+    if (!config.owner) {
+      config.owner = { bound: false, user_id: '', open_id: '', name: '' };
+      migrated = true;
+      migrations.push('Added owner structure');
+    }
+
+    // Migration 5: Ensure whitelist structure
+    if (!config.whitelist) {
+      config.whitelist = { enabled: false, private_users: [], group_users: [] };
+      migrated = true;
+      migrations.push('Added whitelist structure');
+    } else {
+      if (!Array.isArray(config.whitelist.private_users)) {
+        config.whitelist.private_users = [];
+        migrated = true;
+        migrations.push('Added whitelist.private_users');
+      }
+      if (!Array.isArray(config.whitelist.group_users)) {
+        config.whitelist.group_users = [];
+        migrated = true;
+        migrations.push('Added whitelist.group_users');
+      }
+    }
+
+    // Migration 6: Ensure allowed_groups array
+    if (config.allowed_groups === undefined) {
+      config.allowed_groups = [];
+      migrated = true;
+      migrations.push('Added allowed_groups array');
+    }
+
+    // Migration 7: Ensure smart_groups array
+    if (config.smart_groups === undefined) {
+      config.smart_groups = [];
+      migrated = true;
+      migrations.push('Added smart_groups array');
+    }
+
+    // Migration 8: Ensure proxy settings
+    if (!config.proxy) {
+      config.proxy = { enabled: false, host: '', port: 0 };
+      migrated = true;
+      migrations.push('Added proxy settings');
+    }
+
+    // Migration 9: Ensure message settings
+    if (!config.message) {
+      config.message = { max_length: 2000, context_messages: 10 };
+      migrated = true;
+      migrations.push('Added message settings');
+    } else {
+      if (config.message.max_length === undefined) {
+        config.message.max_length = 2000;
+        migrated = true;
+        migrations.push('Added message.max_length');
+      }
+      if (config.message.context_messages === undefined) {
+        config.message.context_messages = 10;
+        migrated = true;
+        migrations.push('Added message.context_messages');
+      }
+    }
 
     // Save if migrated
     if (migrated) {
