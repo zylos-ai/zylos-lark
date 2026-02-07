@@ -5,12 +5,15 @@
  * Webhook server for receiving Lark messages and routing to Claude.
  */
 
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import express from 'express';
 import crypto from 'crypto';
 import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+
+// Load .env from ~/zylos/.env (absolute path, not cwd-dependent)
+dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials } from './lib/config.js';
 import { downloadImage, downloadFile } from './lib/message.js';
