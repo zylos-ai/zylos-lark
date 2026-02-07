@@ -12,7 +12,10 @@
  *   1 - Error
  */
 
-import 'dotenv/config';
+import dotenv from 'dotenv';
+import path from 'path';
+dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
+
 import { getConfig } from '../src/lib/config.js';
 import { sendToGroup, uploadImage, sendImage, uploadFile, sendFile } from '../src/lib/message.js';
 

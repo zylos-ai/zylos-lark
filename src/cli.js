@@ -3,7 +3,10 @@
  * Lark CLI - Command line interface for Lark/Feishu API
  */
 
-import 'dotenv/config';
+import dotenv from 'dotenv';
+import path from 'path';
+dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
+
 import { testAuth } from './lib/client.js';
 import { sendToGroup, sendToUser, listMessages, uploadImage, sendImage, uploadFile, sendFile, downloadImage } from './lib/message.js';
 import { getDocument, getDocumentInfo, getWikiNode, getSpreadsheet, getSheetValues, writeSheetValues, copySheet, addSheet } from './lib/document.js';
