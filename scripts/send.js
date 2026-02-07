@@ -13,8 +13,8 @@
  */
 
 import 'dotenv/config';
-import { getConfig } from './src/lib/config.js';
-import { sendToGroup, uploadImage, sendImage, uploadFile, sendFile } from './src/lib/message.js';
+import { getConfig } from '../src/lib/config.js';
+import { sendToGroup, uploadImage, sendImage, uploadFile, sendFile } from '../src/lib/message.js';
 
 const MAX_LENGTH = 2000;  // Lark message max length
 

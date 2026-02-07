@@ -154,13 +154,9 @@ const commands = {
     }
     const config = loadConfig();
     if (!config.whitelist) {
-      config.whitelist = { enabled: true, private_users: [], group_users: [] };
-    }
-    if (!config.whitelist.enabled) {
-      config.whitelist.enabled = true;
+      config.whitelist = { enabled: false, private_users: [], group_users: [] };
     }
 
-    // Add to both lists (user_id for private, open_id for groups)
     if (!config.whitelist.private_users.includes(userId)) {
       config.whitelist.private_users.push(userId);
     }
@@ -169,6 +165,10 @@ const commands = {
     }
     saveConfig(config);
     console.log(`Added ${userId} to whitelist (private + group)`);
+    if (!config.whitelist.enabled) {
+      console.log('Note: Whitelist is currently disabled (all users allowed).');
+      console.log('To enable: edit config.json and set whitelist.enabled = true');
+    }
     console.log('Run: pm2 restart zylos-lark');
   },
 
@@ -201,6 +201,28 @@ const commands = {
     } else {
       console.log(`${userId} not found in whitelist`);
     }
+  },
+
+  'enable-whitelist': () => {
+    const config = loadConfig();
+    if (!config.whitelist) {
+      config.whitelist = { enabled: true, private_users: [], group_users: [] };
+    } else {
+      config.whitelist.enabled = true;
+    }
+    saveConfig(config);
+    console.log('Whitelist enabled. Only owner + whitelisted users can interact.');
+    console.log('Run: pm2 restart zylos-lark');
+  },
+
+  'disable-whitelist': () => {
+    const config = loadConfig();
+    if (config.whitelist) {
+      config.whitelist.enabled = false;
+    }
+    saveConfig(config);
+    console.log('Whitelist disabled. All users can interact.');
+    console.log('Run: pm2 restart zylos-lark');
   },
 
   'show-owner': () => {
@@ -236,6 +258,8 @@ Commands:
   list-whitelist                      List whitelist entries
   add-whitelist <user_id_or_open_id>  Add to whitelist
   remove-whitelist <user_id_or_open_id>  Remove from whitelist
+  enable-whitelist                    Enable whitelist filtering
+  disable-whitelist                   Disable whitelist (allow all)
 
   show-owner                          Show current owner
 

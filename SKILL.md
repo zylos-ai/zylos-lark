@@ -108,6 +108,8 @@ node ~/zylos/.claude/skills/lark/src/admin.js remove-smart-group <chat_id>
 node ~/zylos/.claude/skills/lark/src/admin.js list-whitelist
 node ~/zylos/.claude/skills/lark/src/admin.js add-whitelist <user_id_or_open_id>
 node ~/zylos/.claude/skills/lark/src/admin.js remove-whitelist <user_id_or_open_id>
+node ~/zylos/.claude/skills/lark/src/admin.js enable-whitelist
+node ~/zylos/.claude/skills/lark/src/admin.js disable-whitelist
 
 # Owner info
 node ~/zylos/.claude/skills/lark/src/admin.js show-owner
