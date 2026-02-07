@@ -17,7 +17,7 @@ import { downloadImage, downloadFile } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 
 // C4 receive interface path
-const C4_RECEIVE = path.join(process.env.HOME, '.claude/skills/comm-bridge/c4-receive.js');
+const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 
 // Initialize
 console.log(`[lark] Starting...`);
@@ -188,7 +188,7 @@ function sendToC4(source, endpoint, content) {
     return;
   }
   const safeContent = content.replace(/'/g, "'\\''");
-  const cmd = `node "${C4_RECEIVE}" --source "${source}" --endpoint "${endpoint}" --content '${safeContent}'`;
+  const cmd = `node "${C4_RECEIVE}" --channel "${source}" --endpoint "${endpoint}" --content '${safeContent}'`;
 
   exec(cmd, (error, stdout, stderr) => {
     if (error) {
