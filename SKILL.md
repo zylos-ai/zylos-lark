@@ -52,13 +52,13 @@ Lark/Feishu communication channel for zylos.
 
 ```bash
 # Via C4 send interface
-~/.claude/skills/lark/send.js <chat_id> "Hello!"
+~/zylos/.claude/skills/lark/scripts/send.js <chat_id> "Hello!"
 
 # Send image
-~/.claude/skills/lark/send.js <chat_id> "[MEDIA:image]/path/to/image.png"
+~/zylos/.claude/skills/lark/scripts/send.js <chat_id> "[MEDIA:image]/path/to/image.png"
 
 # Send file
-~/.claude/skills/lark/send.js <chat_id> "[MEDIA:file]/path/to/file.pdf"
+~/zylos/.claude/skills/lark/scripts/send.js <chat_id> "[MEDIA:file]/path/to/file.pdf"
 ```
 
 ### CLI Commands
