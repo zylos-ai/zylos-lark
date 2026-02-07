@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.2] - 2026-02-08
+
+### Added
+- Admin CLI (`src/admin.js`) for managing groups, whitelist, and owner
+- DESIGN.md with full architecture documentation
+- SKILL.md: `service.type: pm2`, `preserve` list for upgrade safety
+
+### Changed
+- Renamed `ecosystem.config.js` → `ecosystem.config.cjs` (aligned with telegram component)
+- Updated `post-install.js` to reference `.cjs` ecosystem config
+- Expanded `post-upgrade.js` with 9 config migrations (webhook_port, bot, owner, whitelist, allowed_groups, smart_groups, proxy, message)
+- Adapted C4 interface for comm-bridge changes
+- Moved `send.js` to `scripts/send.js`
+
+---
+
 ## [0.1.0-beta.1] - 2026-02-05
 
 ### Added
