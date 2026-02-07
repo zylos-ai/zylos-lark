@@ -18,9 +18,13 @@ dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials } from './lib/config.js';
 import { downloadImage, downloadFile } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
+import { getBotInfo } from './lib/client.js';
 
 // C4 receive interface path
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
+
+// Bot identity (fetched at startup)
+let botOpenId = '';
 
 // Initialize
 console.log(`[lark] Starting...`);
@@ -372,8 +376,7 @@ app.post('/webhook', async (req, res) => {
 
     // Group chat handling
     if (chatType === 'group') {
-      const creds = getCredentials();
-      const mentioned = isBotMentioned(mentions, creds.app_id);
+      const mentioned = isBotMentioned(mentions, botOpenId);
       const isSmartGroup = (config.smart_groups || []).some(g => g.chat_id === chatId);
       const isAllowedGroup = (config.allowed_groups || []).some(g => g.chat_id === chatId);
 
@@ -456,8 +459,24 @@ function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-// Start server
+// Fetch bot identity then start server
 const PORT = config.webhook_port || 3457;
-app.listen(PORT, () => {
-  console.log(`[lark] Webhook server running on port ${PORT}`);
-});
+
+(async () => {
+  try {
+    const botInfo = await getBotInfo();
+    if (botInfo.success) {
+      botOpenId = botInfo.open_id;
+      console.log(`[lark] Bot identity: ${botInfo.app_name} (${botOpenId})`);
+    } else {
+      console.error(`[lark] Warning: Could not fetch bot info: ${botInfo.message}`);
+      console.error('[lark] @mention detection in groups will not work');
+    }
+  } catch (err) {
+    console.error(`[lark] Warning: getBotInfo failed: ${err.message}`);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`[lark] Webhook server running on port ${PORT}`);
+  });
+})();

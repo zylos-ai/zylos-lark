@@ -44,6 +44,30 @@ export function resetClient() {
 }
 
 /**
+ * Get bot info (open_id, name, etc.)
+ * Uses the /bot/v3/info endpoint
+ */
+export async function getBotInfo() {
+  const client = getClient();
+  try {
+    const res = await client.request({
+      method: 'GET',
+      url: '/open-apis/bot/v3/info',
+    });
+    if (res.code === 0 && res.bot) {
+      return {
+        success: true,
+        open_id: res.bot.open_id,
+        app_name: res.bot.app_name,
+      };
+    }
+    return { success: false, message: `API error: ${res.msg}` };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+}
+
+/**
  * Test authentication by getting tenant access token
  */
 export async function testAuth() {
