@@ -156,6 +156,12 @@ const commands = {
     if (!config.whitelist) {
       config.whitelist = { enabled: false, private_users: [], group_users: [] };
     }
+    if (!Array.isArray(config.whitelist.private_users)) {
+      config.whitelist.private_users = [];
+    }
+    if (!Array.isArray(config.whitelist.group_users)) {
+      config.whitelist.group_users = [];
+    }
 
     if (!config.whitelist.private_users.includes(userId)) {
       config.whitelist.private_users.push(userId);

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Admin CLI (`src/admin.js`) for managing groups, whitelist, and owner
+- `enable-whitelist` / `disable-whitelist` commands in admin CLI
 - DESIGN.md with full architecture documentation
 - SKILL.md: `service.type: pm2`, `preserve` list for upgrade safety
 
@@ -18,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Expanded `post-upgrade.js` with 9 config migrations (webhook_port, bot, owner, whitelist, allowed_groups, smart_groups, proxy, message)
 - Adapted C4 interface for comm-bridge changes
 - Moved `send.js` to `scripts/send.js`
+
+### Fixed
+- Fixed `scripts/send.js` import paths after move from root directory
+- Fixed `add-whitelist` not to auto-enable whitelist (could lock out users)
+- Added defensive array checks in `add-whitelist` for partial config edge case
 
 ---
 
