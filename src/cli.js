@@ -8,7 +8,7 @@ import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { testAuth } from './lib/client.js';
-import { sendToGroup, sendToUser, listMessages, uploadImage, sendImage, uploadFile, sendFile, downloadImage } from './lib/message.js';
+import { sendToGroup, sendToUser, listMessages, uploadImage, sendImage, uploadFile, sendFile, downloadImage, downloadFile } from './lib/message.js';
 import { getDocument, getDocumentInfo, getWikiNode, getSpreadsheet, getSheetValues, writeSheetValues, copySheet, addSheet } from './lib/document.js';
 import { listEvents } from './lib/calendar.js';
 import { listChats, searchChats, listChatMembers } from './lib/chat.js';
@@ -31,6 +31,7 @@ Commands:
   send-image <chat_id> <path>    Send image to a chat
   send-file <chat_id> <path>     Send file to a chat
   download-image <msg_id> <key> <path>  Download image from message
+  download-file <msg_id> <key> <path>   Download file from message
   messages <chat_id> [options]   List messages in a chat
                                  --limit N    Max messages (default: 50)
                                  --today      Only today's messages
@@ -125,6 +126,14 @@ async function main() {
           process.exit(1);
         }
         result = await downloadImage(args[1], args[2], args[3]);
+        break;
+
+      case 'download-file':
+        if (args.length < 4) {
+          console.error('Usage: lark-cli download-file <message_id> <file_key> <save_path>');
+          process.exit(1);
+        }
+        result = await downloadFile(args[1], args[2], args[3]);
         break;
 
       case 'messages':
