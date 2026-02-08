@@ -364,8 +364,19 @@ app.post('/webhook', async (req, res) => {
     const { text, imageKey, fileKey, fileName } = extractMessageContent(message);
     console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
 
-    // Log message (with mentions for name resolution)
-    logMessage(chatType, chatId, senderUserId, senderOpenId, text, messageId, event.header.create_time, mentions);
+    // Build log text with file/image metadata for lazy download context
+    let logText = text;
+    if (imageKey) {
+      const imageInfo = `[image, image_key: ${imageKey}, msg_id: ${messageId}]`;
+      logText = logText ? `${logText}\n${imageInfo}` : imageInfo;
+    }
+    if (fileKey) {
+      const fileInfo = `[file: ${fileName}, file_key: ${fileKey}, msg_id: ${messageId}]`;
+      logText = logText ? `${logText}\n${fileInfo}` : fileInfo;
+    }
+
+    // Log message (file metadata + mentions for name resolution in context)
+    logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions);
 
     // Private chat handling
     if (chatType === 'p2p') {
