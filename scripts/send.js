@@ -84,7 +84,7 @@ function splitMessage(text, maxLength) {
  * Send text message with auto-chunking
  */
 async function sendText(endpoint, text) {
-  const chunks = splitMessage(text, config.message?.max_length || MAX_LENGTH);
+  const chunks = splitMessage(text, MAX_LENGTH);
 
   for (let i = 0; i < chunks.length; i++) {
     const result = await sendToGroup(endpoint, chunks[i]);

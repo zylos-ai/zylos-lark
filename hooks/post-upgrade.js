@@ -45,9 +45,15 @@ if (fs.existsSync(configPath)) {
 
     // Migration 3: Ensure bot settings
     if (!config.bot) {
-      config.bot = { verification_token: '', encrypt_key: '' };
+      config.bot = { encrypt_key: '' };
       migrated = true;
       migrations.push('Added bot settings');
+    }
+    // Clean up removed field
+    if (config.bot.verification_token !== undefined) {
+      delete config.bot.verification_token;
+      migrated = true;
+      migrations.push('Removed unused bot.verification_token');
     }
 
     // Migration 4: Ensure owner structure
@@ -98,19 +104,20 @@ if (fs.existsSync(configPath)) {
 
     // Migration 9: Ensure message settings
     if (!config.message) {
-      config.message = { max_length: 2000, context_messages: 10 };
+      config.message = { context_messages: 10 };
       migrated = true;
       migrations.push('Added message settings');
     } else {
-      if (config.message.max_length === undefined) {
-        config.message.max_length = 2000;
-        migrated = true;
-        migrations.push('Added message.max_length');
-      }
       if (config.message.context_messages === undefined) {
         config.message.context_messages = 10;
         migrated = true;
         migrations.push('Added message.context_messages');
+      }
+      // Clean up removed field
+      if (config.message.max_length !== undefined) {
+        delete config.message.max_length;
+        migrated = true;
+        migrations.push('Removed unused message.max_length');
       }
     }
 
