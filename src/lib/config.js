@@ -18,7 +18,6 @@ export const DEFAULT_CONFIG = {
   webhook_port: 3457,
   // Bot settings
   bot: {
-    verification_token: '',
     encrypt_key: ''
   },
   // Owner (primary partner) - auto-bound on first private chat
@@ -48,7 +47,6 @@ export const DEFAULT_CONFIG = {
   },
   // Message settings
   message: {
-    max_length: 2000,
     context_messages: 10
   }
 };

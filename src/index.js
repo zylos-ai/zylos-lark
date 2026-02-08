@@ -187,7 +187,7 @@ function isBotMentioned(mentions, botOpenId) {
 }
 
 /**
- * Send message to Claude via C4
+ * Send message to Claude via C4 (with 1 retry on failure)
  */
 function sendToC4(source, endpoint, content) {
   if (!content) {
@@ -197,12 +197,21 @@ function sendToC4(source, endpoint, content) {
   const safeContent = content.replace(/'/g, "'\\''");
   const cmd = `node "${C4_RECEIVE}" --channel "${source}" --endpoint "${endpoint}" --content '${safeContent}'`;
 
-  exec(cmd, (error, stdout, stderr) => {
-    if (error) {
-      console.error(`[lark] C4 receive error: ${error.message}`);
-    } else {
+  exec(cmd, (error) => {
+    if (!error) {
       console.log(`[lark] Sent to C4: ${content.substring(0, 50)}...`);
+      return;
     }
+    console.warn(`[lark] C4 send failed, retrying in 2s: ${error.message}`);
+    setTimeout(() => {
+      exec(cmd, (retryError) => {
+        if (retryError) {
+          console.error(`[lark] C4 send failed after retry: ${retryError.message}`);
+        } else {
+          console.log(`[lark] Sent to C4 (retry): ${content.substring(0, 50)}...`);
+        }
+      });
+    }, 2000);
   });
 }
 

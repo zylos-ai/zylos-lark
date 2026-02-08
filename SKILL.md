@@ -1,6 +1,6 @@
 ---
 name: lark
-version: 0.1.0-beta.4
+version: 0.1.0-beta.5
 description: Lark and Feishu communication channel
 type: communication
 
@@ -126,7 +126,9 @@ After changes, restart: `pm2 restart zylos-lark`
 - Logs: `~/zylos/components/lark/logs/`
 - Media: `~/zylos/components/lark/media/`
 
-## Environment Variables
+## Feishu Setup
+
+### 1. Credentials
 
 Add to `~/zylos/.env`:
 
@@ -134,6 +136,31 @@ Add to `~/zylos/.env`:
 LARK_APP_ID=your_app_id
 LARK_APP_SECRET=your_app_secret
 ```
+
+Get these from [Feishu Open Platform](https://open.feishu.cn/app) → your app → Credentials.
+
+### 2. Feishu Console Configuration
+
+In [Feishu Open Platform](https://open.feishu.cn/app):
+
+1. **Enable Bot capability**: Add capabilities → Bot (添加应用能力 → 机器人)
+2. **Subscribe to events**: Event subscriptions → Add `im.message.receive_v1`
+3. **Set Request URL**: Event subscriptions → Request URL → `http://<your-host>:3457/webhook` (port configurable via `webhook_port` in config.json)
+
+### 3. Event Encryption (Optional)
+
+If you enable encryption in Feishu console (Event subscriptions → Encrypt Key),
+add the key to `~/zylos/components/lark/config.json`:
+
+```json
+{
+  "bot": {
+    "encrypt_key": "your_encrypt_key_from_feishu"
+  }
+}
+```
+
+The bot will automatically decrypt incoming events using AES-256-CBC.
 
 ## Owner
 

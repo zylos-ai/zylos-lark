@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.5] - 2026-02-08
+
+### Changed
+- Post-install now shows full Feishu setup checklist (webhook URL, bot capability, event subscription, encrypt_key)
+- SKILL.md: added complete Feishu console setup guide and encryption docs
+- sendToC4 now retries once (2s delay) on failure
+
+### Removed
+- Config field `bot.verification_token` (never used in code)
+- Config field `message.max_length` (send.js uses hardcoded constant instead)
+
+---
+
+## [0.1.0-beta.4] - 2026-02-08
+
+### Fixed
+- SKILL.md version now matches package.json
+
+---
+
+## [0.1.0-beta.3] - 2026-02-08
+
+### Fixed
+- Use bot open_id for @mention detection in groups (was failing to match)
+
+---
+
 ## [0.1.0-beta.2] - 2026-02-08
 
 ### Added

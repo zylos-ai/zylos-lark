@@ -243,7 +243,6 @@ node send.js "oc_xxx" "[MEDIA:file]/path/to/document.pdf"
   "webhook_port": 3457,
 
   "bot": {
-    "verification_token": "",
     "encrypt_key": ""
   },
 
@@ -270,7 +269,6 @@ node send.js "oc_xxx" "[MEDIA:file]/path/to/document.pdf"
   },
 
   "message": {
-    "max_length": 2000,
     "context_messages": 10
   }
 }
@@ -282,8 +280,7 @@ node send.js "oc_xxx" "[MEDIA:file]/path/to/document.pdf"
 |------|------|------|
 | enabled | boolean | 组件启用开关 |
 | webhook_port | number | Webhook 监听端口 |
-| bot.verification_token | string | 飞书验证 Token |
-| bot.encrypt_key | string | 飞书加密密钥 |
+| bot.encrypt_key | string | 飞书事件加密密钥 (可选) |
 | owner.bound | boolean | 是否已绑定 Owner |
 | owner.user_id | string | Owner 的 user_id |
 | owner.open_id | string | Owner 的 open_id |
@@ -294,7 +291,6 @@ node send.js "oc_xxx" "[MEDIA:file]/path/to/document.pdf"
 | allowed_groups | object[] | 允许 @mention 的群组 |
 | smart_groups | object[] | 监听所有消息的群组 |
 | proxy.enabled | boolean | 代理开关 |
-| message.max_length | number | 单条消息最大长度 |
 | message.context_messages | number | 群上下文消息数 |
 
 ### 5.3 环境变量 (~/zylos/.env)

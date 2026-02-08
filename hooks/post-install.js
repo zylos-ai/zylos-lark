@@ -73,7 +73,26 @@ if (fs.existsSync(ecosystemPath)) {
 }
 
 console.log('\n[post-install] Complete!');
-console.log('\nNext steps:');
-console.log('1. Add LARK_APP_ID and LARK_APP_SECRET to ~/zylos/.env');
-console.log('2. Configure webhook URL in Lark app settings');
-console.log('3. Update ~/zylos/components/lark/config.json if needed');
+
+const port = INITIAL_CONFIG.webhook_port || 3457;
+console.log('\n========================================');
+console.log('  Feishu/Lark Setup Checklist');
+console.log('========================================');
+console.log('');
+console.log('1. Add credentials to ~/zylos/.env:');
+console.log('   LARK_APP_ID=your_app_id');
+console.log('   LARK_APP_SECRET=your_app_secret');
+console.log('');
+console.log('2. In Feishu Open Platform (open.feishu.cn/app):');
+console.log('   a) Enable "Bot" capability (添加应用能力 → 机器人)');
+console.log('   b) Subscribe to event: im.message.receive_v1');
+console.log(`   c) Set Request URL: http://<your-host>:${port}/webhook`);
+console.log('');
+console.log('3. (Optional) If you enabled event encryption:');
+console.log('   Add "encrypt_key" to the "bot" section in ~/zylos/components/lark/config.json:');
+console.log('   "bot": { "encrypt_key": "your_key_from_feishu" }');
+console.log('');
+console.log('4. Restart service: pm2 restart zylos-lark');
+console.log('');
+console.log('First private message to the bot will auto-bind the sender as owner.');
+console.log('========================================');
