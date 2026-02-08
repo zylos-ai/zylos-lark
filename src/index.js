@@ -121,16 +121,17 @@ function decrypt(encrypt, encryptKey) {
   return JSON.parse(decrypted);
 }
 
-// Log message
-async function logMessage(chatType, chatId, userId, openId, text, messageId, timestamp) {
+// Log message (mentions resolved to real names for readable context)
+async function logMessage(chatType, chatId, userId, openId, text, messageId, timestamp, mentions) {
   const userName = await resolveUserName(userId);
+  const resolvedText = resolveMentions(text, mentions);
   const logEntry = {
     timestamp: timestamp || new Date().toISOString(),
     message_id: messageId,
     user_id: userId,
     open_id: openId,
     user_name: userName,
-    text: text
+    text: resolvedText
   };
   const logLine = JSON.stringify(logEntry) + '\n';
 
@@ -138,7 +139,7 @@ async function logMessage(chatType, chatId, userId, openId, text, messageId, tim
   const logId = chatType === 'p2p' ? userId : chatId;
   const logFile = path.join(LOGS_DIR, `${logId}.log`);
   fs.appendFileSync(logFile, logLine);
-  console.log(`[lark] Logged: [${userName}] ${(text || '').substring(0, 30)}...`);
+  console.log(`[lark] Logged: [${userName}] ${(resolvedText || '').substring(0, 30)}...`);
 }
 
 // Get group context messages
@@ -184,6 +185,36 @@ function isBotMentioned(mentions, botOpenId) {
     const mentionId = m.id?.open_id || m.id?.user_id || m.id?.app_id || '';
     return mentionId === botOpenId || m.key === '@_all';
   });
+}
+
+/**
+ * Resolve @_user_N placeholders in message text to real names.
+ * Lark replaces @mentions with @_user_1, @_user_2, etc. in the raw text.
+ * The mentions array contains the mapping: { key: "@_user_1", name: "Hongyun", id: { ... } }
+ *
+ * @param {string} text - Raw message text with @_user_N placeholders
+ * @param {Array} mentions - Lark mentions array from webhook event
+ * @param {object} options
+ * @param {boolean} options.stripBot - If true, remove the bot's @mention entirely
+ * @param {string} options.botOpenId - Bot's open_id for identifying bot mention
+ * @returns {string} Text with @_user_N replaced by @RealName (bot mention optionally stripped)
+ */
+function resolveMentions(text, mentions, { stripBot = false, botOpenId: botId } = {}) {
+  if (!text || !mentions || !Array.isArray(mentions) || mentions.length === 0) return text;
+
+  let resolved = text;
+  for (const m of mentions) {
+    if (!m.key) continue;
+    const isBotMention = botId && (m.id?.open_id === botId || m.id?.app_id === botId);
+    if (stripBot && isBotMention) {
+      // Remove bot @mention entirely (including trailing space)
+      resolved = resolved.replace(new RegExp(m.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*', 'g'), '');
+    } else if (m.name) {
+      // Replace placeholder with real name
+      resolved = resolved.replace(m.key, `@${m.name}`);
+    }
+  }
+  return resolved.trim();
 }
 
 /**
@@ -333,8 +364,8 @@ app.post('/webhook', async (req, res) => {
     const { text, imageKey, fileKey, fileName } = extractMessageContent(message);
     console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
 
-    // Log message
-    logMessage(chatType, chatId, senderUserId, senderOpenId, text, messageId, event.header.create_time);
+    // Log message (with mentions for name resolution)
+    logMessage(chatType, chatId, senderUserId, senderOpenId, text, messageId, event.header.create_time, mentions);
 
     // Private chat handling
     if (chatType === 'p2p') {
@@ -387,21 +418,24 @@ app.post('/webhook', async (req, res) => {
     if (chatType === 'group') {
       const mentioned = isBotMentioned(mentions, botOpenId);
       const isSmartGroup = (config.smart_groups || []).some(g => g.chat_id === chatId);
-      const isAllowedGroup = (config.allowed_groups || []).some(g => g.chat_id === chatId);
+      const allowedGroups = config.allowed_groups || [];
+      // If allowed_groups is empty, all groups are allowed (open mode)
+      // If allowed_groups has entries, only listed groups are allowed (restricted mode)
+      const isAllowedGroup = allowedGroups.length === 0 || allowedGroups.some(g => g.chat_id === chatId);
 
       // Smart groups: receive all messages
-      // Allowed groups: only respond to @mentions
-      // Other groups: log only
+      // Allowed groups (or open mode): respond to @mentions
+      // Non-allowed groups: log only
       if (!isSmartGroup && !mentioned) {
         console.log(`[lark] Group message without @mention, logged only`);
         return res.json({ code: 0 });
       }
 
-      // For non-smart groups, need @mention and whitelist check
+      // For non-smart groups, need @mention and permission check
       if (!isSmartGroup) {
         const senderIsOwner = isOwner(senderUserId, senderOpenId);
 
-        // Owner can @mention bot in any group (even non-allowed)
+        // Owner can @mention bot in any group
         if (!isAllowedGroup && !senderIsOwner) {
           console.log(`[lark] @mention in non-allowed group ${chatId}, ignoring`);
           return res.json({ code: 0 });
@@ -417,7 +451,8 @@ app.post('/webhook', async (req, res) => {
       updateCursor(chatId, messageId);
 
       const senderName = await resolveUserName(senderUserId);
-      const cleanText = text.replace(/@\w+\s*/gi, '').trim();
+      // Resolve mentions: replace @_user_N with real names, strip bot's @mention only
+      const cleanText = resolveMentions(text, mentions, { stripBot: true, botOpenId });
 
       if (imageKey) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
