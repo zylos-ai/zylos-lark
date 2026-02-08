@@ -1,18 +1,27 @@
 #!/usr/bin/env node
 /**
  * Post-install hook for zylos-lark
+ *
+ * Called by zylos CLI after standard installation steps:
+ * - git clone
+ * - npm install
+ * - create data_dir
+ * - register PM2 service (uses ecosystem.config.cjs automatically)
+ *
+ * This hook handles lark-specific setup:
+ * - Create subdirectories (logs, media)
+ * - Create default config.json
+ * - Check for required environment variables
  */
 
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const HOME = process.env.HOME;
-const SKILL_DIR = path.dirname(__dirname);
 const DATA_DIR = path.join(HOME, 'zylos/components/lark');
 const ENV_FILE = path.join(HOME, 'zylos/.env');
 
@@ -58,19 +67,8 @@ if (!hasAppId || !hasAppSecret) {
   if (!hasAppSecret) console.log('    LARK_APP_SECRET=your_app_secret');
 }
 
-// 4. Configure PM2 with ecosystem.config.cjs
-console.log('\nConfiguring PM2 service...');
-const ecosystemPath = path.join(SKILL_DIR, 'ecosystem.config.cjs');
-if (fs.existsSync(ecosystemPath)) {
-  try {
-    execSync('pm2 delete zylos-lark 2>/dev/null || true', { stdio: 'pipe' });
-    execSync(`pm2 start "${ecosystemPath}"`, { stdio: 'inherit' });
-    execSync('pm2 save', { stdio: 'pipe' });
-    console.log('  - Service configured');
-  } catch (err) {
-    console.error('  - PM2 configuration failed:', err.message);
-  }
-}
+// Note: PM2 service is configured by zylos CLI's registerService()
+// which automatically uses ecosystem.config.cjs when available.
 
 console.log('\n[post-install] Complete!');
 
