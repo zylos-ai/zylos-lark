@@ -30,6 +30,12 @@ Tell your Zylos agent:
 
 > "Install the lark component"
 
+Or use the CLI:
+
+```bash
+zylos add lark
+```
+
 Zylos will guide you through the setup, including configuring your Lark app credentials. Once installed, message your bot on Lark — the first user to interact becomes the admin.
 
 ## Managing the Bot
@@ -44,6 +50,13 @@ Just tell your Zylos agent what you need:
 | Restart bot | "Restart lark bot" |
 | Upgrade | "Upgrade lark component" |
 | Uninstall | "Uninstall lark component" |
+
+Or manage via CLI:
+
+```bash
+zylos upgrade lark
+zylos uninstall lark
+```
 
 ## Group Chat Behavior
 
