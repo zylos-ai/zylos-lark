@@ -42,6 +42,8 @@ Just tell your Zylos agent what you need:
 | Enable smart group | "Make this group a smart group" |
 | Check status | "Show lark bot status" |
 | Restart bot | "Restart lark bot" |
+| Upgrade | "Upgrade lark component" |
+| Uninstall | "Uninstall lark component" |
 
 ## Group Chat Behavior
 
