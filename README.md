@@ -1,6 +1,6 @@
 # zylos-lark
 
-[![Version](https://img.shields.io/badge/version-0.1.0--beta.1-blue.svg)](https://github.com/zylos-ai/zylos-lark/releases)
+[![Version](https://img.shields.io/badge/version-0.1.0--beta.11-blue.svg)](https://github.com/zylos-ai/zylos-lark/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
 Lark/Feishu communication channel for [Zylos Agent](https://github.com/zylos-ai/zylos-core), enabling bidirectional messaging between users and Claude via Lark.
