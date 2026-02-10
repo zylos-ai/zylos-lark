@@ -28,15 +28,6 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "files": [
-    "src/",
-    "scripts/",
-    "hooks/",
-    "LICENSE",
-    "README.md",
-    "SKILL.md",
-    "ecosystem.config.cjs"
-  ],
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.0.0",
     "axios": "^1.6.0",
