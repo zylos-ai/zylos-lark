@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-beta.11] - 2026-02-10
+
+### Added
+- **Rejection response**: When C4 rejects a message (health down/recovering), bot replies to the user via `sendMessage` with the rejection reason instead of silently failing
+- `sendToC4` now uses `--json` flag and parses structured responses from c4-receive
+- Structured rejections skip retry (health won't recover in 2s); only unexpected failures trigger retry
+
+---
+
 ## [0.1.0-beta.10] - 2026-02-09
 
 ### Changed

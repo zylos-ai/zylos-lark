@@ -16,7 +16,7 @@ import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials } from './lib/config.js';
-import { downloadImage, downloadFile } from './lib/message.js';
+import { downloadImage, downloadFile, sendMessage } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 import { getBotInfo } from './lib/client.js';
 
@@ -218,28 +218,59 @@ function resolveMentions(text, mentions, { stripBot = false, botOpenId: botId } 
 }
 
 /**
- * Send message to Claude via C4 (with 1 retry on failure)
+ * Parse c4-receive JSON response from stdout.
+ * Returns parsed object or null if parsing fails.
  */
-function sendToC4(source, endpoint, content) {
+function parseC4Response(stdout) {
+  if (!stdout) return null;
+  try {
+    return JSON.parse(stdout.trim());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Send message to Claude via C4 (with 1 retry on unexpected failure)
+ * @param {string} source - Channel name
+ * @param {string} endpoint - Endpoint ID (chat ID)
+ * @param {string} content - Message content
+ * @param {function} [onReject] - Callback with error message when c4-receive rejects
+ */
+function sendToC4(source, endpoint, content, onReject) {
   if (!content) {
     console.error('[lark] sendToC4 called with empty content');
     return;
   }
   const safeContent = content.replace(/'/g, "'\\''");
-  const cmd = `node "${C4_RECEIVE}" --channel "${source}" --endpoint "${endpoint}" --content '${safeContent}'`;
+  const cmd = `node "${C4_RECEIVE}" --channel "${source}" --endpoint "${endpoint}" --json --content '${safeContent}'`;
 
-  exec(cmd, (error) => {
+  exec(cmd, { encoding: 'utf8' }, (error, stdout) => {
     if (!error) {
       console.log(`[lark] Sent to C4: ${content.substring(0, 50)}...`);
       return;
     }
+    // Non-zero exit — check if c4-receive returned a structured rejection
+    const response = parseC4Response(error.stdout || stdout);
+    if (response && response.ok === false && response.error?.message) {
+      console.warn(`[lark] C4 rejected (${response.error.code}): ${response.error.message}`);
+      if (onReject) onReject(response.error.message);
+      return;
+    }
+    // Unexpected failure (node crash, etc.) — retry once
     console.warn(`[lark] C4 send failed, retrying in 2s: ${error.message}`);
     setTimeout(() => {
-      exec(cmd, (retryError) => {
-        if (retryError) {
-          console.error(`[lark] C4 send failed after retry: ${retryError.message}`);
-        } else {
+      exec(cmd, { encoding: 'utf8' }, (retryError, retryStdout) => {
+        if (!retryError) {
           console.log(`[lark] Sent to C4 (retry): ${content.substring(0, 50)}...`);
+          return;
+        }
+        const retryResponse = parseC4Response(retryError.stdout || retryStdout);
+        if (retryResponse && retryResponse.ok === false && retryResponse.error?.message) {
+          console.error(`[lark] C4 rejected after retry (${retryResponse.error.code}): ${retryResponse.error.message}`);
+          if (onReject) onReject(retryResponse.error.message);
+        } else {
+          console.error(`[lark] C4 send failed after retry: ${retryError.message}`);
         }
       });
     }, 2000);
@@ -391,6 +422,9 @@ app.post('/webhook', async (req, res) => {
       }
 
       const senderName = await resolveUserName(senderUserId);
+      const rejectReply = (errMsg) => {
+        sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+      };
 
       if (imageKey) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -398,10 +432,10 @@ app.post('/webhook', async (req, res) => {
         const result = await downloadImage(messageId, imageKey, localPath);
         if (result.success) {
           const message = formatMessage('p2p', senderName, `[image]${text ? ' ' + text : ''}`, [], localPath);
-          sendToC4('lark', chatId, message);
+          sendToC4('lark', chatId, message, rejectReply);
         } else {
           const message = formatMessage('p2p', senderName, '[image download failed]');
-          sendToC4('lark', chatId, message);
+          sendToC4('lark', chatId, message, rejectReply);
         }
         return res.json({ code: 0 });
       }
@@ -412,16 +446,16 @@ app.post('/webhook', async (req, res) => {
         const result = await downloadFile(messageId, fileKey, localPath);
         if (result.success) {
           const message = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath);
-          sendToC4('lark', chatId, message);
+          sendToC4('lark', chatId, message, rejectReply);
         } else {
           const message = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`);
-          sendToC4('lark', chatId, message);
+          sendToC4('lark', chatId, message, rejectReply);
         }
         return res.json({ code: 0 });
       }
 
       const message = formatMessage('p2p', senderName, text);
-      sendToC4('lark', chatId, message);
+      sendToC4('lark', chatId, message, rejectReply);
       return res.json({ code: 0 });
     }
 
@@ -464,6 +498,9 @@ app.post('/webhook', async (req, res) => {
       const senderName = await resolveUserName(senderUserId);
       // Resolve mentions: replace @_user_N with real names, strip bot's @mention only
       const cleanText = resolveMentions(text, mentions, { stripBot: true, botOpenId });
+      const groupRejectReply = (errMsg) => {
+        sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+      };
 
       if (imageKey) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -471,7 +508,7 @@ app.post('/webhook', async (req, res) => {
         const result = await downloadImage(messageId, imageKey, localPath);
         if (result.success) {
           const message = formatMessage('group', senderName, `[image]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
-          sendToC4('lark', chatId, message);
+          sendToC4('lark', chatId, message, groupRejectReply);
         }
         return res.json({ code: 0 });
       }
@@ -482,13 +519,13 @@ app.post('/webhook', async (req, res) => {
         const result = await downloadFile(messageId, fileKey, localPath);
         if (result.success) {
           const message = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
-          sendToC4('lark', chatId, message);
+          sendToC4('lark', chatId, message, groupRejectReply);
         }
         return res.json({ code: 0 });
       }
 
       const message = formatMessage('group', senderName, cleanText || text, contextMessages);
-      sendToC4('lark', chatId, message);
+      sendToC4('lark', chatId, message, groupRejectReply);
       return res.json({ code: 0 });
     }
   }
