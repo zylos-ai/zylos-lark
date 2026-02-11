@@ -59,7 +59,7 @@ const hasAppId = envContent.includes('LARK_APP_ID');
 const hasAppSecret = envContent.includes('LARK_APP_SECRET');
 const hasWebhookUrl = envContent.includes('LARK_WEBHOOK_URL');
 
-if (!hasAppId || !hasAppSecret) {
+if (!hasAppId || !hasAppSecret || !hasWebhookUrl) {
   console.log('\n[lark] Required environment variables not found in ' + ENV_FILE);
   console.log('    Please add:');
   if (!hasAppId) console.log('    LARK_APP_ID=your_app_id');
