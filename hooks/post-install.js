@@ -57,12 +57,21 @@ try {
 
 const hasAppId = envContent.includes('LARK_APP_ID');
 const hasAppSecret = envContent.includes('LARK_APP_SECRET');
+const hasWebhookUrl = envContent.includes('LARK_WEBHOOK_URL');
 
 if (!hasAppId || !hasAppSecret) {
   console.log('\n[lark] Required environment variables not found in ' + ENV_FILE);
   console.log('    Please add:');
   if (!hasAppId) console.log('    LARK_APP_ID=your_app_id');
   if (!hasAppSecret) console.log('    LARK_APP_SECRET=your_app_secret');
+  if (!hasWebhookUrl) console.log('    LARK_WEBHOOK_URL=https://yourdomain.com/webhook');
+}
+
+// Read webhook URL for display in setup checklist
+let webhookUrl = '';
+if (hasWebhookUrl) {
+  const match = envContent.match(/^LARK_WEBHOOK_URL=(.+)$/m);
+  if (match) webhookUrl = match[1].trim();
 }
 
 // Note: PM2 service is started by Claude after this hook completes.
@@ -70,6 +79,7 @@ if (!hasAppId || !hasAppSecret) {
 console.log('\n[post-install] Complete!');
 
 const port = INITIAL_CONFIG.webhook_port || 3457;
+const webhookDisplay = webhookUrl || `http://<your-host>:${port}/webhook`;
 console.log('\n========================================');
 console.log('  Feishu/Lark Setup Checklist');
 console.log('========================================');
@@ -77,11 +87,15 @@ console.log('');
 console.log('1. Add credentials to ~/zylos/.env:');
 console.log('   LARK_APP_ID=your_app_id');
 console.log('   LARK_APP_SECRET=your_app_secret');
+console.log('   LARK_WEBHOOK_URL=https://yourdomain.com/webhook');
 console.log('');
-console.log('2. In Feishu Open Platform (open.feishu.cn/app):');
-console.log('   a) Enable "Bot" capability (添加应用能力 → 机器人)');
+console.log('2. In Feishu/Lark developer console:');
+console.log('   - Feishu: open.feishu.cn/app');
+console.log('   - Lark:   open.larksuite.com/app');
+console.log('');
+console.log('   a) Enable "Bot" capability');
 console.log('   b) Subscribe to event: im.message.receive_v1');
-console.log(`   c) Set Request URL: http://<your-host>:${port}/webhook`);
+console.log(`   c) Set Request URL: ${webhookDisplay}`);
 console.log('');
 console.log('3. (Optional) If you enabled event encryption:');
 console.log('   Add "encrypt_key" to the "bot" section in ~/zylos/components/lark/config.json:');

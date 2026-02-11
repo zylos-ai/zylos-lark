@@ -27,10 +27,12 @@ upgrade:
 config:
   required:
     - name: LARK_APP_ID
-      description: 飞书/Lark 应用的 App ID
+      description: "App ID (Feishu: open.feishu.cn/app or Lark: open.larksuite.com/app -> Credentials)"
     - name: LARK_APP_SECRET
-      description: 飞书/Lark 应用的 App Secret
+      description: "App Secret (same page as App ID)"
       sensitive: true
+    - name: LARK_WEBHOOK_URL
+      description: "Public webhook URL for Feishu/Lark callbacks (e.g. https://yourdomain.com/webhook)"
 
 dependencies:
   - comm-bridge
@@ -126,7 +128,7 @@ After changes, restart: `pm2 restart zylos-lark`
 - Logs: `~/zylos/components/lark/logs/`
 - Media: `~/zylos/components/lark/media/`
 
-## Feishu Setup
+## Feishu/Lark Setup
 
 ### 1. Credentials
 
@@ -135,21 +137,26 @@ Add to `~/zylos/.env`:
 ```bash
 LARK_APP_ID=your_app_id
 LARK_APP_SECRET=your_app_secret
+LARK_WEBHOOK_URL=https://yourdomain.com/webhook
 ```
 
-Get these from [Feishu Open Platform](https://open.feishu.cn/app) → your app → Credentials.
+Get App ID and App Secret from your app's Credentials page:
+- Feishu: [open.feishu.cn/app](https://open.feishu.cn/app)
+- Lark: [open.larksuite.com/app](https://open.larksuite.com/app)
 
-### 2. Feishu Console Configuration
+### 2. Console Configuration
 
-In [Feishu Open Platform](https://open.feishu.cn/app):
+In the Feishu/Lark developer console:
+- Feishu: [open.feishu.cn/app](https://open.feishu.cn/app)
+- Lark: [open.larksuite.com/app](https://open.larksuite.com/app)
 
 1. **Enable Bot capability**: Add capabilities → Bot (添加应用能力 → 机器人)
 2. **Subscribe to events**: Event subscriptions → Add `im.message.receive_v1`
-3. **Set Request URL**: Event subscriptions → Request URL → `http://<your-host>:3457/webhook` (port configurable via `webhook_port` in config.json)
+3. **Set Request URL**: Event subscriptions → Request URL → your `LARK_WEBHOOK_URL` value (port configurable via `webhook_port` in config.json, default 3457)
 
 ### 3. Event Encryption (Optional)
 
-If you enable encryption in Feishu console (Event subscriptions → Encrypt Key),
+If you enable encryption in the console (Event subscriptions → Encrypt Key),
 add the key to `~/zylos/components/lark/config.json`:
 
 ```json
