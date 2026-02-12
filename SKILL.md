@@ -179,7 +179,7 @@ The bot will automatically decrypt incoming events using AES-256-CBC.
 If your domain is behind Cloudflare proxy with Flexible SSL mode, Caddy's automatic HTTPS will cause a redirect loop. Options:
 
 1. **Change Cloudflare SSL to Full**: In Cloudflare dashboard → SSL/TLS → set mode to "Full" (recommended)
-2. **Use HTTP mode**: Configure Caddy for HTTP-only via `zylos config set protocol http`, then run `zylos init` to regenerate the Caddyfile
+2. **Use HTTP mode**: Run `zylos config set protocol http` (automatically updates Caddyfile and reloads Caddy)
 
 ## Owner
 
