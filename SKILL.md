@@ -34,6 +34,11 @@ config:
     - name: LARK_WEBHOOK_URL
       description: "Public webhook URL for Feishu/Lark callbacks (e.g. https://yourdomain.com/webhook)"
 
+http_routes:
+  - path: /lark/webhook
+    type: reverse_proxy
+    target: localhost:3457
+
 dependencies:
   - comm-bridge
 ---
@@ -168,6 +173,14 @@ add the key to `~/zylos/components/lark/config.json`:
 ```
 
 The bot will automatically decrypt incoming events using AES-256-CBC.
+
+### Cloudflare Users
+
+If your domain is behind Cloudflare proxy with Flexible SSL mode, Caddy's automatic HTTPS will cause a redirect loop. Options:
+
+1. **Change Cloudflare SSL to Full**: In Cloudflare dashboard → SSL/TLS → set mode to "Full" (recommended)
+2. **Use HTTP mode**: Re-add the component with `zylos add lark --http` to configure HTTP-only webhook route
+3. **Manual Caddyfile edit**: Add an HTTP site block for the webhook path (see Caddy documentation)
 
 ## Owner
 
