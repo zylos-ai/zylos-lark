@@ -437,6 +437,16 @@ app.post('/webhook', async (req, res) => {
     }
   }
 
+  // Verify token if configured
+  const verificationToken = config.bot?.verification_token;
+  if (verificationToken) {
+    const eventToken = event.token || event.header?.token;
+    if (eventToken !== verificationToken) {
+      console.warn(`[lark] Verification token mismatch, rejecting request`);
+      return res.status(403).json({ error: 'Token verification failed' });
+    }
+  }
+
   // URL Verification Challenge
   if (event.type === 'url_verification') {
     console.log('[lark] URL verification challenge received');
