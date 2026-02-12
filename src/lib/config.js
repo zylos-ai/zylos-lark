@@ -18,7 +18,8 @@ export const DEFAULT_CONFIG = {
   webhook_port: 3457,
   // Bot settings
   bot: {
-    encrypt_key: ''
+    encrypt_key: '',
+    verification_token: ''
   },
   // Owner (primary partner) - auto-bound on first private chat
   owner: {

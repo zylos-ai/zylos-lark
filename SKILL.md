@@ -159,10 +159,25 @@ In the Feishu/Lark developer console:
 2. **Subscribe to events**: Event subscriptions → Add `im.message.receive_v1`
 3. **Set Request URL**: Event subscriptions → Request URL → your `LARK_WEBHOOK_URL` value (port configurable via `webhook_port` in config.json, default 3457)
 
-### 3. Event Encryption (Optional)
+### 3. Event Security (Optional)
 
-If you enable encryption in the console (Event subscriptions → Encrypt Key),
-add the key to `~/zylos/components/lark/config.json`:
+Feishu/Lark provides two security mechanisms for webhook events. You can use either or both.
+
+**Verification Token** — validates that requests come from Feishu/Lark:
+
+In the console: Event subscriptions → Verification Token. Add to config:
+
+```json
+{
+  "bot": {
+    "verification_token": "your_verification_token_from_feishu"
+  }
+}
+```
+
+**Encrypt Key** — encrypts event payloads using AES-256-CBC:
+
+In the console: Event subscriptions → Encrypt Key. Add to config:
 
 ```json
 {
@@ -172,7 +187,16 @@ add the key to `~/zylos/components/lark/config.json`:
 }
 ```
 
-The bot will automatically decrypt incoming events using AES-256-CBC.
+Both can be set together:
+
+```json
+{
+  "bot": {
+    "verification_token": "your_token",
+    "encrypt_key": "your_key"
+  }
+}
+```
 
 ### Cloudflare Users
 
