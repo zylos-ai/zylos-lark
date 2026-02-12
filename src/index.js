@@ -298,6 +298,67 @@ function formatMessage(chatType, userName, text, contextMessages = [], mediaPath
   return message;
 }
 
+/**
+ * Extract text from a Lark post (rich text) message.
+ * Post messages have nested arrays: paragraphs > elements.
+ * Each element has a tag (text, at, a, img, media, emotion).
+ *
+ * @param {Array} paragraphs - content.content array from post message
+ * @param {string} messageId - message ID for lazy media references
+ * @returns {{ text: string, imageKeys: string[] }} Extracted text and image keys
+ */
+function extractPostText(paragraphs, messageId) {
+  const imageKeys = [];
+  const lines = [];
+
+  for (const paragraph of paragraphs) {
+    if (!Array.isArray(paragraph)) continue;
+    const parts = [];
+
+    for (const el of paragraph) {
+      switch (el.tag) {
+        case 'text':
+          parts.push(el.text || '');
+          break;
+        case 'at':
+          // @mention: use user_name if available, fallback to user_id
+          parts.push(`@${el.user_name || el.user_id || 'unknown'}`);
+          break;
+        case 'a':
+          // Hyperlink: show text with URL
+          if (el.href) {
+            parts.push(`${el.text || ''}(${el.href})`);
+          } else {
+            parts.push(el.text || '');
+          }
+          break;
+        case 'img':
+          // Inline image: lazy metadata (consistent with image message handling)
+          if (el.image_key) {
+            imageKeys.push(el.image_key);
+            parts.push(`[image, image_key: ${el.image_key}, msg_id: ${messageId}]`);
+          }
+          break;
+        case 'media':
+          // Video/audio: lazy metadata
+          parts.push(`[media, file_key: ${el.file_key || 'unknown'}, msg_id: ${messageId}]`);
+          break;
+        case 'emotion':
+          // Emoji
+          parts.push(el.emoji_type ? `[${el.emoji_type}]` : '');
+          break;
+        default:
+          if (el.text) parts.push(el.text);
+          break;
+      }
+    }
+
+    lines.push(parts.join(''));
+  }
+
+  return { text: lines.join('\n'), imageKeys };
+}
+
 // Extract content from Lark message
 function extractMessageContent(message) {
   const msgType = message.message_type;
@@ -306,14 +367,16 @@ function extractMessageContent(message) {
   switch (msgType) {
     case 'text':
       return { text: content.text || '', imageKey: null, fileKey: null, fileName: null };
-    case 'post':
+    case 'post': {
       if (content.content) {
-        const items = content.content.flat();
-        const text = items.filter(item => item.tag === 'text').map(item => item.text || '').join('');
-        const imgItem = items.find(item => item.tag === 'img');
-        return { text, imageKey: imgItem?.image_key || null, fileKey: null, fileName: null };
+        const { text, imageKeys } = extractPostText(content.content, message.message_id);
+        // Prepend title if present
+        const fullText = content.title ? `[${content.title}] ${text}` : text;
+        // Return first image key for backward compatibility
+        return { text: fullText, imageKey: imageKeys[0] || null, fileKey: null, fileName: null };
       }
       return { text: '', imageKey: null, fileKey: null, fileName: null };
+    }
     case 'image':
       return { text: '', imageKey: content.image_key, fileKey: null, fileName: null };
     case 'file':
