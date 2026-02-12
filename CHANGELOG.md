@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-02-12
+
+### Added
+- `http_routes` declaration in SKILL.md for automatic Caddy reverse proxy configuration (#22)
+- Verification Token support for webhook request validation (#24)
+- Cloudflare SSL compatibility documentation
+
+### Fixed
+- Improve post (rich text) message extraction (#23)
+
 ## [0.1.0] - 2026-02-11
 
 Initial public release.
