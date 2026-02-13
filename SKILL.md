@@ -31,8 +31,8 @@ config:
     - name: LARK_APP_SECRET
       description: "App Secret (same page as App ID)"
       sensitive: true
-    - name: LARK_WEBHOOK_URL
-      description: "Public webhook URL for Feishu/Lark callbacks (e.g. https://yourdomain.com/lark/webhook)"
+
+next-steps: "After starting the service: 1) Read domain from ~/zylos/.zylos/config.json and tell user to configure webhook URL in the developer console — Feishu: open.feishu.cn/app, Lark: open.larksuite.com/app (Event Subscriptions → Request URL → https://{domain}/lark/webhook). 2) Ask if user wants to configure verification token (optional, from Event Subscriptions page) — if yes, write to config.bot.verification_token in ~/zylos/components/lark/config.json, then pm2 restart zylos-lark."
 
 http_routes:
   - path: /lark/webhook
@@ -143,7 +143,6 @@ Add to `~/zylos/.env`:
 ```bash
 LARK_APP_ID=your_app_id
 LARK_APP_SECRET=your_app_secret
-LARK_WEBHOOK_URL=https://yourdomain.com/lark/webhook
 ```
 
 Get App ID and App Secret from your app's Credentials page:
@@ -158,7 +157,7 @@ In the Feishu/Lark developer console:
 
 1. **Enable Bot capability**: Add capabilities → Bot (添加应用能力 → 机器人)
 2. **Subscribe to events**: Event subscriptions → Add `im.message.receive_v1`
-3. **Set Request URL**: Event subscriptions → Request URL → your `LARK_WEBHOOK_URL` value (port configurable via `webhook_port` in config.json, default 3457)
+3. **Set Request URL**: Event subscriptions → Request URL → `https://<your-domain>/lark/webhook` (the path is defined by `http_routes` in SKILL.md)
 
 ### 3. Event Security (Optional)
 

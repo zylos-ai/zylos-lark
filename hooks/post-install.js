@@ -2,18 +2,20 @@
 /**
  * Post-install hook for zylos-lark
  *
- * Called by Claude after CLI installation (zylos add --json).
- * CLI handles: download, npm install, manifest, registration.
- * Claude handles: config collection, this hook, service start.
+ * Called during installation (both terminal and JSON/Claude modes).
+ * Terminal mode (stdio: inherit): runs interactive prompts for optional config.
+ * JSON mode (stdio: pipe): runs silently, skips interactive prompts.
  *
  * This hook handles lark-specific setup:
  * - Create subdirectories (logs, media)
  * - Create default config.json
- * - Check for required environment variables
+ * - Check for environment variables (informational)
+ * - Prompt for verification token (terminal mode only, optional)
  */
 
 import fs from 'fs';
 import path from 'path';
+import readline from 'readline';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -28,6 +30,21 @@ const INITIAL_CONFIG = {
   enabled: true,
   webhook_port: 3457
 };
+
+const isInteractive = process.stdin.isTTY === true;
+
+/**
+ * Prompt user for input (only works in terminal mode).
+ */
+function ask(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
 
 console.log('[post-install] Running lark-specific setup...\n');
 
@@ -48,7 +65,7 @@ if (!fs.existsSync(configPath)) {
   console.log('\nConfig already exists, skipping.');
 }
 
-// 3. Check environment variables
+// 3. Check environment variables (informational)
 console.log('\nChecking environment variables...');
 let envContent = '';
 try {
@@ -57,52 +74,62 @@ try {
 
 const hasAppId = envContent.includes('LARK_APP_ID');
 const hasAppSecret = envContent.includes('LARK_APP_SECRET');
-const hasWebhookUrl = envContent.includes('LARK_WEBHOOK_URL');
 
-if (!hasAppId || !hasAppSecret || !hasWebhookUrl) {
-  console.log('\n[lark] Required environment variables not found in ' + ENV_FILE);
-  console.log('    Please add:');
-  if (!hasAppId) console.log('    LARK_APP_ID=your_app_id');
-  if (!hasAppSecret) console.log('    LARK_APP_SECRET=your_app_secret');
-  if (!hasWebhookUrl) console.log('    LARK_WEBHOOK_URL=https://yourdomain.com/lark/webhook');
+if (!hasAppId || !hasAppSecret) {
+  console.log('  LARK_APP_ID and/or LARK_APP_SECRET not yet in .env.');
+} else {
+  console.log('  Credentials found.');
 }
 
-// Read webhook URL for display in setup checklist
-let webhookUrl = '';
-if (hasWebhookUrl) {
-  const match = envContent.match(/^LARK_WEBHOOK_URL=(.+)$/m);
-  if (match) webhookUrl = match[1].trim();
+// 4. Prompt for verification token (terminal mode only)
+if (isInteractive) {
+  const answer = await ask('\nConfigure verification token? (optional, enhances security) [y/N]: ');
+  if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
+    const token = await ask('  Verification Token (from Event Subscriptions page): ');
+    if (token) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      config.bot = config.bot || {};
+      config.bot.verification_token = token;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      console.log('  ✓ Verification token saved to config.json');
+    }
+
+    const encryptKey = await ask('  Encrypt Key (optional, for payload encryption) [press Enter to skip]: ');
+    if (encryptKey) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      config.bot = config.bot || {};
+      config.bot.encrypt_key = encryptKey;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      console.log('  ✓ Encrypt key saved to config.json');
+    }
+  }
 }
 
 // Note: PM2 service is started by Claude after this hook completes.
 
 console.log('\n[post-install] Complete!');
 
-const port = INITIAL_CONFIG.webhook_port || 3457;
-const webhookDisplay = webhookUrl || `http://<your-host>:${port}/webhook`;
+// Read domain from zylos config for webhook URL display
+let webhookUrl = 'https://<your-domain>/lark/webhook';
+try {
+  const zylosConfig = JSON.parse(fs.readFileSync(path.join(HOME, 'zylos/.zylos/config.json'), 'utf8'));
+  if (zylosConfig.domain) {
+    const protocol = zylosConfig.protocol || 'https';
+    webhookUrl = `${protocol}://${zylosConfig.domain}/lark/webhook`;
+  }
+} catch (e) {}
+
 console.log('\n========================================');
-console.log('  Feishu/Lark Setup Checklist');
+console.log('  Feishu/Lark Setup — Remaining Steps');
 console.log('========================================');
 console.log('');
-console.log('1. Add credentials to ~/zylos/.env:');
-console.log('   LARK_APP_ID=your_app_id');
-console.log('   LARK_APP_SECRET=your_app_secret');
-console.log('   LARK_WEBHOOK_URL=https://yourdomain.com/lark/webhook');
+console.log('After the service starts, go to the developer console:');
+console.log('  - Feishu: open.feishu.cn/app');
+console.log('  - Lark:   open.larksuite.com/app');
 console.log('');
-console.log('2. In Feishu/Lark developer console:');
-console.log('   - Feishu: open.feishu.cn/app');
-console.log('   - Lark:   open.larksuite.com/app');
-console.log('');
-console.log('   a) Enable "Bot" capability');
-console.log('   b) Subscribe to event: im.message.receive_v1');
-console.log(`   c) Set Request URL: ${webhookDisplay}`);
-console.log('');
-console.log('3. (Optional) Event security in ~/zylos/components/lark/config.json:');
-console.log('   - Verification Token: "bot": { "verification_token": "your_token" }');
-console.log('   - Encrypt Key:        "bot": { "encrypt_key": "your_key" }');
-console.log('   Both values are found in: Event subscriptions page in console');
-console.log('');
-console.log('4. Restart service: pm2 restart zylos-lark');
+console.log('1. Enable "Bot" capability');
+console.log('2. Subscribe to event: im.message.receive_v1');
+console.log(`3. Set Request URL: ${webhookUrl}`);
 console.log('');
 console.log('First private message to the bot will auto-bind the sender as owner.');
 console.log('========================================');
