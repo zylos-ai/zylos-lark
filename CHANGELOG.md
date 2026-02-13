@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-02-13
+
+### Fixed
+- Add strip_prefix to webhook Caddy route (#25)
+- Remove LARK_WEBHOOK_URL from required config — webhook URL now derived from domain (#26)
+- Default group whitelist to deny-all except owner for security (#27)
+
+### Added
+- Group whitelist toggle: `enable-group-whitelist` / `disable-group-whitelist` admin commands (#27)
+
 ## [0.1.1] - 2026-02-12
 
 ### Added
