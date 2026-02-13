@@ -32,7 +32,7 @@ config:
       description: "App Secret (same page as App ID)"
       sensitive: true
 
-next-steps: "After starting the service: 1) Read domain from ~/zylos/.zylos/config.json and tell user to configure webhook URL in the Feishu/Lark developer console (Event Subscriptions → Request URL → https://{domain}/lark/webhook). 2) Ask if user wants to configure verification token (optional, from Event Subscriptions page) — if yes, write to config.bot.verification_token in ~/zylos/components/lark/config.json, then pm2 restart zylos-lark."
+next-steps: "After starting the service: 1) Read domain from ~/zylos/.zylos/config.json and tell user to configure webhook URL in the developer console — Feishu: open.feishu.cn/app, Lark: open.larksuite.com/app (Event Subscriptions → Request URL → https://{domain}/lark/webhook). 2) Ask if user wants to configure verification token (optional, from Event Subscriptions page) — if yes, write to config.bot.verification_token in ~/zylos/components/lark/config.json, then pm2 restart zylos-lark."
 
 http_routes:
   - path: /lark/webhook
