@@ -32,12 +32,13 @@ config:
       description: "App Secret (same page as App ID)"
       sensitive: true
     - name: LARK_WEBHOOK_URL
-      description: "Public webhook URL for Feishu/Lark callbacks (e.g. https://yourdomain.com/webhook)"
+      description: "Public webhook URL for Feishu/Lark callbacks (e.g. https://yourdomain.com/lark/webhook)"
 
 http_routes:
   - path: /lark/webhook
     type: reverse_proxy
     target: localhost:3457
+    strip_prefix: /lark
 
 dependencies:
   - comm-bridge
@@ -142,7 +143,7 @@ Add to `~/zylos/.env`:
 ```bash
 LARK_APP_ID=your_app_id
 LARK_APP_SECRET=your_app_secret
-LARK_WEBHOOK_URL=https://yourdomain.com/webhook
+LARK_WEBHOOK_URL=https://yourdomain.com/lark/webhook
 ```
 
 Get App ID and App Secret from your app's Credentials page:

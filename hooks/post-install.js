@@ -64,7 +64,7 @@ if (!hasAppId || !hasAppSecret || !hasWebhookUrl) {
   console.log('    Please add:');
   if (!hasAppId) console.log('    LARK_APP_ID=your_app_id');
   if (!hasAppSecret) console.log('    LARK_APP_SECRET=your_app_secret');
-  if (!hasWebhookUrl) console.log('    LARK_WEBHOOK_URL=https://yourdomain.com/webhook');
+  if (!hasWebhookUrl) console.log('    LARK_WEBHOOK_URL=https://yourdomain.com/lark/webhook');
 }
 
 // Read webhook URL for display in setup checklist
@@ -87,7 +87,7 @@ console.log('');
 console.log('1. Add credentials to ~/zylos/.env:');
 console.log('   LARK_APP_ID=your_app_id');
 console.log('   LARK_APP_SECRET=your_app_secret');
-console.log('   LARK_WEBHOOK_URL=https://yourdomain.com/webhook');
+console.log('   LARK_WEBHOOK_URL=https://yourdomain.com/lark/webhook');
 console.log('');
 console.log('2. In Feishu/Lark developer console:');
 console.log('   - Feishu: open.feishu.cn/app');
