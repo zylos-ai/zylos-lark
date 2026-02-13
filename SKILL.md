@@ -112,6 +112,10 @@ node ~/zylos/.claude/skills/lark/src/admin.js list-smart-groups
 node ~/zylos/.claude/skills/lark/src/admin.js add-smart-group <chat_id> <name>
 node ~/zylos/.claude/skills/lark/src/admin.js remove-smart-group <chat_id>
 
+# Group Whitelist (enabled by default)
+node ~/zylos/.claude/skills/lark/src/admin.js enable-group-whitelist
+node ~/zylos/.claude/skills/lark/src/admin.js disable-group-whitelist
+
 # Whitelist
 node ~/zylos/.claude/skills/lark/src/admin.js list-whitelist
 node ~/zylos/.claude/skills/lark/src/admin.js add-whitelist <user_id_or_open_id>

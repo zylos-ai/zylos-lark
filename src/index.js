@@ -537,9 +537,13 @@ app.post('/webhook', async (req, res) => {
       const mentioned = isBotMentioned(mentions, botOpenId);
       const isSmartGroup = (config.smart_groups || []).some(g => g.chat_id === chatId);
       const allowedGroups = config.allowed_groups || [];
-      // If allowed_groups is empty, all groups are allowed (open mode)
-      // If allowed_groups has entries, only listed groups are allowed (restricted mode)
-      const isAllowedGroup = allowedGroups.length === 0 || allowedGroups.some(g => g.chat_id === chatId);
+      // When group_whitelist.enabled is true (default): only listed groups are allowed
+      // When group_whitelist.enabled is false: all groups are allowed (open mode)
+      // Owner is always allowed — checked separately below
+      const whitelistEnabled = config.group_whitelist?.enabled !== false;
+      const isAllowedGroup = whitelistEnabled
+        ? allowedGroups.some(g => g.chat_id === chatId)
+        : true;
 
       // Smart groups: receive all messages
       // Allowed groups (or open mode): respond to @mentions

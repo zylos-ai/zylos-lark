@@ -34,6 +34,8 @@ export const DEFAULT_CONFIG = {
     private_users: [],
     group_users: []
   },
+  // Group whitelist (enabled by default for security)
+  group_whitelist: { enabled: true },
   // Allowed groups (respond to @mentions)
   // Format: [{chat_id: "oc_xxx", name: "Group Name", added_at: "ISO timestamp"}]
   allowed_groups: [],

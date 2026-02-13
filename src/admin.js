@@ -231,6 +231,30 @@ const commands = {
     console.log('Run: pm2 restart zylos-lark');
   },
 
+  'enable-group-whitelist': () => {
+    const config = loadConfig();
+    if (!config.group_whitelist) {
+      config.group_whitelist = { enabled: true };
+    } else {
+      config.group_whitelist.enabled = true;
+    }
+    saveConfig(config);
+    console.log('Group whitelist enabled. Only allowed_groups + owner can trigger bot in groups.');
+    console.log('Run: pm2 restart zylos-lark');
+  },
+
+  'disable-group-whitelist': () => {
+    const config = loadConfig();
+    if (!config.group_whitelist) {
+      config.group_whitelist = { enabled: false };
+    } else {
+      config.group_whitelist.enabled = false;
+    }
+    saveConfig(config);
+    console.log('Group whitelist disabled. All groups can trigger bot (open mode).');
+    console.log('Run: pm2 restart zylos-lark');
+  },
+
   'show-owner': () => {
     const config = loadConfig();
     const owner = config.owner || {};
@@ -260,6 +284,10 @@ Commands:
   add-smart-group <chat_id> <name>    Add a smart group
   remove-smart-group <chat_id>        Remove a smart group
 
+  Group Whitelist:
+  enable-group-whitelist              Enable group whitelist (default, secure)
+  disable-group-whitelist             Disable group whitelist (open mode)
+
   Whitelist (access control):
   list-whitelist                      List whitelist entries
   add-whitelist <user_id_or_open_id>  Add to whitelist
@@ -268,6 +296,8 @@ Commands:
   disable-whitelist                   Disable whitelist (allow all)
 
   show-owner                          Show current owner
+
+Note: Owner can always @mention bot in any group regardless of whitelist.
 
 After changes, restart bot: pm2 restart zylos-lark
 `);
