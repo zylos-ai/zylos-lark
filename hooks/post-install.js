@@ -10,7 +10,7 @@
  * - Create subdirectories (logs, media)
  * - Create default config.json
  * - Check for environment variables (informational)
- * - Prompt for verification token (terminal mode only, optional)
+ * - Prompt for verification token (terminal mode only, required)
  */
 
 import fs from 'fs';
@@ -83,25 +83,26 @@ if (!hasAppId || !hasAppSecret) {
 
 // 4. Prompt for verification token (terminal mode only)
 if (isInteractive) {
-  const answer = await ask('\nConfigure verification token? (optional, enhances security) [y/N]: ');
-  if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
-    const token = await ask('  Verification Token (from Event Subscriptions page): ');
-    if (token) {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      config.bot = config.bot || {};
-      config.bot.verification_token = token;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-      console.log('  ✓ Verification token saved to config.json');
-    }
+  console.log('\nVerification Token (REQUIRED for webhook security):');
+  const token = await ask('  Verification Token (from Event Subscriptions page): ');
+  if (token) {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    config.bot = config.bot || {};
+    config.bot.verification_token = token;
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    console.log('  ✓ Verification token saved to config.json');
+  } else {
+    console.log('  WARNING: Verification token is required for the service to start.');
+    console.log('  You must set bot.verification_token in config.json before starting.');
+  }
 
-    const encryptKey = await ask('  Encrypt Key (optional, for payload encryption) [press Enter to skip]: ');
-    if (encryptKey) {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      config.bot = config.bot || {};
-      config.bot.encrypt_key = encryptKey;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-      console.log('  ✓ Encrypt key saved to config.json');
-    }
+  const encryptKey = await ask('  Encrypt Key (optional, for payload encryption) [press Enter to skip]: ');
+  if (encryptKey) {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    config.bot = config.bot || {};
+    config.bot.encrypt_key = encryptKey;
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    console.log('  ✓ Encrypt key saved to config.json');
   }
 }
 

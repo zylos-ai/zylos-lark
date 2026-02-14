@@ -48,12 +48,6 @@ if (fs.existsSync(configPath)) {
       migrated = true;
       migrations.push('Added bot settings');
     }
-    // Clean up removed field
-    if (config.bot.verification_token !== undefined) {
-      delete config.bot.verification_token;
-      migrated = true;
-      migrations.push('Removed unused bot.verification_token');
-    }
 
     // Migration 4: Ensure owner structure
     if (!config.owner) {
