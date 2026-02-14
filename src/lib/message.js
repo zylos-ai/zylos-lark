@@ -18,7 +18,7 @@ async function getAccessToken() {
 
   const res = await axios({
     method: 'POST',
-    url: 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
+    url: 'https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal',
     headers: { 'Content-Type': 'application/json' },
     data: { app_id: creds.app_id, app_secret: creds.app_secret },
     proxy
@@ -141,7 +141,7 @@ export async function downloadImage(messageId, imageKey, savePath) {
 
     const res = await axios({
       method: 'GET',
-      url: `https://open.feishu.cn/open-apis/im/v1/messages/${messageId}/resources/${imageKey}?type=image`,
+      url: `https://open.larksuite.com/open-apis/im/v1/messages/${messageId}/resources/${imageKey}?type=image`,
       headers: { 'Authorization': 'Bearer ' + token },
       responseType: 'arraybuffer',
       proxy
@@ -172,7 +172,7 @@ export async function uploadImage(imagePath, imageType = 'message') {
 
     const res = await axios({
       method: 'POST',
-      url: 'https://open.feishu.cn/open-apis/im/v1/images',
+      url: 'https://open.larksuite.com/open-apis/im/v1/images',
       headers: {
         'Authorization': 'Bearer ' + token,
         ...form.getHeaders()
@@ -227,7 +227,7 @@ export async function downloadFile(messageId, fileKey, savePath) {
 
     const res = await axios({
       method: 'GET',
-      url: `https://open.feishu.cn/open-apis/im/v1/messages/${messageId}/resources/${fileKey}?type=file`,
+      url: `https://open.larksuite.com/open-apis/im/v1/messages/${messageId}/resources/${fileKey}?type=file`,
       headers: { 'Authorization': 'Bearer ' + token },
       responseType: 'arraybuffer',
       proxy
