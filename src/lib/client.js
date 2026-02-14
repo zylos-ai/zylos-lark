@@ -30,7 +30,7 @@ export function getClient() {
     appId: creds.app_id,
     appSecret: creds.app_secret,
     appType: lark.AppType.SelfBuild,
-    domain: lark.Domain.Feishu,  // Chinese version (feishu.cn)
+    domain: lark.Domain.Lark,  // International version (larksuite.com)
   });
 
   return clientInstance;
