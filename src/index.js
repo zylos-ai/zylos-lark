@@ -417,12 +417,33 @@ function isWhitelisted(userId, openId) {
   return allowedUsers.includes(userId) || (openId && allowedUsers.includes(openId));
 }
 
+// Dedup: track recently processed message_ids (TTL 5 minutes)
+const DEDUP_TTL = 5 * 60 * 1000;
+const processedMessages = new Map();
+
+function isDuplicate(messageId) {
+  if (!messageId) return false;
+  if (processedMessages.has(messageId)) {
+    console.log(`[lark] Duplicate message_id ${messageId}, skipping`);
+    return true;
+  }
+  processedMessages.set(messageId, Date.now());
+  // Cleanup old entries
+  if (processedMessages.size > 100) {
+    const now = Date.now();
+    for (const [id, ts] of processedMessages) {
+      if (now - ts > DEDUP_TTL) processedMessages.delete(id);
+    }
+  }
+  return false;
+}
+
 // Express app
 const app = express();
 app.use(express.json());
 
 // Webhook endpoint
-app.post('/webhook', async (req, res) => {
+app.post('/webhook', (req, res) => {
   console.log('[lark] Received webhook request');
 
   let event = req.body;
@@ -437,14 +458,16 @@ app.post('/webhook', async (req, res) => {
     }
   }
 
-  // Verify token if configured
+  // Verify token (required)
   const verificationToken = config.bot?.verification_token;
-  if (verificationToken) {
-    const eventToken = event.token || event.header?.token;
-    if (eventToken !== verificationToken) {
-      console.warn(`[lark] Verification token mismatch, rejecting request`);
-      return res.status(403).json({ error: 'Token verification failed' });
-    }
+  if (!verificationToken) {
+    console.error('[lark] verification_token not configured — rejecting request. Set bot.verification_token in config.json.');
+    return res.status(500).json({ error: 'Server misconfigured: verification_token missing' });
+  }
+  const eventToken = event.token || event.header?.token;
+  if (eventToken !== verificationToken) {
+    console.warn(`[lark] Verification token mismatch, rejecting request`);
+    return res.status(403).json({ error: 'Token verification failed' });
   }
 
   // URL Verification Challenge
@@ -453,162 +476,174 @@ app.post('/webhook', async (req, res) => {
     return res.json({ challenge: event.challenge });
   }
 
-  // Handle message event
+  // Respond immediately to prevent Lark retry (timeout ~15s)
+  res.json({ code: 0 });
+
+  // Handle message event asynchronously
   if (event.header?.event_type === 'im.message.receive_v1') {
-    const message = event.event.message;
-    const sender = event.event.sender;
-    const mentions = message.mentions;
+    const messageId = event.event?.message?.message_id;
+    if (isDuplicate(messageId)) return;
 
-    const senderUserId = sender.sender_id?.user_id;
-    const senderOpenId = sender.sender_id?.open_id;
-    const chatId = message.chat_id;
-    const messageId = message.message_id;
-    const chatType = message.chat_type;
+    handleMessageEvent(event).catch(err => {
+      console.error(`[lark] Error handling message: ${err.message}`);
+    });
+  }
+});
 
-    const { text, imageKey, fileKey, fileName } = extractMessageContent(message);
-    console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
+/**
+ * Process a message event asynchronously (after HTTP response sent).
+ */
+async function handleMessageEvent(event) {
+  const message = event.event.message;
+  const sender = event.event.sender;
+  const mentions = message.mentions;
 
-    // Build log text with file/image metadata for lazy download context
-    let logText = text;
-    if (imageKey) {
-      const imageInfo = `[image, image_key: ${imageKey}, msg_id: ${messageId}]`;
-      logText = logText ? `${logText}\n${imageInfo}` : imageInfo;
-    }
-    if (fileKey) {
-      const fileInfo = `[file: ${fileName}, file_key: ${fileKey}, msg_id: ${messageId}]`;
-      logText = logText ? `${logText}\n${fileInfo}` : fileInfo;
-    }
+  const senderUserId = sender.sender_id?.user_id;
+  const senderOpenId = sender.sender_id?.open_id;
+  const chatId = message.chat_id;
+  const messageId = message.message_id;
+  const chatType = message.chat_type;
 
-    // Log message (file metadata + mentions for name resolution in context)
-    logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions);
+  const { text, imageKey, fileKey, fileName } = extractMessageContent(message);
+  console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
 
-    // Private chat handling
-    if (chatType === 'p2p') {
-      // Auto-bind first private chat user as owner
-      if (!config.owner?.bound) {
-        await bindOwner(senderUserId, senderOpenId);
-      }
-
-      if (!isWhitelisted(senderUserId, senderOpenId)) {
-        console.log(`[lark] Private message from non-whitelisted user ${senderUserId}, ignoring`);
-        return res.json({ code: 0 });
-      }
-
-      const senderName = await resolveUserName(senderUserId);
-      const rejectReply = (errMsg) => {
-        sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
-      };
-
-      if (imageKey) {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const localPath = path.join(MEDIA_DIR, `lark-${timestamp}.png`);
-        const result = await downloadImage(messageId, imageKey, localPath);
-        if (result.success) {
-          const message = formatMessage('p2p', senderName, `[image]${text ? ' ' + text : ''}`, [], localPath);
-          sendToC4('lark', chatId, message, rejectReply);
-        } else {
-          const message = formatMessage('p2p', senderName, '[image download failed]');
-          sendToC4('lark', chatId, message, rejectReply);
-        }
-        return res.json({ code: 0 });
-      }
-
-      if (fileKey) {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const localPath = path.join(MEDIA_DIR, `lark-${timestamp}-${fileName}`);
-        const result = await downloadFile(messageId, fileKey, localPath);
-        if (result.success) {
-          const message = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath);
-          sendToC4('lark', chatId, message, rejectReply);
-        } else {
-          const message = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`);
-          sendToC4('lark', chatId, message, rejectReply);
-        }
-        return res.json({ code: 0 });
-      }
-
-      const message = formatMessage('p2p', senderName, text);
-      sendToC4('lark', chatId, message, rejectReply);
-      return res.json({ code: 0 });
-    }
-
-    // Group chat handling
-    if (chatType === 'group') {
-      const mentioned = isBotMentioned(mentions, botOpenId);
-      const isSmartGroup = (config.smart_groups || []).some(g => g.chat_id === chatId);
-      const allowedGroups = config.allowed_groups || [];
-      // When group_whitelist.enabled is true (default): only listed groups are allowed
-      // When group_whitelist.enabled is false: all groups are allowed (open mode)
-      // Owner is always allowed — checked separately below
-      const whitelistEnabled = config.group_whitelist?.enabled !== false;
-      const isAllowedGroup = whitelistEnabled
-        ? allowedGroups.some(g => g.chat_id === chatId)
-        : true;
-
-      // Smart groups: receive all messages
-      // Allowed groups (or open mode): respond to @mentions
-      // Non-allowed groups: log only
-      if (!isSmartGroup && !mentioned) {
-        console.log(`[lark] Group message without @mention, logged only`);
-        return res.json({ code: 0 });
-      }
-
-      // For non-smart groups, need @mention and permission check
-      if (!isSmartGroup) {
-        const senderIsOwner = isOwner(senderUserId, senderOpenId);
-
-        // Owner can @mention bot in any group
-        if (!isAllowedGroup && !senderIsOwner) {
-          console.log(`[lark] @mention in non-allowed group ${chatId}, ignoring`);
-          return res.json({ code: 0 });
-        }
-        if (!senderIsOwner && !isWhitelisted(senderUserId, senderOpenId)) {
-          console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
-          return res.json({ code: 0 });
-        }
-      }
-
-      console.log(`[lark] ${isSmartGroup ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
-      const contextMessages = getGroupContext(chatId, messageId);
-      updateCursor(chatId, messageId);
-
-      const senderName = await resolveUserName(senderUserId);
-      // Resolve mentions: replace @_user_N with real names, strip bot's @mention only
-      const cleanText = resolveMentions(text, mentions, { stripBot: true, botOpenId });
-      const groupRejectReply = (errMsg) => {
-        sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
-      };
-
-      if (imageKey) {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const localPath = path.join(MEDIA_DIR, `lark-group-${timestamp}.png`);
-        const result = await downloadImage(messageId, imageKey, localPath);
-        if (result.success) {
-          const message = formatMessage('group', senderName, `[image]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
-          sendToC4('lark', chatId, message, groupRejectReply);
-        }
-        return res.json({ code: 0 });
-      }
-
-      if (fileKey) {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const localPath = path.join(MEDIA_DIR, `lark-group-${timestamp}-${fileName}`);
-        const result = await downloadFile(messageId, fileKey, localPath);
-        if (result.success) {
-          const message = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
-          sendToC4('lark', chatId, message, groupRejectReply);
-        }
-        return res.json({ code: 0 });
-      }
-
-      const message = formatMessage('group', senderName, cleanText || text, contextMessages);
-      sendToC4('lark', chatId, message, groupRejectReply);
-      return res.json({ code: 0 });
-    }
+  // Build log text with file/image metadata for lazy download context
+  let logText = text;
+  if (imageKey) {
+    const imageInfo = `[image, image_key: ${imageKey}, msg_id: ${messageId}]`;
+    logText = logText ? `${logText}\n${imageInfo}` : imageInfo;
+  }
+  if (fileKey) {
+    const fileInfo = `[file: ${fileName}, file_key: ${fileKey}, msg_id: ${messageId}]`;
+    logText = logText ? `${logText}\n${fileInfo}` : fileInfo;
   }
 
-  res.json({ code: 0 });
-});
+  // Log message (file metadata + mentions for name resolution in context)
+  logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions);
+
+  // Private chat handling
+  if (chatType === 'p2p') {
+    // Auto-bind first private chat user as owner
+    if (!config.owner?.bound) {
+      await bindOwner(senderUserId, senderOpenId);
+    }
+
+    if (!isWhitelisted(senderUserId, senderOpenId)) {
+      console.log(`[lark] Private message from non-whitelisted user ${senderUserId}, ignoring`);
+      return;
+    }
+
+    const senderName = await resolveUserName(senderUserId);
+    const rejectReply = (errMsg) => {
+      sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+    };
+
+    if (imageKey) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const localPath = path.join(MEDIA_DIR, `lark-${timestamp}.png`);
+      const result = await downloadImage(messageId, imageKey, localPath);
+      if (result.success) {
+        const msg = formatMessage('p2p', senderName, `[image]${text ? ' ' + text : ''}`, [], localPath);
+        sendToC4('lark', chatId, msg, rejectReply);
+      } else {
+        const msg = formatMessage('p2p', senderName, '[image download failed]');
+        sendToC4('lark', chatId, msg, rejectReply);
+      }
+      return;
+    }
+
+    if (fileKey) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const localPath = path.join(MEDIA_DIR, `lark-${timestamp}-${fileName}`);
+      const result = await downloadFile(messageId, fileKey, localPath);
+      if (result.success) {
+        const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath);
+        sendToC4('lark', chatId, msg, rejectReply);
+      } else {
+        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`);
+        sendToC4('lark', chatId, msg, rejectReply);
+      }
+      return;
+    }
+
+    const msg = formatMessage('p2p', senderName, text);
+    sendToC4('lark', chatId, msg, rejectReply);
+    return;
+  }
+
+  // Group chat handling
+  if (chatType === 'group') {
+    const mentioned = isBotMentioned(mentions, botOpenId);
+    const isSmartGroup = (config.smart_groups || []).some(g => g.chat_id === chatId);
+    const allowedGroups = config.allowed_groups || [];
+    // When group_whitelist.enabled is true (default): only listed groups are allowed
+    // When group_whitelist.enabled is false: all groups are allowed (open mode)
+    // Owner is always allowed — checked separately below
+    const whitelistEnabled = config.group_whitelist?.enabled !== false;
+    const isAllowedGroup = whitelistEnabled
+      ? allowedGroups.some(g => g.chat_id === chatId)
+      : true;
+
+    // Smart groups: receive all messages
+    // Allowed groups (or open mode): respond to @mentions
+    // Non-allowed groups: log only
+    if (!isSmartGroup && !mentioned) {
+      console.log(`[lark] Group message without @mention, logged only`);
+      return;
+    }
+
+    // For non-smart groups, need @mention and permission check
+    if (!isSmartGroup) {
+      const senderIsOwner = isOwner(senderUserId, senderOpenId);
+
+      // Owner can @mention bot in any group
+      if (!isAllowedGroup && !senderIsOwner) {
+        console.log(`[lark] @mention in non-allowed group ${chatId}, ignoring`);
+        return;
+      }
+      if (!senderIsOwner && !isWhitelisted(senderUserId, senderOpenId)) {
+        console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
+        return;
+      }
+    }
+
+    console.log(`[lark] ${isSmartGroup ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
+    const contextMessages = getGroupContext(chatId, messageId);
+    updateCursor(chatId, messageId);
+
+    const senderName = await resolveUserName(senderUserId);
+    // Resolve mentions: replace @_user_N with real names, strip bot's @mention only
+    const cleanText = resolveMentions(text, mentions, { stripBot: true, botOpenId });
+    const groupRejectReply = (errMsg) => {
+      sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+    };
+
+    if (imageKey) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const localPath = path.join(MEDIA_DIR, `lark-group-${timestamp}.png`);
+      const result = await downloadImage(messageId, imageKey, localPath);
+      if (result.success) {
+        const msg = formatMessage('group', senderName, `[image]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
+        sendToC4('lark', chatId, msg, groupRejectReply);
+      }
+      return;
+    }
+
+    if (fileKey) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const localPath = path.join(MEDIA_DIR, `lark-group-${timestamp}-${fileName}`);
+      const result = await downloadFile(messageId, fileKey, localPath);
+      if (result.success) {
+        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath);
+        sendToC4('lark', chatId, msg, groupRejectReply);
+      }
+      return;
+    }
+
+    const msg = formatMessage('group', senderName, cleanText || text, contextMessages);
+    sendToC4('lark', chatId, msg, groupRejectReply);
+  }
+}
 
 // Health check
 app.get('/health', (req, res) => {
