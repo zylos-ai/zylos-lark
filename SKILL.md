@@ -32,7 +32,7 @@ config:
       description: "App Secret (same page as App ID)"
       sensitive: true
 
-next-steps: "After starting the service: 1) Read domain from ~/zylos/.zylos/config.json and tell user to configure webhook URL in the developer console — Feishu: open.feishu.cn/app, Lark: open.larksuite.com/app (Event Subscriptions → Request URL → https://{domain}/lark/webhook). 2) Ask if user wants to configure verification token (optional, from Event Subscriptions page) — if yes, write to config.bot.verification_token in ~/zylos/components/lark/config.json, then pm2 restart zylos-lark."
+next-steps: "BEFORE starting the service: 1) Ask user for their Verification Token (REQUIRED — from developer console Event Subscriptions page). Write to config.bot.verification_token in ~/zylos/components/lark/config.json. The service will refuse to start without it. 2) Optionally ask for Encrypt Key — if provided, write to config.bot.encrypt_key. 3) Read domain from ~/zylos/.zylos/config.json and tell user to configure webhook URL in the developer console — Feishu: open.feishu.cn/app, Lark: open.larksuite.com/app (Event Subscriptions → Request URL → https://{domain}/lark/webhook). 4) Start the service (pm2 restart zylos-lark)."
 
 http_routes:
   - path: /lark/webhook
@@ -165,9 +165,9 @@ In the Feishu/Lark developer console:
 
 ### 3. Event Security (Optional)
 
-Feishu/Lark provides two security mechanisms for webhook events. You can use either or both.
+Feishu/Lark provides two security mechanisms for webhook events.
 
-**Verification Token** — validates that requests come from Feishu/Lark:
+**Verification Token** (REQUIRED) — validates that requests come from Feishu/Lark. The service will refuse to start without it.
 
 In the console: Event subscriptions → Verification Token. Add to config:
 

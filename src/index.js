@@ -49,6 +49,12 @@ if (!config.enabled) {
   process.exit(0);
 }
 
+if (!config.bot?.verification_token) {
+  console.error(`[lark] ERROR: bot.verification_token is not configured.`);
+  console.error(`[lark] Set it in ~/zylos/components/lark/config.json (get from developer console → Event Subscriptions).`);
+  process.exit(1);
+}
+
 // Watch for config changes
 watchConfig((newConfig) => {
   console.log(`[lark] Config reloaded`);
@@ -437,14 +443,16 @@ app.post('/webhook', async (req, res) => {
     }
   }
 
-  // Verify token if configured
+  // Verify token (required)
   const verificationToken = config.bot?.verification_token;
-  if (verificationToken) {
-    const eventToken = event.token || event.header?.token;
-    if (eventToken !== verificationToken) {
-      console.warn(`[lark] Verification token mismatch, rejecting request`);
-      return res.status(403).json({ error: 'Token verification failed' });
-    }
+  if (!verificationToken) {
+    console.error('[lark] verification_token not configured — rejecting request. Set bot.verification_token in config.json.');
+    return res.status(500).json({ error: 'Server misconfigured: verification_token missing' });
+  }
+  const eventToken = event.token || event.header?.token;
+  if (eventToken !== verificationToken) {
+    console.warn(`[lark] Verification token mismatch, rejecting request`);
+    return res.status(403).json({ error: 'Token verification failed' });
   }
 
   // URL Verification Challenge

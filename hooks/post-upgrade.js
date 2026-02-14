@@ -44,15 +44,9 @@ if (fs.existsSync(configPath)) {
 
     // Migration 3: Ensure bot settings
     if (!config.bot) {
-      config.bot = { encrypt_key: '' };
+      config.bot = { encrypt_key: '', verification_token: '' };
       migrated = true;
       migrations.push('Added bot settings');
-    }
-    // Clean up removed field
-    if (config.bot.verification_token !== undefined) {
-      delete config.bot.verification_token;
-      migrated = true;
-      migrations.push('Removed unused bot.verification_token');
     }
 
     // Migration 4: Ensure owner structure
