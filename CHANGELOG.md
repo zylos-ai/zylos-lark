@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-02-15
+
+### Added
+- Webhook message_id dedup with 5-min TTL to prevent duplicate processing (#33)
+- Immediate HTTP 200 response before async message processing — prevents Lark timeout retries (#33)
+
+### Changed
+- Verification token is now REQUIRED — service refuses to start without it (#33)
+- Post-install prompts for verification token directly (no longer optional y/N gate) (#33)
+- Post-upgrade no longer deletes verification_token during migration (#33)
+
 ## [0.1.3] - 2026-02-14
 
 ### Changed
