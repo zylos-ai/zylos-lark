@@ -397,31 +397,31 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
     if (result.success) {
       _lazyLoadedContainers.add(containerId);
       if (result.messages.length > 0) {
-      // Sort by createTime to ensure chronological order
-      const msgs = result.messages.sort((a, b) => new Date(a.createTime) - new Date(b.createTime));
+        // Sort by createTime to ensure chronological order
+        const msgs = result.messages.sort((a, b) => new Date(a.createTime) - new Date(b.createTime));
 
-      for (const msg of msgs) {
-        const userName = await resolveUserName(msg.sender);
-        let text = msg.content;
-        if (msg.type === 'post' && typeof text === 'string') {
-          try {
-            const parsed = JSON.parse(text);
-            const content = parsed.content || [];
-            ({ text } = extractPostText(content, msg.id));
-          } catch { /* use raw content */ }
+        for (const msg of msgs) {
+          const userName = await resolveUserName(msg.sender);
+          let text = msg.content;
+          if (msg.type === 'post' && typeof text === 'string') {
+            try {
+              const parsed = JSON.parse(text);
+              const content = parsed.content || [];
+              ({ text } = extractPostText(content, msg.id));
+            } catch { /* use raw content */ }
+          }
+          if (msg.mentions && msg.mentions.length > 0) {
+            text = resolveMentions(text, msg.mentions);
+          }
+          recordHistoryEntry(containerId, {
+            timestamp: msg.createTime,
+            message_id: msg.id,
+            user_id: msg.sender,
+            user_name: userName,
+            text
+          });
         }
-        if (msg.mentions && msg.mentions.length > 0) {
-          text = resolveMentions(text, msg.mentions);
-        }
-        recordHistoryEntry(containerId, {
-          timestamp: msg.createTime,
-          message_id: msg.id,
-          user_id: msg.sender,
-          user_name: userName,
-          text
-        });
-      }
-      console.log(`[lark] Lazy-loaded ${msgs.length} messages for ${containerType} ${containerId}`);
+        console.log(`[lark] Lazy-loaded ${msgs.length} messages for ${containerType} ${containerId}`);
       }
       return getInMemoryContext(containerId, currentMessageId);
     }
