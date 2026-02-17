@@ -368,13 +368,13 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
     return getInMemoryContext(containerId, currentMessageId);
   }
 
-  _lazyLoadedContainers.add(containerId);
   try {
     const limit = containerType === 'thread'
       ? (config.message?.context_messages || DEFAULT_HISTORY_LIMIT)
       : getGroupHistoryLimit(containerId);
     const result = await listMessages(containerId, limit, 'desc', null, null, containerType);
     if (result.success && result.messages.length > 0) {
+      _lazyLoadedContainers.add(containerId);
       // Sort by createTime to ensure chronological order
       const msgs = result.messages.sort((a, b) => new Date(a.createTime) - new Date(b.createTime));
 
@@ -1104,6 +1104,11 @@ app.get('/health', (req, res) => {
 
 // Internal endpoint: record bot's outgoing messages into in-memory history
 app.post('/internal/record-outgoing', (req, res) => {
+  // Validate internal token (app_id) to prevent unauthorized injection
+  const token = req.headers['x-internal-token'];
+  if (!token || token !== botAppId) {
+    return res.status(403).json({ error: 'unauthorized' });
+  }
   const { chatId, threadId, text, messageId } = req.body || {};
   if (!text) return res.status(400).json({ error: 'missing text' });
   const entry = {

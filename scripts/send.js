@@ -276,7 +276,10 @@ async function recordOutgoing(text) {
   try {
     await fetch(`http://127.0.0.1:${port}/internal/record-outgoing`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Token': process.env.LARK_APP_ID || '',
+      },
       body
     });
   } catch { /* non-critical */ }
