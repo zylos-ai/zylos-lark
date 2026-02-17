@@ -103,13 +103,29 @@ export async function listMessages(chatId, limit = 20, sortType = 'desc', startT
     const res = await client.im.message.list({ params });
 
     if (res.code === 0) {
-      const messages = (res.data.items || []).map(msg => ({
-        id: msg.message_id,
-        type: msg.msg_type,
-        content: parseMessageContent(msg.body?.content, msg.msg_type),
-        sender: msg.sender?.id,
-        createTime: new Date(parseInt(msg.create_time)).toISOString(),
-      }));
+      const messages = (res.data.items || []).map(msg => {
+        const mentions = msg.mentions || [];
+        let content = parseMessageContent(msg.body?.content, msg.msg_type);
+
+        // Replace @_user_N placeholders with actual names
+        if (typeof content === 'string' && mentions.length > 0) {
+          for (const m of mentions) {
+            if (m.key && m.name) {
+              content = content.replace(m.key, `@${m.name}`);
+            }
+          }
+        }
+
+        return {
+          id: msg.message_id,
+          type: msg.msg_type,
+          content,
+          sender: msg.sender?.id,
+          senderType: msg.sender?.sender_type,
+          mentions: mentions.map(m => ({ key: m.key, id: m.id, name: m.name })),
+          createTime: new Date(parseInt(msg.create_time)).toISOString(),
+        };
+      });
 
       return { success: true, messages, hasMore: res.data.has_more };
     } else {
