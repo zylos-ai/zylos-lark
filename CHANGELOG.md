@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-02-17
+
+### Added
+- Thread context isolation: thread messages stored separately from group context (#37)
+- Lazy load fallback: fetch message history from API on first access after restart (#37)
+- Bot reply recording via `/internal/record-outgoing` endpoint with auth (#37)
+- Typing indicator with emoji reaction and auto-timeout (#37)
+- In-memory chat history with configurable limits per group (#37)
+- XML message format with structured tags (thread-context, group-context, current-message, replying-to) (#37)
+- Group policy system with per-group config (groupPolicy, allowed_from, history_limit) (#37)
+- Structured endpoint routing with metadata (type, root, parent, msg, thread) (#37)
+- Reply quoting: fetch quoted message content for context (#37)
+- Multiple image support with lazy download (#37)
+- User name cache with TTL (in-memory primary, file for cold start) (#37)
+- Permission error detection with owner notification (#37)
+- Markdown-aware message chunking (preserves code blocks) (#37)
+
+### Security
+- parseEndpoint key whitelist to prevent prototype pollution (#37)
+
+### Changed
+- Message dedup map now cleaned periodically via timer (#37)
+- Typing indicator retry with deferred cleanup on failure (#37)
+- Admin CLI: new group management commands (list-groups, add-group, set-group-policy, etc.) (#37)
+
 ## [0.1.4] - 2026-02-15
 
 ### Added
