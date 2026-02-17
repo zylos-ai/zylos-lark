@@ -34,14 +34,16 @@ export const DEFAULT_CONFIG = {
     private_users: [],
     group_users: []
   },
-  // Group whitelist (enabled by default for security)
-  group_whitelist: { enabled: true },
-  // Allowed groups (respond to @mentions)
-  // Format: [{chat_id: "oc_xxx", name: "Group Name", added_at: "ISO timestamp"}]
-  allowed_groups: [],
-  // Smart groups (receive all messages, no @mention needed)
-  // Format: [{chat_id: "oc_xxx", name: "Group Name", added_at: "ISO timestamp"}]
-  smart_groups: [],
+  // Group policy: 'open' (all groups), 'allowlist' (only configured groups), 'disabled' (no groups)
+  groupPolicy: 'allowlist',
+  // Per-group configuration map
+  // Format: { "oc_xxx": { name, mode, requireMention, allowFrom, historyLimit } }
+  // mode: "mention" (respond to @mentions) or "smart" (receive all messages)
+  groups: {},
+  // Legacy fields (kept for backward compatibility, migrated to groups on upgrade)
+  // group_whitelist: { enabled: true },
+  // allowed_groups: [],
+  // smart_groups: [],
   // Proxy settings (optional)
   proxy: {
     enabled: false,
@@ -64,7 +66,13 @@ export function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_PATH)) {
       const content = fs.readFileSync(CONFIG_PATH, 'utf8');
-      config = { ...DEFAULT_CONFIG, ...JSON.parse(content) };
+      const parsed = JSON.parse(content);
+      config = { ...DEFAULT_CONFIG, ...parsed };
+      // Runtime backward-compat: derive groupPolicy from legacy group_whitelist,
+      // but only if the file doesn't already have an explicit groupPolicy
+      if (config.group_whitelist !== undefined && !('groupPolicy' in parsed)) {
+        config.groupPolicy = config.group_whitelist?.enabled !== false ? 'allowlist' : 'open';
+      }
     } else {
       console.warn(`[lark] Config file not found: ${CONFIG_PATH}`);
       config = { ...DEFAULT_CONFIG };
