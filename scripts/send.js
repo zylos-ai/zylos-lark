@@ -41,6 +41,8 @@ const message = args.slice(1).join(' ');
  * Format: chatId|type:group|root:rootId|parent:parentId|msg:messageId|thread:threadId
  * Backward compatible: plain chatId without | works as before.
  */
+const ENDPOINT_KEYS = new Set(['type', 'root', 'parent', 'msg', 'thread']);
+
 function parseEndpoint(endpoint) {
   const parts = endpoint.split('|');
   const result = { chatId: parts[0] };
@@ -48,6 +50,7 @@ function parseEndpoint(endpoint) {
     const colonIdx = part.indexOf(':');
     if (colonIdx > 0) {
       const key = part.substring(0, colonIdx);
+      if (!ENDPOINT_KEYS.has(key)) continue;
       const value = part.substring(colonIdx + 1);
       result[key] = value;
     }
@@ -267,6 +270,11 @@ function markTypingDone(msgId) {
  * Notify index.js to record the bot's outgoing message into in-memory history.
  */
 async function recordOutgoing(text) {
+  const appId = process.env.LARK_APP_ID;
+  if (!appId) {
+    console.warn('[lark] Warning: LARK_APP_ID not set — record-outgoing will be rejected (403)');
+    return;
+  }
   const port = config.webhook_port || 3457;
   const body = JSON.stringify({
     chatId: parsedEndpoint.chatId,
@@ -278,7 +286,7 @@ async function recordOutgoing(text) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Internal-Token': process.env.LARK_APP_ID || '',
+        'X-Internal-Token': appId,
       },
       body
     });
