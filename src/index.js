@@ -303,6 +303,31 @@ function getInMemoryContext(chatId, currentMessageId) {
 }
 
 /**
+ * Pin the root message to the first position in thread context.
+ * If root was trimmed by the context limit, fetch it from the full history.
+ */
+function pinRootMessage(context, rootId, threadId) {
+  if (!rootId || !context) return context;
+  const result = [...context];
+  const rootIdx = result.findIndex(m => m.message_id === rootId);
+  if (rootIdx > 0) {
+    // Root exists but not first — move it
+    const [root] = result.splice(rootIdx, 1);
+    result.unshift(root);
+  } else if (rootIdx === -1) {
+    // Root was trimmed by limit — try to recover from full history
+    const fullHistory = chatHistories.get(threadId);
+    if (fullHistory) {
+      const rootEntry = fullHistory.find(m => m.message_id === rootId);
+      if (rootEntry) {
+        result.unshift(rootEntry);
+      }
+    }
+  }
+  return result;
+}
+
+/**
  * Get context with lazy load fallback.
  * If in-memory history is empty (e.g. after restart), fetch from API once.
  */
@@ -321,7 +346,9 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
       : getGroupHistoryLimit(containerId);
     const result = await listMessages(containerId, limit, 'desc', null, null, containerType);
     if (result.success && result.messages.length > 0) {
-      const msgs = result.messages.reverse();
+      // Sort by createTime to ensure chronological order
+      // (reverse of desc is usually correct, but thread root may be returned out of order)
+      const msgs = result.messages.sort((a, b) => new Date(a.createTime) - new Date(b.createTime));
       for (const msg of msgs) {
         const userName = await resolveUserName(msg.sender);
         let text = msg.content;
@@ -634,13 +661,21 @@ async function fetchQuotedMessage(messageId) {
 /**
  * Format message for C4 using XML-structured tags.
  */
-function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null, { quotedContent, threadContext } = {}) {
+function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null, { quotedContent, threadContext, threadRootId } = {}) {
   let prefix = chatType === 'p2p' ? '[Lark DM]' : '[Lark GROUP]';
   let parts = [`${prefix} ${userName} said: `];
 
   if (threadContext && threadContext.length > 0) {
-    const contextLines = threadContext.map(m => `[${m.user_name || m.user_id}]: ${m.text}`).join('\n');
-    parts.push(`<thread-context>\n${contextLines}\n</thread-context>\n\n`);
+    const lines = [];
+    for (const m of threadContext) {
+      const line = `[${m.user_name || m.user_id}]: ${m.text}`;
+      if (threadRootId && m.message_id === threadRootId) {
+        lines.push(`<thread-root>\n${line}\n</thread-root>`);
+      } else {
+        lines.push(line);
+      }
+    }
+    parts.push(`<thread-context>\n${lines.join('\n')}\n</thread-context>\n\n`);
   } else if (contextMessages.length > 0) {
     const contextLines = contextMessages.map(m => `[${m.user_name || m.user_id}]: ${m.text}`).join('\n');
     parts.push(`<group-context>\n${contextLines}\n</group-context>\n\n`);
@@ -784,8 +819,7 @@ async function handleMessageEvent(event) {
   const parentId = message.parent_id || null;
   const threadId = message.thread_id || null;
 
-  // Dedup check
-  if (isDuplicate(messageId)) return;
+  // Dedup is already checked in the webhook handler (line ~1013)
 
   const { text, imageKeys, fileKey, fileName } = extractMessageContent(message);
   console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
@@ -824,12 +858,17 @@ async function handleMessageEvent(event) {
 
     if (threadId) {
       threadContext = await getContextWithFallback(threadId, messageId, 'thread');
+      // Pin root message first in thread context
+      if (threadContext && rootId) {
+        threadContext = pinRootMessage(threadContext, rootId, threadId);
+      }
     } else if (parentId) {
       quotedContent = await fetchQuotedMessage(parentId);
     }
 
     const senderName = await resolveUserName(senderUserId);
     const cleanText = resolveMentions(text, mentions);
+    const threadRootId = threadId ? rootId : null;
     const rejectReply = (errMsg) => {
       removeTypingIndicator(messageId);
       sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
@@ -847,10 +886,10 @@ async function handleMessageEvent(event) {
       }
       if (mediaPaths.length > 0) {
         const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
-        const msg = formatMessage('p2p', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, [], mediaPaths[0], { quotedContent, threadContext });
+        const msg = formatMessage('p2p', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, [], mediaPaths[0], { quotedContent, threadContext, threadRootId });
         sendToC4('lark', endpoint, msg, rejectReply);
       } else {
-        const msg = formatMessage('p2p', senderName, '[image download failed]', [], null, { quotedContent, threadContext });
+        const msg = formatMessage('p2p', senderName, '[image download failed]', [], null, { quotedContent, threadContext, threadRootId });
         sendToC4('lark', endpoint, msg, rejectReply);
       }
       return;
@@ -861,16 +900,16 @@ async function handleMessageEvent(event) {
       const localPath = path.join(MEDIA_DIR, `lark-${timestamp}-${fileName}`);
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
-        const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath, { quotedContent, threadContext });
+        const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath, { quotedContent, threadContext, threadRootId });
         sendToC4('lark', endpoint, msg, rejectReply);
       } else {
-        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent, threadContext });
+        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent, threadContext, threadRootId });
         sendToC4('lark', endpoint, msg, rejectReply);
       }
       return;
     }
 
-    const msg = formatMessage('p2p', senderName, cleanText, [], null, { quotedContent, threadContext });
+    const msg = formatMessage('p2p', senderName, cleanText, [], null, { quotedContent, threadContext, threadRootId });
     sendToC4('lark', endpoint, msg, rejectReply);
     return;
   }
@@ -917,12 +956,17 @@ async function handleMessageEvent(event) {
 
     if (threadId) {
       threadContext = await getContextWithFallback(threadId, messageId, 'thread');
+      // Pin root message first in thread context
+      if (threadContext && rootId) {
+        threadContext = pinRootMessage(threadContext, rootId, threadId);
+      }
     } else if (parentId) {
       quotedContent = await fetchQuotedMessage(parentId);
     }
 
     const senderName = await resolveUserName(senderUserId);
     const cleanText = resolveMentions(text, mentions);
+    const threadRootId = threadId ? rootId : null;
     const groupRejectReply = (errMsg) => {
       removeTypingIndicator(messageId);
       sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
@@ -940,7 +984,7 @@ async function handleMessageEvent(event) {
       }
       if (mediaPaths.length > 0) {
         const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
-        const msg = formatMessage('group', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, contextMessages, mediaPaths[0], { quotedContent, threadContext });
+        const msg = formatMessage('group', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, contextMessages, mediaPaths[0], { quotedContent, threadContext, threadRootId });
         sendToC4('lark', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
@@ -953,7 +997,7 @@ async function handleMessageEvent(event) {
       const localPath = path.join(MEDIA_DIR, `lark-group-${timestamp}-${fileName}`);
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
-        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, { quotedContent, threadContext });
+        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, { quotedContent, threadContext, threadRootId });
         sendToC4('lark', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
@@ -961,7 +1005,7 @@ async function handleMessageEvent(event) {
       return;
     }
 
-    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, { quotedContent, threadContext });
+    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, { quotedContent, threadContext, threadRootId });
     sendToC4('lark', endpoint, msg, groupRejectReply);
   }
 }
