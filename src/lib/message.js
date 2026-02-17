@@ -146,6 +146,7 @@ export async function listMessages(chatId, limit = 20, sortType = 'desc', startT
       container_id: chatId,
       page_size: Math.min(limit, 50),
       sort_type: sortType === 'asc' ? 'ByCreateTimeAsc' : 'ByCreateTimeDesc',
+      user_id_type: 'open_id',
     };
 
     if (startTime) params.start_time = String(startTime);
@@ -159,6 +160,7 @@ export async function listMessages(chatId, limit = 20, sortType = 'desc', startT
         type: msg.msg_type,
         content: parseMessageContent(msg.body?.content, msg.msg_type),
         sender: msg.sender?.id,
+        senderType: msg.sender?.sender_type,
         createTime: new Date(parseInt(msg.create_time)).toISOString(),
         mentions: msg.mentions || [],
       }));

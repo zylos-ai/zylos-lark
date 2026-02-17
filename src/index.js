@@ -18,6 +18,7 @@ dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials } from './lib/config.js';
 import { downloadImage, downloadFile, sendMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
+import { listChatMembers } from './lib/chat.js';
 import { getBotInfo } from './lib/client.js';
 
 // C4 receive interface path
@@ -26,6 +27,7 @@ const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge
 // Bot identity (fetched at startup)
 let botOpenId = '';
 let botAppName = '';
+let botAppId = '';
 
 // Initialize
 console.log(`[lark] Starting...`);
@@ -328,15 +330,42 @@ function pinRootMessage(context, rootId, threadId) {
 }
 
 /**
+ * Pre-populate user name cache from group member list.
+ * Uses im.chat.members API which returns names for ALL members including cross-tenant.
+ */
+const _preloadedGroups = new Set();
+
+async function preloadGroupMembers(chatId) {
+  if (_preloadedGroups.has(chatId)) return;
+  _preloadedGroups.add(chatId);
+  try {
+    const result = await listChatMembers(chatId);
+    if (result.success && result.members) {
+      const now = Date.now();
+      let count = 0;
+      for (const member of result.members) {
+        if (member.memberId && member.name && !userCacheMemory.has(member.memberId)) {
+          userCacheMemory.set(member.memberId, { name: member.name, expireAt: now + SENDER_NAME_TTL });
+          _userCacheDirty = true;
+          count++;
+        }
+      }
+      console.log(`[lark] Preloaded ${count} member names for group ${chatId}`);
+    }
+  } catch (err) {
+    console.log(`[lark] Failed to preload group members for ${chatId}: ${err.message}`);
+  }
+}
+
+/**
  * Get context with lazy load fallback.
  * If in-memory history is empty (e.g. after restart), fetch from API once.
  */
 const _lazyLoadedContainers = new Set();
 
 async function getContextWithFallback(containerId, currentMessageId, containerType = 'chat') {
-  const context = getInMemoryContext(containerId, currentMessageId);
-  if (context.length > 0 || _lazyLoadedContainers.has(containerId)) {
-    return context;
+  if (_lazyLoadedContainers.has(containerId)) {
+    return getInMemoryContext(containerId, currentMessageId);
   }
 
   _lazyLoadedContainers.add(containerId);
@@ -347,8 +376,8 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
     const result = await listMessages(containerId, limit, 'desc', null, null, containerType);
     if (result.success && result.messages.length > 0) {
       // Sort by createTime to ensure chronological order
-      // (reverse of desc is usually correct, but thread root may be returned out of order)
       const msgs = result.messages.sort((a, b) => new Date(a.createTime) - new Date(b.createTime));
+
       for (const msg of msgs) {
         const userName = await resolveUserName(msg.sender);
         let text = msg.content;
@@ -376,16 +405,16 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
   } catch (err) {
     console.log(`[lark] Lazy-load failed for ${containerType} ${containerId}: ${err.message}`);
   }
-  return context;
+  return getInMemoryContext(containerId, currentMessageId);
 }
 
 // Resolve user_id to name (with TTL-based in-memory cache)
 async function resolveUserName(userId) {
   if (!userId) return 'unknown';
 
-  // Recognize bot's own messages (open_id or app_id prefix)
+  // Recognize bot's own messages (exact open_id or app_id match)
   if (botOpenId && userId === botOpenId) return botAppName || 'bot';
-  if (userId.startsWith('cli_')) return botAppName || 'bot';
+  if (botAppId && userId === botAppId) return botAppName || 'bot';
 
   const now = Date.now();
   const cached = userCacheMemory.get(userId);
@@ -949,6 +978,8 @@ async function handleMessageEvent(event) {
     }
 
     console.log(`[lark] ${smart ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
+    // Pre-populate member names (cross-tenant users + bots) before building context
+    await preloadGroupMembers(chatId);
     const contextMessages = await getGroupContext(chatId, messageId);
     updateCursor(chatId, messageId);
 
@@ -1111,12 +1142,18 @@ if (!config.bot?.verification_token) {
 const PORT = config.webhook_port || 3457;
 
 (async () => {
+  // Store app_id for exact bot identification
+  try {
+    const creds = getCredentials();
+    botAppId = creds.app_id || '';
+  } catch {}
+
   try {
     const botInfo = await getBotInfo();
     if (botInfo.success) {
       botOpenId = botInfo.open_id;
       botAppName = botInfo.app_name || 'bot';
-      console.log(`[lark] Bot identity: ${botAppName} (${botOpenId})`);
+      console.log(`[lark] Bot identity: ${botAppName} (${botOpenId}, ${botAppId})`);
     } else {
       console.error(`[lark] Warning: Could not fetch bot info: ${botInfo.message}`);
       console.error('[lark] @mention detection in groups will not work');
