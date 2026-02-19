@@ -494,9 +494,10 @@ async function logMessage(chatType, chatId, userId, openId, text, messageId, tim
   };
   const logLine = JSON.stringify(logEntry) + '\n';
 
-  // File log for audit
+  // File log for audit — per thread when applicable
   const logId = chatType === 'p2p' ? userId : chatId;
-  const logFile = path.join(LOGS_DIR, `${logId}.log`);
+  const logFileName = threadId ? `${logId}_t_${threadId}.log` : `${logId}.log`;
+  const logFile = path.join(LOGS_DIR, logFileName);
   fs.appendFileSync(logFile, logLine);
 
   // In-memory history for context (group chats and threads)
