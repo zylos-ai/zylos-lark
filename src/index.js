@@ -994,6 +994,10 @@ function isWhitelisted(userId, openId) {
  * Handle im.message.receive_v1 event.
  */
 async function handleMessageEvent(event) {
+  if (!event.event?.message || !event.event?.sender) {
+    console.warn('[lark] Malformed message event: missing event.message or event.sender');
+    return;
+  }
   const message = event.event.message;
   const sender = event.event.sender;
   const mentions = message.mentions;
