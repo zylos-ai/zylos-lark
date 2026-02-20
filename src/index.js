@@ -1422,7 +1422,7 @@ async function startServerWithRetry(port, maxRetries = MAX_LISTEN_RETRIES) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const started = await new Promise((resolve, reject) => {
-        const srv = app.listen(port, () => {
+        const srv = app.listen(port, '127.0.0.1', () => {
           srv.off('error', onError);
           resolve(srv);
         });
@@ -1471,7 +1471,7 @@ async function startServerWithRetry(port, maxRetries = MAX_LISTEN_RETRIES) {
   server.on('error', (err) => {
     console.error(`[lark] Server error: ${err.message}`);
   });
-  console.log(`[lark] Webhook server running on port ${PORT}`);
+  console.log(`[lark] Webhook server running on 127.0.0.1:${PORT}`);
 })().catch((err) => {
   console.error(`[lark] Fatal startup error: ${err.message}`);
   process.exit(1);
