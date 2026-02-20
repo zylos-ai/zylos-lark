@@ -8,21 +8,23 @@
 import dotenv from 'dotenv';
 import express from 'express';
 import crypto from 'crypto';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 // Load .env from ~/zylos/.env (absolute path, not cwd-dependent)
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
-import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials } from './lib/config.js';
-import { downloadImage, downloadFile, sendMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
+import { getConfig, watchConfig, saveConfig, stopWatching, DATA_DIR, getCredentials } from './lib/config.js';
+import { downloadImage, downloadFile, sendMessage, replyToMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
 import { getBotInfo } from './lib/client.js';
 
 // C4 receive interface path
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
+const INTERNAL_TOKEN = crypto.randomBytes(24).toString('hex');
+process.env.LARK_INTERNAL_TOKEN = INTERNAL_TOKEN;
 
 // Bot identity (fetched at startup)
 let botOpenId = '';
@@ -67,7 +69,7 @@ function isDuplicate(messageId) {
 }
 
 // Periodic cleanup of expired dedup entries (avoids accumulation in low-traffic chats)
-setInterval(() => {
+const dedupCleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [id, ts] of processedMessages) {
     if (now - ts > DEDUP_TTL) processedMessages.delete(id);
@@ -104,7 +106,18 @@ function loadCursors() {
 }
 
 function saveCursors(cursors) {
-  fs.writeFileSync(CURSORS_PATH, JSON.stringify(cursors, null, 2));
+  const tmpPath = CURSORS_PATH + '.tmp';
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(cursors, null, 2));
+    fs.renameSync(tmpPath, CURSORS_PATH);
+    return true;
+  } catch (err) {
+    console.log(`[lark] Failed to save cursors: ${err.message}`);
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+    return false;
+  }
 }
 
 // ============================================================
@@ -217,7 +230,7 @@ function checkTypingDoneMarkers() {
 }
 
 // Poll for typing-done markers every 2 seconds
-setInterval(checkTypingDoneMarkers, 2000);
+const typingCheckInterval = setInterval(checkTypingDoneMarkers, 2000);
 
 // ============================================================
 // Permission error tracking (cooldown to avoid spam)
@@ -272,20 +285,26 @@ function loadUserCacheFromFile() {
 let _userCacheDirty = false;
 function persistUserCache() {
   if (!_userCacheDirty) return;
-  _userCacheDirty = false;
   const obj = {};
   for (const [userId, entry] of userCacheMemory) {
     obj[userId] = entry.name;
   }
+  const tmpPath = USER_CACHE_PATH + '.tmp';
   try {
-    fs.writeFileSync(USER_CACHE_PATH, JSON.stringify(obj, null, 2));
+    fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2));
+    fs.renameSync(tmpPath, USER_CACHE_PATH);
+    _userCacheDirty = false;
   } catch (err) {
+    _userCacheDirty = true;
     console.log(`[lark] Failed to persist user cache: ${err.message}`);
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
   }
 }
 
 // Persist cache every 5 minutes
-setInterval(persistUserCache, 5 * 60 * 1000);
+const userCachePersistInterval = setInterval(persistUserCache, 5 * 60 * 1000);
 
 // Load file cache on startup
 loadUserCacheFromFile();
@@ -395,7 +414,6 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
       : getGroupHistoryLimit(containerId);
     const result = await listMessages(containerId, limit, 'desc', null, null, containerType);
     if (result.success) {
-      _lazyLoadedContainers.add(containerId);
       if (result.messages.length > 0) {
         // Sort by createTime to ensure chronological order
         const msgs = result.messages.sort((a, b) => new Date(a.createTime) - new Date(b.createTime));
@@ -423,6 +441,7 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
         }
         console.log(`[lark] Lazy-loaded ${msgs.length} messages for ${containerType} ${containerId}`);
       }
+      _lazyLoadedContainers.add(containerId);
       return getInMemoryContext(containerId, currentMessageId);
     }
   } catch (err) {
@@ -518,7 +537,9 @@ async function getGroupContext(chatId, currentMessageId) {
 
 function updateCursor(chatId, messageId) {
   groupCursors[chatId] = messageId;
-  saveCursors(groupCursors);
+  if (!saveCursors(groupCursors)) {
+    console.log('[lark] Cursor persistence failed');
+  }
 }
 
 // ============================================================
@@ -548,6 +569,7 @@ function isGroupAllowed(chatId) {
 }
 
 function isSmartGroup(chatId) {
+  if ((config.groupPolicy || 'allowlist') === 'disabled') return false;
   const groupConfig = resolveGroupConfig(chatId);
   if (groupConfig) {
     return groupConfig.mode === 'smart' || groupConfig.requireMention === false;
@@ -570,6 +592,16 @@ function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) {
 function getGroupHistoryLimit(chatId) {
   const groupConfig = resolveGroupConfig(chatId);
   return groupConfig?.historyLimit || config.message?.context_messages || DEFAULT_HISTORY_LIMIT;
+}
+
+function getGroupName(chatId) {
+  const groupConfig = resolveGroupConfig(chatId);
+  if (groupConfig?.name) return groupConfig.name;
+  const legacyAllowed = (config.allowed_groups || []).find(g => String(g.chat_id) === String(chatId));
+  if (legacyAllowed?.name) return legacyAllowed.name;
+  const legacySmart = (config.smart_groups || []).find(g => String(g.chat_id) === String(chatId));
+  if (legacySmart?.name) return legacySmart.name;
+  return String(chatId || 'unknown');
 }
 
 // Check if bot is mentioned
@@ -620,10 +652,15 @@ function sendToC4(source, endpoint, content, onReject) {
     console.error('[lark] sendToC4 called with empty content');
     return;
   }
-  const safeContent = content.replace(/'/g, "'\\''");
-  const cmd = `node "${C4_RECEIVE}" --channel "${source}" --endpoint "${endpoint}" --json --content '${safeContent}'`;
+  const args = [
+    C4_RECEIVE,
+    '--channel', source,
+    '--endpoint', endpoint,
+    '--json',
+    '--content', content
+  ];
 
-  exec(cmd, { encoding: 'utf8' }, (error, stdout) => {
+  execFile('node', args, { encoding: 'utf8', timeout: 35000 }, (error, stdout) => {
     if (!error) {
       console.log(`[lark] Sent to C4: ${content.substring(0, 50)}...`);
       return;
@@ -636,7 +673,7 @@ function sendToC4(source, endpoint, content, onReject) {
     }
     console.warn(`[lark] C4 send failed, retrying in 2s: ${error.message}`);
     setTimeout(() => {
-      exec(cmd, { encoding: 'utf8' }, (retryError, retryStdout) => {
+      execFile('node', args, { encoding: 'utf8', timeout: 35000 }, (retryError, retryStdout) => {
         if (!retryError) {
           console.log(`[lark] Sent to C4 (retry): ${content.substring(0, 50)}...`);
           return;
@@ -714,14 +751,35 @@ async function fetchQuotedMessage(messageId) {
 /**
  * Format message for C4 using XML-structured tags.
  */
-function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null, { quotedContent, threadContext, threadRootId } = {}) {
-  let prefix = chatType === 'p2p' ? '[Lark DM]' : '[Lark GROUP]';
-  let parts = [`${prefix} ${userName} said: `];
+function escapeXml(text) {
+  if (text === undefined || text === null) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/'/g, '&apos;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatMessage(
+  chatType,
+  userName,
+  text,
+  contextMessages = [],
+  mediaPath = null,
+  { quotedContent, threadContext, threadRootId, groupName, smartHint } = {}
+) {
+  const prefix = chatType === 'p2p'
+    ? '[Lark DM]'
+    : `[Lark GROUP:${escapeXml(groupName || 'unknown')}]`;
+  const safeUserName = escapeXml(userName);
+  const safeText = escapeXml(text);
+  let parts = [`${prefix} ${safeUserName} said: `];
 
   if (threadContext && threadContext.length > 0) {
     const lines = [];
     for (const m of threadContext) {
-      const line = `[${m.user_name || m.user_id}]: ${m.text}`;
+      const line = `[${escapeXml(m.user_name || m.user_id)}]: ${escapeXml(m.text)}`;
       if (threadRootId && m.message_id === threadRootId) {
         lines.push(`<thread-root>\n${line}\n</thread-root>`);
       } else {
@@ -730,22 +788,30 @@ function formatMessage(chatType, userName, text, contextMessages = [], mediaPath
     }
     parts.push(`<thread-context>\n${lines.join('\n')}\n</thread-context>\n\n`);
   } else if (contextMessages.length > 0) {
-    const contextLines = contextMessages.map(m => `[${m.user_name || m.user_id}]: ${m.text}`).join('\n');
+    const contextLines = contextMessages
+      .map(m => `[${escapeXml(m.user_name || m.user_id)}]: ${escapeXml(m.text)}`)
+      .join('\n');
     parts.push(`<group-context>\n${contextLines}\n</group-context>\n\n`);
   }
 
   if (quotedContent && !threadContext) {
-    const sender = quotedContent.sender || 'unknown';
-    const quoted = quotedContent.text || '';
+    const sender = escapeXml(quotedContent.sender || 'unknown');
+    const quoted = escapeXml(quotedContent.text || '');
     parts.push(`<replying-to>\n[${sender}]: ${quoted}\n</replying-to>\n\n`);
   }
 
-  parts.push(`<current-message>\n${text}\n</current-message>`);
+  if (smartHint) {
+    parts.push(`<smart-mode>
+Decide whether to respond. Reply with exactly [SKIP] when a response is unnecessary.
+</smart-mode>\n\n`);
+  }
+
+  parts.push(`<current-message>\n${safeText}\n</current-message>`);
 
   let message = parts.join('');
 
   if (mediaPath) {
-    message += ` ---- file: ${mediaPath}`;
+    message += ` ---- file: ${escapeXml(mediaPath)}`;
   }
 
   return message;
@@ -830,13 +896,18 @@ function extractMessageContent(message) {
 // Bind owner (first private chat user)
 async function bindOwner(userId, openId) {
   const userName = await resolveUserName(userId);
+  const previousOwner = config.owner;
   config.owner = {
     bound: true,
     user_id: userId,
     open_id: openId,
     name: userName
   };
-  saveConfig(config);
+  if (!saveConfig(config)) {
+    config.owner = previousOwner;
+    console.error('[lark] Failed to persist owner binding');
+    return null;
+  }
   console.log(`[lark] Owner bound: ${userName} (${userId})`);
   return userName;
 }
@@ -844,7 +915,7 @@ async function bindOwner(userId, openId) {
 // Check if user is owner
 function isOwner(userId, openId) {
   if (!config.owner?.bound) return false;
-  return config.owner.user_id === userId || config.owner.open_id === openId;
+  return String(config.owner.user_id) === String(userId) || String(config.owner.open_id) === String(openId);
 }
 
 // Check whitelist
@@ -888,8 +959,6 @@ async function handleMessageEvent(event) {
     logText = logText ? `${logText}\n${fileInfo}` : fileInfo;
   }
 
-  logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
-
   // Build structured endpoint with routing metadata
   const endpoint = buildEndpoint(chatId, { chatType, rootId, parentId, messageId, threadId });
 
@@ -899,7 +968,8 @@ async function handleMessageEvent(event) {
   // Private chat handling
   if (chatType === 'p2p') {
     if (!config.owner?.bound) {
-      await bindOwner(senderUserId, senderOpenId);
+      const boundOwner = await bindOwner(senderUserId, senderOpenId);
+      if (!boundOwner) return;
     }
 
     if (!isWhitelisted(senderUserId, senderOpenId)) {
@@ -907,6 +977,7 @@ async function handleMessageEvent(event) {
       return;
     }
 
+    await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
     addTypingIndicator(messageId);
 
     if (threadId) {
@@ -924,7 +995,13 @@ async function handleMessageEvent(event) {
     const threadRootId = threadId ? rootId : null;
     const rejectReply = (errMsg) => {
       removeTypingIndicator(messageId);
-      sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+      const rejectTarget = parentId || rootId || (threadId ? messageId : null);
+      if (rejectTarget) {
+        replyToMessage(rejectTarget, errMsg)
+          .catch(() => sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message)));
+      } else {
+        sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+      }
     };
 
     if (imageKeys.length > 0) {
@@ -970,36 +1047,39 @@ async function handleMessageEvent(event) {
   // Group chat handling
   if (chatType === 'group') {
     const mentioned = isBotMentioned(mentions, botOpenId);
+    const senderIsOwner = isOwner(senderUserId, senderOpenId);
+    const groupPolicy = config.groupPolicy || 'allowlist';
+    if (groupPolicy === 'disabled') {
+      console.log(`[lark] Group policy disabled, ignoring group message from ${senderUserId}`);
+      return;
+    }
+    const allowedGroup = isGroupAllowed(chatId);
     const smart = isSmartGroup(chatId);
 
-    if (!isGroupAllowed(chatId)) {
-      const senderIsOwner = isOwner(senderUserId, senderOpenId);
-      if (!senderIsOwner) {
-        console.log(`[lark] Group ${chatId} not allowed by policy, ignoring`);
-        return;
-      }
+    if (!allowedGroup && !(senderIsOwner && mentioned)) {
+      console.log(`[lark] Group ${chatId} not allowed by policy, ignoring`);
+      return;
+    }
+
+    if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) && !senderIsOwner) {
+      console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
+      return;
     }
 
     if (!smart && !mentioned) {
+      if (allowedGroup) {
+        await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
+      }
       console.log(`[lark] Group message without @mention, logged only`);
       return;
     }
 
-    if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId)) {
-      const senderIsOwner = isOwner(senderUserId, senderOpenId);
-      if (!senderIsOwner) {
-        console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
-        return;
-      }
+    if (!smart && !senderIsOwner && !isWhitelisted(senderUserId, senderOpenId)) {
+      console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
+      return;
     }
 
-    if (!smart) {
-      const senderIsOwner = isOwner(senderUserId, senderOpenId);
-      if (!senderIsOwner && !isWhitelisted(senderUserId, senderOpenId)) {
-        console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
-        return;
-      }
-    }
+    await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
 
     console.log(`[lark] ${smart ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
     // Pre-populate member names (cross-tenant users + bots) before building context
@@ -1007,7 +1087,10 @@ async function handleMessageEvent(event) {
     const contextMessages = await getGroupContext(chatId, messageId);
     updateCursor(chatId, messageId);
 
-    addTypingIndicator(messageId);
+    const smartNoMention = smart && !mentioned;
+    if (!smartNoMention) {
+      addTypingIndicator(messageId);
+    }
 
     if (threadId) {
       threadContext = await getContextWithFallback(threadId, messageId, 'thread');
@@ -1022,12 +1105,33 @@ async function handleMessageEvent(event) {
     const senderName = await resolveUserName(senderUserId);
     const cleanText = resolveMentions(text, mentions);
     const threadRootId = threadId ? rootId : null;
+    const groupName = getGroupName(chatId);
     const groupRejectReply = (errMsg) => {
       removeTypingIndicator(messageId);
-      sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+      const rejectTarget = parentId || rootId || (threadId ? messageId : null);
+      if (rejectTarget) {
+        replyToMessage(rejectTarget, errMsg)
+          .catch(() => sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message)));
+      } else {
+        sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+      }
     };
 
     if (imageKeys.length > 0) {
+      if (smartNoMention) {
+        const imageMetadata = imageKeys.map(imgKey => `[image, image_key: ${imgKey}, msg_id: ${messageId}]`).join('\n');
+        const smartText = cleanText ? `${cleanText}\n${imageMetadata}` : `[sent image]\n${imageMetadata}`;
+        const msg = formatMessage('group', senderName, smartText, contextMessages, null, {
+          quotedContent,
+          threadContext,
+          threadRootId,
+          groupName,
+          smartHint: true
+        });
+        sendToC4('lark', endpoint, msg, groupRejectReply);
+        return;
+      }
+
       const mediaPaths = [];
       for (const imgKey of imageKeys) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1039,7 +1143,13 @@ async function handleMessageEvent(event) {
       }
       if (mediaPaths.length > 0) {
         const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
-        const msg = formatMessage('group', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, contextMessages, mediaPaths[0], { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('group', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, contextMessages, mediaPaths[0], {
+          quotedContent,
+          threadContext,
+          threadRootId,
+          groupName,
+          smartHint: false
+        });
         sendToC4('lark', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
@@ -1048,11 +1158,31 @@ async function handleMessageEvent(event) {
     }
 
     if (fileKey) {
+      if (smartNoMention) {
+        const fileMetadata = `[file: ${fileName}, file_key: ${fileKey}, msg_id: ${messageId}]`;
+        const smartText = cleanText ? `${cleanText}\n${fileMetadata}` : `[sent file]\n${fileMetadata}`;
+        const msg = formatMessage('group', senderName, smartText, contextMessages, null, {
+          quotedContent,
+          threadContext,
+          threadRootId,
+          groupName,
+          smartHint: true
+        });
+        sendToC4('lark', endpoint, msg, groupRejectReply);
+        return;
+      }
+
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const localPath = path.join(MEDIA_DIR, `lark-group-${timestamp}-${fileName}`);
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
-        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, {
+          quotedContent,
+          threadContext,
+          threadRootId,
+          groupName,
+          smartHint: false
+        });
         sendToC4('lark', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
@@ -1060,7 +1190,13 @@ async function handleMessageEvent(event) {
       return;
     }
 
-    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, { quotedContent, threadContext, threadRootId });
+    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, {
+      quotedContent,
+      threadContext,
+      threadRootId,
+      groupName,
+      smartHint: smartNoMention
+    });
     sendToC4('lark', endpoint, msg, groupRejectReply);
   }
 }
@@ -1128,9 +1264,9 @@ app.get('/health', (req, res) => {
 
 // Internal endpoint: record bot's outgoing messages into in-memory history
 app.post('/internal/record-outgoing', (req, res) => {
-  // Validate internal token (app_id) to prevent unauthorized injection
+  // Validate random startup token to prevent unauthorized injection
   const token = req.headers['x-internal-token'];
-  if (!token || token !== botAppId) {
+  if (!token || token !== INTERNAL_TOKEN) {
     return res.status(403).json({ error: 'unauthorized' });
   }
   const { chatId, threadId, text, messageId } = req.body || {};
@@ -1150,10 +1286,36 @@ app.post('/internal/record-outgoing', (req, res) => {
   res.json({ ok: true });
 });
 
+let server = null;
+let isShuttingDown = false;
+
 // Graceful shutdown
 function shutdown() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
   console.log(`[lark] Shutting down...`);
-  process.exit(0);
+  clearInterval(dedupCleanupInterval);
+  clearInterval(typingCheckInterval);
+  clearInterval(userCachePersistInterval);
+  persistUserCache();
+  stopWatching();
+
+  const clearTypingPromises = [];
+  for (const [messageId, state] of activeTypingIndicators) {
+    clearTimeout(state.timer);
+    clearTypingPromises.push(removeReaction(messageId, state.reactionId).catch(() => {}));
+  }
+  activeTypingIndicators.clear();
+
+  const finishExit = () => process.exit(0);
+  const closeServer = () => {
+    if (!server) return finishExit();
+    server.close(() => finishExit());
+    setTimeout(finishExit, 2000).unref();
+  };
+
+  Promise.allSettled(clearTypingPromises)
+    .finally(closeServer);
 }
 
 process.on('SIGINT', shutdown);
@@ -1169,6 +1331,35 @@ if (!config.bot?.verification_token) {
 
 // Fetch bot identity then start server
 const PORT = config.webhook_port || 3457;
+const MAX_LISTEN_RETRIES = 5;
+
+async function startServerWithRetry(port, maxRetries = MAX_LISTEN_RETRIES) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const started = await new Promise((resolve, reject) => {
+        const srv = app.listen(port, () => {
+          srv.off('error', onError);
+          resolve(srv);
+        });
+        const onError = (err) => {
+          srv.off('error', onError);
+          reject(err);
+        };
+        srv.once('error', onError);
+      });
+      return started;
+    } catch (err) {
+      if (err.code === 'EADDRINUSE' && attempt < maxRetries) {
+        const delay = attempt * 1000;
+        console.error(`[lark] Port ${port} in use (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(`Failed to bind port ${port} after ${maxRetries} attempts`);
+}
 
 (async () => {
   // Store app_id for exact bot identification
@@ -1191,7 +1382,12 @@ const PORT = config.webhook_port || 3457;
     console.error(`[lark] Warning: getBotInfo failed: ${err.message}`);
   }
 
-  app.listen(PORT, () => {
-    console.log(`[lark] Webhook server running on port ${PORT}`);
+  server = await startServerWithRetry(PORT);
+  server.on('error', (err) => {
+    console.error(`[lark] Server error: ${err.message}`);
   });
-})();
+  console.log(`[lark] Webhook server running on port ${PORT}`);
+})().catch((err) => {
+  console.error(`[lark] Fatal startup error: ${err.message}`);
+  process.exit(1);
+});

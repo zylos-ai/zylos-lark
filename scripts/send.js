@@ -61,6 +61,11 @@ function parseEndpoint(endpoint) {
 const parsedEndpoint = parseEndpoint(rawEndpoint);
 const endpointId = parsedEndpoint.chatId;
 
+if (message.trim() === '[SKIP]') {
+  markTypingDone(parsedEndpoint.msg);
+  process.exit(0);
+}
+
 // Check if component is enabled
 const config = getConfig();
 if (!config.enabled) {
@@ -83,7 +88,10 @@ function splitMessage(text, maxLength) {
 
   while (remaining.length > 0) {
     if (remaining.length <= maxLength) {
-      chunks.push(remaining);
+      const finalChunk = remaining.trim();
+      if (finalChunk.length > 0) {
+        chunks.push(finalChunk);
+      }
       break;
     }
 
@@ -128,7 +136,10 @@ function splitMessage(text, maxLength) {
       }
     }
 
-    chunks.push(remaining.substring(0, breakAt).trim());
+    const nextChunk = remaining.substring(0, breakAt).trim();
+    if (nextChunk.length > 0) {
+      chunks.push(nextChunk);
+    }
     remaining = remaining.substring(breakAt).trim();
   }
 
@@ -222,8 +233,19 @@ async function sendMedia(type, filePath) {
         const result = await replyToMessage(replyTarget, JSON.stringify({ image_key: uploadResult.imageKey }), 'image');
         if (result.success) return;
         console.log('[lark] Image reply failed, falling back to sendImage:', result.message);
+        if (parent && root && parent !== root) {
+          const rootReply = await replyToMessage(root, JSON.stringify({ image_key: uploadResult.imageKey }), 'image');
+          if (rootReply.success) return;
+          console.log('[lark] Image root reply fallback failed, falling back to sendImage:', rootReply.message);
+        }
       } catch (err) {
         console.log('[lark] Image reply threw, falling back:', err.message);
+        if (parent && root && parent !== root) {
+          try {
+            const rootReply = await replyToMessage(root, JSON.stringify({ image_key: uploadResult.imageKey }), 'image');
+            if (rootReply.success) return;
+          } catch {}
+        }
       }
     }
     const sendResult = await sendImage(chatId, uploadResult.imageKey);
@@ -240,8 +262,19 @@ async function sendMedia(type, filePath) {
         const result = await replyToMessage(replyTarget, JSON.stringify({ file_key: uploadResult.fileKey }), 'file');
         if (result.success) return;
         console.log('[lark] File reply failed, falling back to sendFile:', result.message);
+        if (parent && root && parent !== root) {
+          const rootReply = await replyToMessage(root, JSON.stringify({ file_key: uploadResult.fileKey }), 'file');
+          if (rootReply.success) return;
+          console.log('[lark] File root reply fallback failed, falling back to sendFile:', rootReply.message);
+        }
       } catch (err) {
         console.log('[lark] File reply threw, falling back:', err.message);
+        if (parent && root && parent !== root) {
+          try {
+            const rootReply = await replyToMessage(root, JSON.stringify({ file_key: uploadResult.fileKey }), 'file');
+            if (rootReply.success) return;
+          } catch {}
+        }
       }
     }
     const sendResult = await sendFile(chatId, uploadResult.fileKey);
@@ -270,27 +303,34 @@ function markTypingDone(msgId) {
  * Notify index.js to record the bot's outgoing message into in-memory history.
  */
 async function recordOutgoing(text) {
-  const appId = process.env.LARK_APP_ID;
-  if (!appId) {
-    console.warn('[lark] Warning: LARK_APP_ID not set — record-outgoing will be rejected (403)');
+  const internalToken = process.env.LARK_INTERNAL_TOKEN;
+  if (!internalToken) {
+    console.warn('[lark] Warning: LARK_INTERNAL_TOKEN not set — skipping record-outgoing');
     return;
   }
+  const truncatedText = String(text || '').slice(0, 4000);
   const port = config.webhook_port || 3457;
   const body = JSON.stringify({
     chatId: parsedEndpoint.chatId,
     threadId: parsedEndpoint.thread || null,
-    text
+    text: truncatedText
   });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
   try {
     await fetch(`http://127.0.0.1:${port}/internal/record-outgoing`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Internal-Token': appId,
+        'X-Internal-Token': internalToken,
       },
-      body
+      body,
+      signal: controller.signal
     });
   } catch { /* non-critical */ }
+  finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function send() {
@@ -298,6 +338,7 @@ async function send() {
     if (mediaMatch) {
       const [, mediaType, mediaPath] = mediaMatch;
       await sendMedia(mediaType, mediaPath);
+      await recordOutgoing(mediaType === 'image' ? '[sent image]' : '[sent file]');
     } else {
       await sendText(endpointId, message);
       await recordOutgoing(message);

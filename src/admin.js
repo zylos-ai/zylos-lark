@@ -15,6 +15,12 @@ function getGroupsMap(config) {
   return config.groups || {};
 }
 
+function saveConfigOrExit(config) {
+  if (saveConfig(config)) return true;
+  console.error('Failed to save config');
+  process.exit(1);
+}
+
 // Commands
 const commands = {
   'show': () => {
@@ -88,7 +94,7 @@ const commands = {
         added_at: new Date().toISOString()
       };
     }
-    saveConfig(config);
+    saveConfigOrExit(config);
     console.log(`Added group: ${chatId} (${name}) [${mode}]`);
     console.log('Run: pm2 restart zylos-lark');
   },
@@ -133,7 +139,7 @@ const commands = {
       return;
     }
 
-    saveConfig(config);
+    saveConfigOrExit(config);
     console.log('Run: pm2 restart zylos-lark');
   },
 
@@ -148,7 +154,7 @@ const commands = {
     }
     const config = loadConfig();
     config.groupPolicy = policy;
-    saveConfig(config);
+    saveConfigOrExit(config);
     console.log(`Group policy set to: ${policy}`);
     console.log('Run: pm2 restart zylos-lark');
   },
@@ -164,7 +170,7 @@ const commands = {
       process.exit(1);
     }
     config.groups[chatId].allowFrom = userIds;
-    saveConfig(config);
+    saveConfigOrExit(config);
     console.log(`Set allowFrom for ${chatId}: [${userIds.join(', ')}]`);
     console.log('Run: pm2 restart zylos-lark');
   },
@@ -180,7 +186,7 @@ const commands = {
       process.exit(1);
     }
     config.groups[chatId].historyLimit = parseInt(limit, 10);
-    saveConfig(config);
+    saveConfigOrExit(config);
     console.log(`Set historyLimit for ${chatId}: ${limit}`);
     console.log('Run: pm2 restart zylos-lark');
   },
@@ -215,7 +221,7 @@ const commands = {
     if (!config.whitelist.group_users.includes(userId)) {
       config.whitelist.group_users.push(userId);
     }
-    saveConfig(config);
+    saveConfigOrExit(config);
     console.log(`Added ${userId} to whitelist (private + group)`);
     if (!config.whitelist.enabled) {
       console.log('Note: Whitelist is currently disabled (all users allowed).');
@@ -248,7 +254,7 @@ const commands = {
     }
 
     if (removed) {
-      saveConfig(config);
+      saveConfigOrExit(config);
       console.log(`Removed ${userId} from whitelist`);
     } else {
       console.log(`${userId} not found in whitelist`);
@@ -262,7 +268,7 @@ const commands = {
     } else {
       config.whitelist.enabled = true;
     }
-    saveConfig(config);
+    saveConfigOrExit(config);
     console.log('Whitelist enabled. Only owner + whitelisted users can interact.');
     console.log('Run: pm2 restart zylos-lark');
   },
@@ -272,7 +278,7 @@ const commands = {
     if (config.whitelist) {
       config.whitelist.enabled = false;
     }
-    saveConfig(config);
+    saveConfigOrExit(config);
     console.log('Whitelist disabled. All users can interact.');
     console.log('Run: pm2 restart zylos-lark');
   },
@@ -297,7 +303,7 @@ const commands = {
     const config = loadConfig();
     const result = migrateGroupConfig(config);
     if (result.migrated) {
-      saveConfig(config);
+      saveConfigOrExit(config);
       console.log('Group config migrated:');
       result.migrations.forEach(m => console.log('  - ' + m));
     } else {
@@ -339,7 +345,7 @@ Commands:
 
   show-owner                          Show current owner
 
-Note: Owner can always @mention bot in any group regardless of policy.
+Note: Owner can @mention bot in non-disabled group policy modes.
 
 After changes, restart bot: pm2 restart zylos-lark
 `);
