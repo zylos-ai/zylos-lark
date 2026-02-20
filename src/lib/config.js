@@ -58,6 +58,7 @@ export const DEFAULT_CONFIG = {
 
 let config = null;
 let configWatcher = null;
+let configReloadTimer = null;
 
 /**
  * Load configuration from file
@@ -120,15 +121,18 @@ export function watchConfig(onChange) {
   if (configWatcher) {
     configWatcher.close();
   }
+  if (configReloadTimer) {
+    clearTimeout(configReloadTimer);
+    configReloadTimer = null;
+  }
 
-  let reloadTimer = null;
   const configDir = path.dirname(CONFIG_PATH);
   const configBase = path.basename(CONFIG_PATH);
 
   const scheduleReload = () => {
-    if (reloadTimer) clearTimeout(reloadTimer);
-    reloadTimer = setTimeout(() => {
-      reloadTimer = null;
+    if (configReloadTimer) clearTimeout(configReloadTimer);
+    configReloadTimer = setTimeout(() => {
+      configReloadTimer = null;
       if (!fs.existsSync(CONFIG_PATH)) {
         return;
       }
@@ -142,15 +146,16 @@ export function watchConfig(onChange) {
 
   if (fs.existsSync(configDir)) {
     configWatcher = fs.watch(configDir, (eventType, filename) => {
-      if (filename === configBase) {
+      // filename can be null on some platforms; treat as relevant
+      if (!filename || String(filename) === configBase) {
         scheduleReload();
       }
     });
     configWatcher.on('error', (err) => {
       console.warn(`[lark] Config watcher error: ${err.message}`);
-      if (reloadTimer) {
-        clearTimeout(reloadTimer);
-        reloadTimer = null;
+      if (configReloadTimer) {
+        clearTimeout(configReloadTimer);
+        configReloadTimer = null;
       }
       try {
         configWatcher.close();
@@ -164,6 +169,10 @@ export function watchConfig(onChange) {
  * Stop watching config file
  */
 export function stopWatching() {
+  if (configReloadTimer) {
+    clearTimeout(configReloadTimer);
+    configReloadTimer = null;
+  }
   if (configWatcher) {
     configWatcher.close();
     configWatcher = null;
