@@ -8,7 +8,7 @@
 
 import { loadConfig, saveConfig } from './lib/config.js';
 
-const VALID_GROUP_POLICIES = new Set(['open', 'allowlist', 'disabled']);
+const VALID_GROUP_POLICIES = new Set(['disabled', 'allowlist', 'smart', 'mention']);
 
 // ============================================================
 // Helper: get the groups map (new format) or derive from legacy
@@ -152,8 +152,8 @@ const commands = {
   'set-group-policy': (policy) => {
     const normalizedPolicy = String(policy || '').trim().toLowerCase();
     if (!VALID_GROUP_POLICIES.has(normalizedPolicy)) {
-      console.error(`Invalid policy "${policy || ''}". Valid values: open, allowlist, disabled.`);
-      console.error('Usage: admin.js set-group-policy <open|allowlist|disabled>');
+      console.error(`Invalid policy "${policy || ''}". Valid values: disabled, allowlist, smart, mention.`);
+      console.error('Usage: admin.js set-group-policy <disabled|allowlist|smart|mention>');
       process.exit(1);
     }
     const config = loadConfig();
@@ -164,13 +164,14 @@ const commands = {
   },
 
   'set-group-allowfrom': (chatId, ...userIds) => {
-    if (!chatId || userIds.length === 0) {
+    const normalizedChatId = String(chatId || '').trim();
+    if (!normalizedChatId || userIds.length === 0) {
       console.error('Usage: admin.js set-group-allowfrom <chat_id> <user_id1> [user_id2] ...');
       process.exit(1);
     }
     const config = loadConfig();
-    if (!config.groups?.[chatId]) {
-      console.error(`Group ${chatId} not configured. Add it first with add-group.`);
+    if (!config.groups?.[normalizedChatId]) {
+      console.error(`Group ${normalizedChatId} not configured. Add it first with add-group.`);
       process.exit(1);
     }
     const normalizedUserIds = [...new Set(userIds.map(id => String(id).trim()).filter(Boolean))];
@@ -183,14 +184,15 @@ const commands = {
       console.error(`Invalid user IDs (no whitespace allowed): ${invalidIds.join(', ')}`);
       process.exit(1);
     }
-    config.groups[chatId].allowFrom = normalizedUserIds;
+    config.groups[normalizedChatId].allowFrom = normalizedUserIds;
     saveConfigOrExit(config);
-    console.log(`Set allowFrom for ${chatId}: [${normalizedUserIds.join(', ')}]`);
+    console.log(`Set allowFrom for ${normalizedChatId}: [${normalizedUserIds.join(', ')}]`);
     console.log('Run: pm2 restart zylos-lark');
   },
 
   'set-group-history-limit': (chatId, limit) => {
-    if (!chatId || limit === undefined) {
+    const normalizedChatId = String(chatId || '').trim();
+    if (!normalizedChatId || limit === undefined) {
       console.error('Usage: admin.js set-group-history-limit <chat_id> <limit>');
       process.exit(1);
     }
@@ -205,13 +207,13 @@ const commands = {
       process.exit(1);
     }
     const config = loadConfig();
-    if (!config.groups?.[chatId]) {
-      console.error(`Group ${chatId} not configured. Add it first with add-group.`);
+    if (!config.groups?.[normalizedChatId]) {
+      console.error(`Group ${normalizedChatId} not configured. Add it first with add-group.`);
       process.exit(1);
     }
-    config.groups[chatId].historyLimit = parsedLimit;
+    config.groups[normalizedChatId].historyLimit = parsedLimit;
     saveConfigOrExit(config);
-    console.log(`Set historyLimit for ${chatId}: ${parsedLimit}`);
+    console.log(`Set historyLimit for ${normalizedChatId}: ${parsedLimit}`);
     console.log('Run: pm2 restart zylos-lark');
   },
 
@@ -309,7 +311,7 @@ const commands = {
 
   // Legacy commands mapped to new group policy
   'enable-group-whitelist': () => commands['set-group-policy']('allowlist'),
-  'disable-group-whitelist': () => commands['set-group-policy']('open'),
+  'disable-group-whitelist': () => commands['set-group-policy']('mention'),
 
   'show-owner': () => {
     const config = loadConfig();
@@ -346,7 +348,7 @@ Commands:
   list-groups                         List all configured groups
   add-group <chat_id> <name> [mode]   Add a group (mode: mention|smart)
   remove-group <chat_id>              Remove a group
-  set-group-policy <policy>           Set group policy (open|allowlist|disabled)
+  set-group-policy <policy>           Set group policy (disabled|allowlist|smart|mention)
   set-group-allowfrom <chat_id> <ids> Set per-group allowed senders
   set-group-history-limit <id> <n>    Set per-group history message limit
   migrate-groups                      Migrate legacy group config to new format
@@ -358,7 +360,7 @@ Commands:
   remove-allowed-group <id>           → remove-group
   remove-smart-group <id>             → remove-group
   enable-group-whitelist              → set-group-policy allowlist
-  disable-group-whitelist             → set-group-policy open
+  disable-group-whitelist             → set-group-policy mention
 
   Whitelist (access control):
   list-whitelist                      List whitelist entries

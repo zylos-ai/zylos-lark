@@ -42,16 +42,17 @@ fs.mkdirSync(LOGS_DIR, { recursive: true });
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
 function sanitizeApiFileName(fileName) {
-  const baseName = path.basename(String(fileName || 'unknown'));
+  const baseName = path.basename(fileName === undefined || fileName === null ? 'file' : String(fileName));
   const sanitized = baseName.replace(/[^a-zA-Z0-9._-]/g, '_');
-  return sanitized || 'unknown';
+  return sanitized || 'file';
 }
 
 function buildSafeDownloadPath(downloadDir, prefix, apiFileName) {
-  const resolvedDir = path.resolve(downloadDir);
   const safeFileName = sanitizeApiFileName(apiFileName);
-  const resolvedPath = path.resolve(downloadDir, `${prefix}${safeFileName}`);
-  if (resolvedPath !== resolvedDir && !resolvedPath.startsWith(resolvedDir + path.sep)) {
+  const filePath = path.join(downloadDir, `${prefix}${safeFileName}`);
+  const resolvedDir = path.resolve(downloadDir);
+  const resolvedPath = path.resolve(filePath);
+  if (!resolvedPath.startsWith(resolvedDir + path.sep)) {
     throw new Error('Resolved path escapes download directory');
   }
   return resolvedPath;
@@ -392,9 +393,10 @@ function pinRootMessage(context, rootId, threadId) {
 const _preloadedGroups = new Set();
 
 async function preloadGroupMembers(chatId) {
-  if (_preloadedGroups.has(chatId)) return;
+  const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
+  if (!normalizedChatId || _preloadedGroups.has(normalizedChatId)) return;
   try {
-    const result = await listChatMembers(chatId);
+    const result = await listChatMembers(normalizedChatId);
     if (result.success && result.members) {
       const now = Date.now();
       let count = 0;
@@ -406,11 +408,11 @@ async function preloadGroupMembers(chatId) {
           count++;
         }
       }
-      _preloadedGroups.add(chatId);
-      console.log(`[lark] Preloaded ${count} member names for group ${chatId}`);
+      _preloadedGroups.add(normalizedChatId);
+      console.log(`[lark] Preloaded ${count} member names for group ${normalizedChatId}`);
     }
   } catch (err) {
-    console.log(`[lark] Failed to preload group members for ${chatId}: ${err.message}`);
+    console.log(`[lark] Failed to preload group members for ${normalizedChatId}: ${err.message}`);
   }
 }
 
@@ -421,15 +423,19 @@ async function preloadGroupMembers(chatId) {
 const _lazyLoadedContainers = new Set();
 
 async function getContextWithFallback(containerId, currentMessageId, containerType = 'chat') {
-  if (_lazyLoadedContainers.has(containerId)) {
+  const normalizedContainerId = containerId === undefined || containerId === null ? '' : String(containerId);
+  if (!normalizedContainerId) {
     return getInMemoryContext(containerId, currentMessageId);
+  }
+  if (_lazyLoadedContainers.has(normalizedContainerId)) {
+    return getInMemoryContext(normalizedContainerId, currentMessageId);
   }
 
   try {
     const limit = containerType === 'thread'
       ? (config.message?.context_messages || DEFAULT_HISTORY_LIMIT)
-      : getGroupHistoryLimit(containerId);
-    const result = await listMessages(containerId, limit, 'desc', null, null, containerType);
+      : getGroupHistoryLimit(normalizedContainerId);
+    const result = await listMessages(normalizedContainerId, limit, 'desc', null, null, containerType);
     let processedAll = false;
     if (result.success) {
       if (result.messages.length > 0) {
@@ -449,7 +455,7 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
           if (msg.mentions && msg.mentions.length > 0) {
             text = resolveMentions(text, msg.mentions);
           }
-          recordHistoryEntry(containerId, {
+          recordHistoryEntry(normalizedContainerId, {
             timestamp: msg.createTime,
             message_id: msg.id,
             user_id: msg.sender,
@@ -457,18 +463,18 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
             text
           });
         }
-        console.log(`[lark] Lazy-loaded ${msgs.length} messages for ${containerType} ${containerId}`);
+        console.log(`[lark] Lazy-loaded ${msgs.length} messages for ${containerType} ${normalizedContainerId}`);
       }
       processedAll = true;
     }
     if (processedAll) {
-      _lazyLoadedContainers.add(containerId);
-      return getInMemoryContext(containerId, currentMessageId);
+      _lazyLoadedContainers.add(normalizedContainerId);
+      return getInMemoryContext(normalizedContainerId, currentMessageId);
     }
   } catch (err) {
-    console.log(`[lark] Lazy-load failed for ${containerType} ${containerId}: ${err.message}`);
+    console.log(`[lark] Lazy-load failed for ${containerType} ${normalizedContainerId}: ${err.message}`);
   }
-  return getInMemoryContext(containerId, currentMessageId);
+  return getInMemoryContext(normalizedContainerId, currentMessageId);
 }
 
 // Resolve user_id to name (with TTL-based in-memory cache)
@@ -574,29 +580,31 @@ function resolveGroupConfig(chatId) {
 }
 
 function isGroupAllowed(chatId) {
+  const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
   const groupPolicy = config.groupPolicy || 'allowlist';
 
   if (groupPolicy === 'disabled') return false;
   if (groupPolicy === 'open') return true;
 
-  const groupConfig = resolveGroupConfig(chatId);
+  const groupConfig = resolveGroupConfig(normalizedChatId);
   if (groupConfig) return true;
 
   // Backward compat: check legacy arrays
-  const legacyAllowed = (config.allowed_groups || []).some(g => g.chat_id === chatId);
-  const legacySmart = (config.smart_groups || []).some(g => g.chat_id === chatId);
+  const legacyAllowed = (config.allowed_groups || []).some(g => String(g.chat_id) === normalizedChatId);
+  const legacySmart = (config.smart_groups || []).some(g => String(g.chat_id) === normalizedChatId);
   if (legacyAllowed || legacySmart) return true;
 
   return false;
 }
 
 function isSmartGroup(chatId) {
+  const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
   if ((config.groupPolicy || 'allowlist') === 'disabled') return false;
-  const groupConfig = resolveGroupConfig(chatId);
+  const groupConfig = resolveGroupConfig(normalizedChatId);
   if (groupConfig) {
     return groupConfig.mode === 'smart' || groupConfig.requireMention === false;
   }
-  return (config.smart_groups || []).some(g => g.chat_id === chatId);
+  return (config.smart_groups || []).some(g => String(g.chat_id) === normalizedChatId);
 }
 
 function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) {
