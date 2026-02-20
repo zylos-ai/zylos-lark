@@ -27,7 +27,12 @@ const INTERNAL_TOKEN = crypto.randomBytes(24).toString('hex');
 process.env.LARK_INTERNAL_TOKEN = INTERNAL_TOKEN;
 // Persist token to file so send.js (spawned by C4 in a separate process tree) can read it
 const TOKEN_FILE = path.join(DATA_DIR, '.internal-token');
-try { fs.writeFileSync(TOKEN_FILE, INTERNAL_TOKEN, { mode: 0o600 }); } catch {}
+try {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(TOKEN_FILE, INTERNAL_TOKEN, { mode: 0o600 });
+} catch (err) {
+  console.error(`[lark] Failed to write internal token file: ${err.message}`);
+}
 
 // Bot identity (fetched at startup)
 let botOpenId = '';
