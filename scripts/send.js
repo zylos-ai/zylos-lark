@@ -292,8 +292,11 @@ async function sendMedia(type, filePath) {
 function markTypingDone(msgId) {
   if (!msgId) return;
   try {
+    const safeMsgId = String(msgId).replace(/[^a-zA-Z0-9_-]/g, '_');
     fs.mkdirSync(TYPING_DIR, { recursive: true });
-    fs.writeFileSync(path.join(TYPING_DIR, `${msgId}.done`), String(Date.now()));
+    const donePath = path.resolve(TYPING_DIR, `${safeMsgId}.done`);
+    if (!donePath.startsWith(path.resolve(TYPING_DIR) + path.sep)) return;
+    fs.writeFileSync(donePath, String(Date.now()));
   } catch {
     // Non-critical
   }

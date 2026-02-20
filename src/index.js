@@ -559,7 +559,11 @@ async function logMessage(chatType, chatId, userId, openId, text, messageId, tim
     console.error(`[lark] Log path escapes LOGS_DIR: ${logFile}`);
     return;
   }
-  fs.appendFileSync(logFile, logLine);
+  try {
+    fs.appendFileSync(logFile, logLine);
+  } catch (err) {
+    console.error(`[lark] Failed to write log: ${err.message}`);
+  }
 
   // In-memory history for context (group chats and threads)
   // Thread messages go to thread history only (context isolation)
