@@ -25,6 +25,9 @@ import { getBotInfo } from './lib/client.js';
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 const INTERNAL_TOKEN = crypto.randomBytes(24).toString('hex');
 process.env.LARK_INTERNAL_TOKEN = INTERNAL_TOKEN;
+// Persist token to file so send.js (spawned by C4 in a separate process tree) can read it
+const TOKEN_FILE = path.join(DATA_DIR, '.internal-token');
+try { fs.writeFileSync(TOKEN_FILE, INTERNAL_TOKEN, { mode: 0o600 }); } catch {}
 
 // Bot identity (fetched at startup)
 let botOpenId = '';

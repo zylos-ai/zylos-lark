@@ -303,7 +303,13 @@ function markTypingDone(msgId) {
  * Notify index.js to record the bot's outgoing message into in-memory history.
  */
 async function recordOutgoing(text) {
-  const internalToken = process.env.LARK_INTERNAL_TOKEN;
+  let internalToken = process.env.LARK_INTERNAL_TOKEN;
+  if (!internalToken) {
+    // Fallback: read token from file (written by index.js at startup)
+    try {
+      internalToken = fs.readFileSync(path.join(DATA_DIR, '.internal-token'), 'utf8').trim();
+    } catch {}
+  }
   if (!internalToken) {
     console.warn('[lark] Warning: LARK_INTERNAL_TOKEN not set — skipping record-outgoing');
     return;
