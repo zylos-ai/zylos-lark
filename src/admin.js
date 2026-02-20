@@ -8,11 +8,20 @@
 
 import { loadConfig, saveConfig } from './lib/config.js';
 
+// Global group policies (smart/mention are per-group modes, not global policies)
+const VALID_GROUP_POLICIES = new Set(['disabled', 'allowlist', 'open']);
+
 // ============================================================
 // Helper: get the groups map (new format) or derive from legacy
 // ============================================================
 function getGroupsMap(config) {
   return config.groups || {};
+}
+
+function saveConfigOrExit(config) {
+  if (saveConfig(config)) return true;
+  console.error('Failed to save config');
+  process.exit(1);
 }
 
 // Commands
@@ -88,7 +97,7 @@ const commands = {
         added_at: new Date().toISOString()
       };
     }
-    saveConfig(config);
+    saveConfigOrExit(config);
     console.log(`Added group: ${chatId} (${name}) [${mode}]`);
     console.log('Run: pm2 restart zylos-lark');
   },
@@ -133,7 +142,7 @@ const commands = {
       return;
     }
 
-    saveConfig(config);
+    saveConfigOrExit(config);
     console.log('Run: pm2 restart zylos-lark');
   },
 
@@ -142,46 +151,70 @@ const commands = {
   'remove-smart-group': (chatId) => commands['remove-group'](chatId),
 
   'set-group-policy': (policy) => {
-    if (!['open', 'allowlist', 'disabled'].includes(policy)) {
-      console.error('Usage: admin.js set-group-policy <open|allowlist|disabled>');
+    const normalizedPolicy = String(policy || '').trim().toLowerCase();
+    if (!VALID_GROUP_POLICIES.has(normalizedPolicy)) {
+      console.error(`Invalid policy "${policy || ''}". Valid values: disabled, allowlist, open.`);
+      console.error('Usage: admin.js set-group-policy <disabled|allowlist|open>');
       process.exit(1);
     }
     const config = loadConfig();
-    config.groupPolicy = policy;
-    saveConfig(config);
-    console.log(`Group policy set to: ${policy}`);
+    config.groupPolicy = normalizedPolicy;
+    saveConfigOrExit(config);
+    console.log(`Group policy set to: ${normalizedPolicy}`);
     console.log('Run: pm2 restart zylos-lark');
   },
 
   'set-group-allowfrom': (chatId, ...userIds) => {
-    if (!chatId || userIds.length === 0) {
+    const normalizedChatId = String(chatId || '').trim();
+    if (!normalizedChatId || userIds.length === 0) {
       console.error('Usage: admin.js set-group-allowfrom <chat_id> <user_id1> [user_id2] ...');
       process.exit(1);
     }
     const config = loadConfig();
-    if (!config.groups?.[chatId]) {
-      console.error(`Group ${chatId} not configured. Add it first with add-group.`);
+    if (!config.groups?.[normalizedChatId]) {
+      console.error(`Group ${normalizedChatId} not configured. Add it first with add-group.`);
       process.exit(1);
     }
-    config.groups[chatId].allowFrom = userIds;
-    saveConfig(config);
-    console.log(`Set allowFrom for ${chatId}: [${userIds.join(', ')}]`);
+    const normalizedUserIds = [...new Set(userIds.map(id => String(id).trim()).filter(Boolean))];
+    if (normalizedUserIds.length === 0) {
+      console.error('Invalid allowFrom value. Provide at least one non-empty user ID or "*".');
+      process.exit(1);
+    }
+    const invalidIds = normalizedUserIds.filter(id => /\s/.test(id));
+    if (invalidIds.length > 0) {
+      console.error(`Invalid user IDs (no whitespace allowed): ${invalidIds.join(', ')}`);
+      process.exit(1);
+    }
+    config.groups[normalizedChatId].allowFrom = normalizedUserIds;
+    saveConfigOrExit(config);
+    console.log(`Set allowFrom for ${normalizedChatId}: [${normalizedUserIds.join(', ')}]`);
     console.log('Run: pm2 restart zylos-lark');
   },
 
   'set-group-history-limit': (chatId, limit) => {
-    if (!chatId || !limit) {
+    const normalizedChatId = String(chatId || '').trim();
+    if (!normalizedChatId || limit === undefined) {
       console.error('Usage: admin.js set-group-history-limit <chat_id> <limit>');
       process.exit(1);
     }
-    const config = loadConfig();
-    if (!config.groups?.[chatId]) {
-      console.error(`Group ${chatId} not configured. Add it first with add-group.`);
+    const limitText = String(limit).trim();
+    if (!/^\d+$/.test(limitText)) {
+      console.error(`Invalid history limit "${limit}". Must be an integer between 1 and 200.`);
       process.exit(1);
     }
-    config.groups[chatId].historyLimit = parseInt(limit, 10);
-    saveConfig(config);
-    console.log(`Set historyLimit for ${chatId}: ${limit}`);
+    const parsedLimit = parseInt(limitText, 10);
+    if (Number.isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 200) {
+      console.error(`Invalid history limit "${limit}". Must be between 1 and 200.`);
+      process.exit(1);
+    }
+    const config = loadConfig();
+    if (!config.groups?.[normalizedChatId]) {
+      console.error(`Group ${normalizedChatId} not configured. Add it first with add-group.`);
+      process.exit(1);
+    }
+    config.groups[normalizedChatId].historyLimit = parsedLimit;
+    saveConfigOrExit(config);
+    console.log(`Set historyLimit for ${normalizedChatId}: ${parsedLimit}`);
     console.log('Run: pm2 restart zylos-lark');
   },
 
@@ -215,7 +248,7 @@ const commands = {
     if (!config.whitelist.group_users.includes(userId)) {
       config.whitelist.group_users.push(userId);
     }
-    saveConfig(config);
+    saveConfigOrExit(config);
     console.log(`Added ${userId} to whitelist (private + group)`);
     if (!config.whitelist.enabled) {
       console.log('Note: Whitelist is currently disabled (all users allowed).');
@@ -248,7 +281,7 @@ const commands = {
     }
 
     if (removed) {
-      saveConfig(config);
+      saveConfigOrExit(config);
       console.log(`Removed ${userId} from whitelist`);
     } else {
       console.log(`${userId} not found in whitelist`);
@@ -262,7 +295,7 @@ const commands = {
     } else {
       config.whitelist.enabled = true;
     }
-    saveConfig(config);
+    saveConfigOrExit(config);
     console.log('Whitelist enabled. Only owner + whitelisted users can interact.');
     console.log('Run: pm2 restart zylos-lark');
   },
@@ -272,7 +305,7 @@ const commands = {
     if (config.whitelist) {
       config.whitelist.enabled = false;
     }
-    saveConfig(config);
+    saveConfigOrExit(config);
     console.log('Whitelist disabled. All users can interact.');
     console.log('Run: pm2 restart zylos-lark');
   },
@@ -297,7 +330,7 @@ const commands = {
     const config = loadConfig();
     const result = migrateGroupConfig(config);
     if (result.migrated) {
-      saveConfig(config);
+      saveConfigOrExit(config);
       console.log('Group config migrated:');
       result.migrations.forEach(m => console.log('  - ' + m));
     } else {
@@ -316,7 +349,7 @@ Commands:
   list-groups                         List all configured groups
   add-group <chat_id> <name> [mode]   Add a group (mode: mention|smart)
   remove-group <chat_id>              Remove a group
-  set-group-policy <policy>           Set group policy (open|allowlist|disabled)
+  set-group-policy <policy>           Set group policy (disabled|allowlist|open)
   set-group-allowfrom <chat_id> <ids> Set per-group allowed senders
   set-group-history-limit <id> <n>    Set per-group history message limit
   migrate-groups                      Migrate legacy group config to new format
@@ -339,7 +372,7 @@ Commands:
 
   show-owner                          Show current owner
 
-Note: Owner can always @mention bot in any group regardless of policy.
+Note: Owner can @mention bot in non-disabled group policy modes.
 
 After changes, restart bot: pm2 restart zylos-lark
 `);

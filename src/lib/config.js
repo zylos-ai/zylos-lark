@@ -58,6 +58,7 @@ export const DEFAULT_CONFIG = {
 
 let config = null;
 let configWatcher = null;
+let configReloadTimer = null;
 
 /**
  * Load configuration from file
@@ -98,12 +99,18 @@ export function getConfig() {
  * Save configuration to file
  */
 export function saveConfig(newConfig) {
+  const tmpPath = CONFIG_PATH + '.tmp';
   try {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(newConfig, null, 2));
+    fs.writeFileSync(tmpPath, JSON.stringify(newConfig, null, 2));
+    fs.renameSync(tmpPath, CONFIG_PATH);
     config = newConfig;
+    return true;
   } catch (err) {
     console.error(`[lark] Failed to save config: ${err.message}`);
-    throw err;
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+    return false;
   }
 }
 
@@ -114,16 +121,45 @@ export function watchConfig(onChange) {
   if (configWatcher) {
     configWatcher.close();
   }
+  if (configReloadTimer) {
+    clearTimeout(configReloadTimer);
+    configReloadTimer = null;
+  }
 
-  if (fs.existsSync(CONFIG_PATH)) {
-    configWatcher = fs.watch(CONFIG_PATH, (eventType) => {
-      if (eventType === 'change') {
-        console.log('[lark] Config file changed, reloading...');
-        loadConfig();
-        if (onChange) {
-          onChange(config);
-        }
+  const configDir = path.dirname(CONFIG_PATH);
+  const configBase = path.basename(CONFIG_PATH);
+
+  const scheduleReload = () => {
+    if (configReloadTimer) clearTimeout(configReloadTimer);
+    configReloadTimer = setTimeout(() => {
+      configReloadTimer = null;
+      if (!fs.existsSync(CONFIG_PATH)) {
+        return;
       }
+      console.log('[lark] Config file changed, reloading...');
+      loadConfig();
+      if (onChange) {
+        onChange(config);
+      }
+    }, 100);
+  };
+
+  if (fs.existsSync(configDir)) {
+    configWatcher = fs.watch(configDir, (eventType, filename) => {
+      if (filename && String(filename) === configBase) {
+        scheduleReload();
+      }
+    });
+    configWatcher.on('error', (err) => {
+      console.warn(`[lark] Config watcher error: ${err.message}`);
+      if (configReloadTimer) {
+        clearTimeout(configReloadTimer);
+        configReloadTimer = null;
+      }
+      try {
+        configWatcher.close();
+      } catch {}
+      configWatcher = null;
     });
   }
 }
@@ -132,6 +168,10 @@ export function watchConfig(onChange) {
  * Stop watching config file
  */
 export function stopWatching() {
+  if (configReloadTimer) {
+    clearTimeout(configReloadTimer);
+    configReloadTimer = null;
+  }
   if (configWatcher) {
     configWatcher.close();
     configWatcher = null;

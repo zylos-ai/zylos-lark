@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-02-20
+
+### Added
+- Split log files by thread for audit trail isolation
+
+### Fixed
+- Bind webhook server to 127.0.0.1 (security: prevent direct port exposure)
+- Path traversal protection in log paths and media downloads
+- Config watcher: null filename handling, directory-based watcher, reload timer cleanup
+- Admin CLI: complete validation and policy enum alignment
+- Guard against malformed webhook event payloads
+- Sanitize image key in download path and guard JSON.parse
+- Sanitize typing marker paths and wrap log writes in try/catch
+- Ensure DATA_DIR exists before token write
+- Persist internal token to file for cross-process-tree access
+- Reject-reply fallback checks result instead of relying on .catch()
+- readSheetData delegates to values API with proper URL encoding
+- Chat pagination and URL encoding fixes
+
+### Security
+- Standards audit: 19 fixes covering input validation, ID normalization, lazy-load guards
+
 ## [0.1.5] - 2026-02-17
 
 ### Added

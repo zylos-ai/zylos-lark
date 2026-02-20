@@ -93,37 +93,45 @@ export async function listChatMembers(chatId, memberIdType = 'open_id') {
   const client = getClient();
 
   try {
-    const res = await client.im.chatMembers.get({
-      path: {
-        chat_id: chatId,
-      },
-      params: {
+    const allMembers = [];
+    let pageToken;
+
+    do {
+      const params = {
         page_size: 100,
         member_id_type: memberIdType,
-      },
-    });
+      };
+      if (pageToken) params.page_token = pageToken;
 
-    if (res.code === 0) {
+      const res = await client.im.chatMembers.get({
+        path: { chat_id: chatId },
+        params,
+      });
+
+      if (res.code !== 0) {
+        return {
+          success: false,
+          message: `Failed to list members: ${res.msg}`,
+          code: res.code,
+        };
+      }
+
       const members = (res.data.items || []).map(member => ({
         memberId: member.member_id,
         memberType: member.member_id_type,
         name: member.name,
         tenantKey: member.tenant_key,
       }));
+      allMembers.push(...members);
 
-      return {
-        success: true,
-        members,
-        hasMore: res.data.has_more,
-        memberCount: res.data.member_list?.length || members.length,
-      };
-    } else {
-      return {
-        success: false,
-        message: `Failed to list members: ${res.msg}`,
-        code: res.code,
-      };
-    }
+      pageToken = res.data.has_more ? res.data.page_token : null;
+    } while (pageToken);
+
+    return {
+      success: true,
+      members: allMembers,
+      memberCount: allMembers.length,
+    };
   } catch (err) {
     return { success: false, message: err.message };
   }

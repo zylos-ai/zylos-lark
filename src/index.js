@@ -8,21 +8,31 @@
 import dotenv from 'dotenv';
 import express from 'express';
 import crypto from 'crypto';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 // Load .env from ~/zylos/.env (absolute path, not cwd-dependent)
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
-import { getConfig, watchConfig, saveConfig, DATA_DIR, getCredentials } from './lib/config.js';
-import { downloadImage, downloadFile, sendMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
+import { getConfig, watchConfig, saveConfig, stopWatching, DATA_DIR, getCredentials } from './lib/config.js';
+import { downloadImage, downloadFile, sendMessage, replyToMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
 import { getBotInfo } from './lib/client.js';
 
 // C4 receive interface path
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
+const INTERNAL_TOKEN = crypto.randomBytes(24).toString('hex');
+process.env.LARK_INTERNAL_TOKEN = INTERNAL_TOKEN;
+// Persist token to file so send.js (spawned by C4 in a separate process tree) can read it
+const TOKEN_FILE = path.join(DATA_DIR, '.internal-token');
+try {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(TOKEN_FILE, INTERNAL_TOKEN, { mode: 0o600 });
+} catch (err) {
+  console.error(`[lark] Failed to write internal token file: ${err.message}`);
+}
 
 // Bot identity (fetched at startup)
 let botOpenId = '';
@@ -38,6 +48,23 @@ const LOGS_DIR = path.join(DATA_DIR, 'logs');
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
 fs.mkdirSync(LOGS_DIR, { recursive: true });
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
+
+function sanitizeApiFileName(fileName) {
+  const baseName = path.basename(fileName === undefined || fileName === null ? 'file' : String(fileName));
+  const sanitized = baseName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return sanitized || 'file';
+}
+
+function buildSafeDownloadPath(downloadDir, prefix, apiFileName) {
+  const safeFileName = sanitizeApiFileName(apiFileName);
+  const filePath = path.join(downloadDir, `${prefix}${safeFileName}`);
+  const resolvedDir = path.resolve(downloadDir);
+  const resolvedPath = path.resolve(filePath);
+  if (!resolvedPath.startsWith(resolvedDir + path.sep)) {
+    throw new Error('Resolved path escapes download directory');
+  }
+  return resolvedPath;
+}
 
 // State files
 const CURSORS_PATH = path.join(DATA_DIR, 'group-cursors.json');
@@ -67,7 +94,7 @@ function isDuplicate(messageId) {
 }
 
 // Periodic cleanup of expired dedup entries (avoids accumulation in low-traffic chats)
-setInterval(() => {
+const dedupCleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [id, ts] of processedMessages) {
     if (now - ts > DEDUP_TTL) processedMessages.delete(id);
@@ -104,7 +131,18 @@ function loadCursors() {
 }
 
 function saveCursors(cursors) {
-  fs.writeFileSync(CURSORS_PATH, JSON.stringify(cursors, null, 2));
+  const tmpPath = CURSORS_PATH + '.tmp';
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(cursors, null, 2));
+    fs.renameSync(tmpPath, CURSORS_PATH);
+    return true;
+  } catch (err) {
+    console.log(`[lark] Failed to save cursors: ${err.message}`);
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+    return false;
+  }
 }
 
 // ============================================================
@@ -217,7 +255,7 @@ function checkTypingDoneMarkers() {
 }
 
 // Poll for typing-done markers every 2 seconds
-setInterval(checkTypingDoneMarkers, 2000);
+const typingCheckInterval = setInterval(checkTypingDoneMarkers, 2000);
 
 // ============================================================
 // Permission error tracking (cooldown to avoid spam)
@@ -272,20 +310,26 @@ function loadUserCacheFromFile() {
 let _userCacheDirty = false;
 function persistUserCache() {
   if (!_userCacheDirty) return;
-  _userCacheDirty = false;
   const obj = {};
   for (const [userId, entry] of userCacheMemory) {
     obj[userId] = entry.name;
   }
+  const tmpPath = USER_CACHE_PATH + '.tmp';
   try {
-    fs.writeFileSync(USER_CACHE_PATH, JSON.stringify(obj, null, 2));
+    fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2));
+    fs.renameSync(tmpPath, USER_CACHE_PATH);
+    _userCacheDirty = false;
   } catch (err) {
+    _userCacheDirty = true;
     console.log(`[lark] Failed to persist user cache: ${err.message}`);
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
   }
 }
 
 // Persist cache every 5 minutes
-setInterval(persistUserCache, 5 * 60 * 1000);
+const userCachePersistInterval = setInterval(persistUserCache, 5 * 60 * 1000);
 
 // Load file cache on startup
 loadUserCacheFromFile();
@@ -357,24 +401,26 @@ function pinRootMessage(context, rootId, threadId) {
 const _preloadedGroups = new Set();
 
 async function preloadGroupMembers(chatId) {
-  if (_preloadedGroups.has(chatId)) return;
-  _preloadedGroups.add(chatId);
+  const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
+  if (!normalizedChatId || _preloadedGroups.has(normalizedChatId)) return;
   try {
-    const result = await listChatMembers(chatId);
+    const result = await listChatMembers(normalizedChatId);
     if (result.success && result.members) {
       const now = Date.now();
       let count = 0;
       for (const member of result.members) {
-        if (member.memberId && member.name && !userCacheMemory.has(member.memberId)) {
-          userCacheMemory.set(member.memberId, { name: member.name, expireAt: now + SENDER_NAME_TTL });
+        const memberId = String(member.memberId || '');
+        if (memberId && member.name && !userCacheMemory.has(memberId)) {
+          userCacheMemory.set(memberId, { name: member.name, expireAt: now + SENDER_NAME_TTL });
           _userCacheDirty = true;
           count++;
         }
       }
-      console.log(`[lark] Preloaded ${count} member names for group ${chatId}`);
+      _preloadedGroups.add(normalizedChatId);
+      console.log(`[lark] Preloaded ${count} member names for group ${normalizedChatId}`);
     }
   } catch (err) {
-    console.log(`[lark] Failed to preload group members for ${chatId}: ${err.message}`);
+    console.log(`[lark] Failed to preload group members for ${normalizedChatId}: ${err.message}`);
   }
 }
 
@@ -385,17 +431,21 @@ async function preloadGroupMembers(chatId) {
 const _lazyLoadedContainers = new Set();
 
 async function getContextWithFallback(containerId, currentMessageId, containerType = 'chat') {
-  if (_lazyLoadedContainers.has(containerId)) {
+  const normalizedContainerId = containerId === undefined || containerId === null ? '' : String(containerId);
+  if (!normalizedContainerId) {
     return getInMemoryContext(containerId, currentMessageId);
+  }
+  if (_lazyLoadedContainers.has(normalizedContainerId)) {
+    return getInMemoryContext(normalizedContainerId, currentMessageId);
   }
 
   try {
     const limit = containerType === 'thread'
       ? (config.message?.context_messages || DEFAULT_HISTORY_LIMIT)
-      : getGroupHistoryLimit(containerId);
-    const result = await listMessages(containerId, limit, 'desc', null, null, containerType);
+      : getGroupHistoryLimit(normalizedContainerId);
+    const result = await listMessages(normalizedContainerId, limit, 'desc', null, null, containerType);
+    let processedAll = false;
     if (result.success) {
-      _lazyLoadedContainers.add(containerId);
       if (result.messages.length > 0) {
         // Sort by createTime to ensure chronological order
         const msgs = result.messages.sort((a, b) => new Date(a.createTime) - new Date(b.createTime));
@@ -413,7 +463,7 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
           if (msg.mentions && msg.mentions.length > 0) {
             text = resolveMentions(text, msg.mentions);
           }
-          recordHistoryEntry(containerId, {
+          recordHistoryEntry(normalizedContainerId, {
             timestamp: msg.createTime,
             message_id: msg.id,
             user_id: msg.sender,
@@ -421,34 +471,39 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
             text
           });
         }
-        console.log(`[lark] Lazy-loaded ${msgs.length} messages for ${containerType} ${containerId}`);
+        console.log(`[lark] Lazy-loaded ${msgs.length} messages for ${containerType} ${normalizedContainerId}`);
       }
-      return getInMemoryContext(containerId, currentMessageId);
+      processedAll = true;
+    }
+    if (processedAll) {
+      _lazyLoadedContainers.add(normalizedContainerId);
+      return getInMemoryContext(normalizedContainerId, currentMessageId);
     }
   } catch (err) {
-    console.log(`[lark] Lazy-load failed for ${containerType} ${containerId}: ${err.message}`);
+    console.log(`[lark] Lazy-load failed for ${containerType} ${normalizedContainerId}: ${err.message}`);
   }
-  return getInMemoryContext(containerId, currentMessageId);
+  return getInMemoryContext(normalizedContainerId, currentMessageId);
 }
 
 // Resolve user_id to name (with TTL-based in-memory cache)
 async function resolveUserName(userId) {
-  if (!userId) return 'unknown';
+  if (userId === undefined || userId === null || userId === '') return 'unknown';
+  const normalizedUserId = String(userId);
 
   // Recognize bot's own messages (exact open_id or app_id match)
-  if (botOpenId && userId === botOpenId) return botAppName || 'bot';
-  if (botAppId && userId === botAppId) return botAppName || 'bot';
+  if (botOpenId && normalizedUserId === String(botOpenId)) return botAppName || 'bot';
+  if (botAppId && normalizedUserId === String(botAppId)) return botAppName || 'bot';
 
   const now = Date.now();
-  const cached = userCacheMemory.get(userId);
+  const cached = userCacheMemory.get(normalizedUserId);
   if (cached && cached.expireAt > now) {
     return cached.name;
   }
 
   try {
-    const result = await getUserInfo(userId);
+    const result = await getUserInfo(normalizedUserId);
     if (result.success && result.user?.name) {
-      userCacheMemory.set(userId, { name: result.user.name, expireAt: now + SENDER_NAME_TTL });
+      userCacheMemory.set(normalizedUserId, { name: result.user.name, expireAt: now + SENDER_NAME_TTL });
       _userCacheDirty = true;
       return result.user.name;
     }
@@ -460,11 +515,11 @@ async function resolveUserName(userId) {
     if (permErr) {
       handlePermissionError(permErr);
     } else {
-      console.log(`[lark] Failed to lookup user ${userId}: ${err.message}`);
+      console.log(`[lark] Failed to lookup user ${normalizedUserId}: ${err.message}`);
     }
     if (cached) return cached.name;
   }
-  return userId;
+  return normalizedUserId;
 }
 
 // Decrypt message if encrypt_key is set
@@ -494,10 +549,21 @@ async function logMessage(chatType, chatId, userId, openId, text, messageId, tim
   };
   const logLine = JSON.stringify(logEntry) + '\n';
 
-  // File log for audit
+  // File log for audit — per thread when applicable
   const logId = chatType === 'p2p' ? userId : chatId;
-  const logFile = path.join(LOGS_DIR, `${logId}.log`);
-  fs.appendFileSync(logFile, logLine);
+  const safeLogId = String(logId).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeThreadId = threadId ? String(threadId).replace(/[^a-zA-Z0-9_-]/g, '_') : null;
+  const logFileName = safeThreadId ? `${safeLogId}_t_${safeThreadId}.log` : `${safeLogId}.log`;
+  const logFile = path.resolve(LOGS_DIR, logFileName);
+  if (!logFile.startsWith(path.resolve(LOGS_DIR) + path.sep)) {
+    console.error(`[lark] Log path escapes LOGS_DIR: ${logFile}`);
+    return;
+  }
+  try {
+    fs.appendFileSync(logFile, logLine);
+  } catch (err) {
+    console.error(`[lark] Failed to write log: ${err.message}`);
+  }
 
   // In-memory history for context (group chats and threads)
   // Thread messages go to thread history only (context isolation)
@@ -517,7 +583,9 @@ async function getGroupContext(chatId, currentMessageId) {
 
 function updateCursor(chatId, messageId) {
   groupCursors[chatId] = messageId;
-  saveCursors(groupCursors);
+  if (!saveCursors(groupCursors)) {
+    console.log('[lark] Cursor persistence failed');
+  }
 }
 
 // ============================================================
@@ -530,28 +598,31 @@ function resolveGroupConfig(chatId) {
 }
 
 function isGroupAllowed(chatId) {
+  const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
   const groupPolicy = config.groupPolicy || 'allowlist';
 
   if (groupPolicy === 'disabled') return false;
   if (groupPolicy === 'open') return true;
 
-  const groupConfig = resolveGroupConfig(chatId);
+  const groupConfig = resolveGroupConfig(normalizedChatId);
   if (groupConfig) return true;
 
   // Backward compat: check legacy arrays
-  const legacyAllowed = (config.allowed_groups || []).some(g => g.chat_id === chatId);
-  const legacySmart = (config.smart_groups || []).some(g => g.chat_id === chatId);
+  const legacyAllowed = (config.allowed_groups || []).some(g => String(g.chat_id) === normalizedChatId);
+  const legacySmart = (config.smart_groups || []).some(g => String(g.chat_id) === normalizedChatId);
   if (legacyAllowed || legacySmart) return true;
 
   return false;
 }
 
 function isSmartGroup(chatId) {
-  const groupConfig = resolveGroupConfig(chatId);
+  const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
+  if ((config.groupPolicy || 'allowlist') === 'disabled') return false;
+  const groupConfig = resolveGroupConfig(normalizedChatId);
   if (groupConfig) {
     return groupConfig.mode === 'smart' || groupConfig.requireMention === false;
   }
-  return (config.smart_groups || []).some(g => g.chat_id === chatId);
+  return (config.smart_groups || []).some(g => String(g.chat_id) === normalizedChatId);
 }
 
 function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) {
@@ -560,9 +631,11 @@ function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) {
     return true;
   }
   const allowed = groupConfig.allowFrom.map(s => String(s).toLowerCase());
+  const normalizedSenderUserId = senderUserId === undefined || senderUserId === null ? '' : String(senderUserId).toLowerCase();
+  const normalizedSenderOpenId = senderOpenId === undefined || senderOpenId === null ? '' : String(senderOpenId).toLowerCase();
   if (allowed.includes('*')) return true;
-  if (senderUserId && allowed.includes(senderUserId.toLowerCase())) return true;
-  if (senderOpenId && allowed.includes(senderOpenId.toLowerCase())) return true;
+  if (normalizedSenderUserId && allowed.includes(normalizedSenderUserId)) return true;
+  if (normalizedSenderOpenId && allowed.includes(normalizedSenderOpenId)) return true;
   return false;
 }
 
@@ -571,12 +644,23 @@ function getGroupHistoryLimit(chatId) {
   return groupConfig?.historyLimit || config.message?.context_messages || DEFAULT_HISTORY_LIMIT;
 }
 
+function getGroupName(chatId) {
+  const groupConfig = resolveGroupConfig(chatId);
+  if (groupConfig?.name) return groupConfig.name;
+  const legacyAllowed = (config.allowed_groups || []).find(g => String(g.chat_id) === String(chatId));
+  if (legacyAllowed?.name) return legacyAllowed.name;
+  const legacySmart = (config.smart_groups || []).find(g => String(g.chat_id) === String(chatId));
+  if (legacySmart?.name) return legacySmart.name;
+  return String(chatId || 'unknown');
+}
+
 // Check if bot is mentioned
 function isBotMentioned(mentions, botId) {
   if (!mentions || !Array.isArray(mentions)) return false;
+  const normalizedBotId = botId === undefined || botId === null ? '' : String(botId);
   return mentions.some(m => {
     const mentionId = m.id?.open_id || m.id?.user_id || m.id?.app_id || '';
-    return mentionId === botId || m.key === '@_all';
+    return (normalizedBotId && String(mentionId) === normalizedBotId) || m.key === '@_all';
   });
 }
 
@@ -586,10 +670,14 @@ function isBotMentioned(mentions, botId) {
 function resolveMentions(text, mentions, { stripBot = false, botOpenId: botId } = {}) {
   if (!text || !mentions || !Array.isArray(mentions) || mentions.length === 0) return text;
 
+  const normalizedBotId = botId === undefined || botId === null ? '' : String(botId);
   let resolved = text;
   for (const m of mentions) {
     if (!m.key) continue;
-    const isBotMention = botId && (m.id?.open_id === botId || m.id?.app_id === botId);
+    const isBotMention = normalizedBotId && (
+      String(m.id?.open_id || '') === normalizedBotId ||
+      String(m.id?.app_id || '') === normalizedBotId
+    );
     if (stripBot && isBotMention) {
       resolved = resolved.replace(new RegExp(m.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*', 'g'), '');
     } else if (m.name) {
@@ -619,10 +707,15 @@ function sendToC4(source, endpoint, content, onReject) {
     console.error('[lark] sendToC4 called with empty content');
     return;
   }
-  const safeContent = content.replace(/'/g, "'\\''");
-  const cmd = `node "${C4_RECEIVE}" --channel "${source}" --endpoint "${endpoint}" --json --content '${safeContent}'`;
+  const args = [
+    C4_RECEIVE,
+    '--channel', source,
+    '--endpoint', endpoint,
+    '--json',
+    '--content', content
+  ];
 
-  exec(cmd, { encoding: 'utf8' }, (error, stdout) => {
+  execFile('node', args, { encoding: 'utf8', timeout: 35000 }, (error, stdout) => {
     if (!error) {
       console.log(`[lark] Sent to C4: ${content.substring(0, 50)}...`);
       return;
@@ -635,7 +728,7 @@ function sendToC4(source, endpoint, content, onReject) {
     }
     console.warn(`[lark] C4 send failed, retrying in 2s: ${error.message}`);
     setTimeout(() => {
-      exec(cmd, { encoding: 'utf8' }, (retryError, retryStdout) => {
+      execFile('node', args, { encoding: 'utf8', timeout: 35000 }, (retryError, retryStdout) => {
         if (!retryError) {
           console.log(`[lark] Sent to C4 (retry): ${content.substring(0, 50)}...`);
           return;
@@ -713,14 +806,35 @@ async function fetchQuotedMessage(messageId) {
 /**
  * Format message for C4 using XML-structured tags.
  */
-function formatMessage(chatType, userName, text, contextMessages = [], mediaPath = null, { quotedContent, threadContext, threadRootId } = {}) {
-  let prefix = chatType === 'p2p' ? '[Lark DM]' : '[Lark GROUP]';
-  let parts = [`${prefix} ${userName} said: `];
+function escapeXml(text) {
+  if (text === undefined || text === null) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/'/g, '&apos;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatMessage(
+  chatType,
+  userName,
+  text,
+  contextMessages = [],
+  mediaPath = null,
+  { quotedContent, threadContext, threadRootId, groupName, smartHint } = {}
+) {
+  const prefix = chatType === 'p2p'
+    ? '[Lark DM]'
+    : `[Lark GROUP:${escapeXml(groupName || 'unknown')}]`;
+  const safeUserName = escapeXml(userName);
+  const safeText = escapeXml(text);
+  let parts = [`${prefix} ${safeUserName} said: `];
 
   if (threadContext && threadContext.length > 0) {
     const lines = [];
     for (const m of threadContext) {
-      const line = `[${m.user_name || m.user_id}]: ${m.text}`;
+      const line = `[${escapeXml(m.user_name || m.user_id)}]: ${escapeXml(m.text)}`;
       if (threadRootId && m.message_id === threadRootId) {
         lines.push(`<thread-root>\n${line}\n</thread-root>`);
       } else {
@@ -729,22 +843,30 @@ function formatMessage(chatType, userName, text, contextMessages = [], mediaPath
     }
     parts.push(`<thread-context>\n${lines.join('\n')}\n</thread-context>\n\n`);
   } else if (contextMessages.length > 0) {
-    const contextLines = contextMessages.map(m => `[${m.user_name || m.user_id}]: ${m.text}`).join('\n');
+    const contextLines = contextMessages
+      .map(m => `[${escapeXml(m.user_name || m.user_id)}]: ${escapeXml(m.text)}`)
+      .join('\n');
     parts.push(`<group-context>\n${contextLines}\n</group-context>\n\n`);
   }
 
   if (quotedContent && !threadContext) {
-    const sender = quotedContent.sender || 'unknown';
-    const quoted = quotedContent.text || '';
+    const sender = escapeXml(quotedContent.sender || 'unknown');
+    const quoted = escapeXml(quotedContent.text || '');
     parts.push(`<replying-to>\n[${sender}]: ${quoted}\n</replying-to>\n\n`);
   }
 
-  parts.push(`<current-message>\n${text}\n</current-message>`);
+  if (smartHint) {
+    parts.push(`<smart-mode>
+Decide whether to respond. Reply with exactly [SKIP] when a response is unnecessary.
+</smart-mode>\n\n`);
+  }
+
+  parts.push(`<current-message>\n${safeText}\n</current-message>`);
 
   let message = parts.join('');
 
   if (mediaPath) {
-    message += ` ---- file: ${mediaPath}`;
+    message += ` ---- file: ${escapeXml(mediaPath)}`;
   }
 
   return message;
@@ -804,7 +926,13 @@ function extractPostText(paragraphs, messageId) {
 // Returns imageKeys as array (all images from post messages, or single image)
 function extractMessageContent(message) {
   const msgType = message.message_type;
-  const content = JSON.parse(message.content || '{}');
+  let content;
+  try {
+    content = JSON.parse(message.content || '{}');
+  } catch {
+    console.error(`[lark] Failed to parse message content: ${String(message.content).slice(0, 100)}`);
+    content = {};
+  }
 
   switch (msgType) {
     case 'text':
@@ -829,13 +957,18 @@ function extractMessageContent(message) {
 // Bind owner (first private chat user)
 async function bindOwner(userId, openId) {
   const userName = await resolveUserName(userId);
+  const previousOwner = config.owner;
   config.owner = {
     bound: true,
     user_id: userId,
     open_id: openId,
     name: userName
   };
-  saveConfig(config);
+  if (!saveConfig(config)) {
+    config.owner = previousOwner;
+    console.error('[lark] Failed to persist owner binding');
+    return null;
+  }
   console.log(`[lark] Owner bound: ${userName} (${userId})`);
   return userName;
 }
@@ -843,21 +976,28 @@ async function bindOwner(userId, openId) {
 // Check if user is owner
 function isOwner(userId, openId) {
   if (!config.owner?.bound) return false;
-  return config.owner.user_id === userId || config.owner.open_id === openId;
+  return String(config.owner.user_id) === String(userId) || String(config.owner.open_id) === String(openId);
 }
 
 // Check whitelist
 function isWhitelisted(userId, openId) {
   if (isOwner(userId, openId)) return true;
   if (!config.whitelist?.enabled) return true;
-  const allowedUsers = [...(config.whitelist.private_users || []), ...(config.whitelist.group_users || [])];
-  return allowedUsers.includes(userId) || (openId && allowedUsers.includes(openId));
+  const allowedUsers = [...(config.whitelist.private_users || []), ...(config.whitelist.group_users || [])].map(String);
+  const normalizedUserId = userId === undefined || userId === null ? '' : String(userId);
+  const normalizedOpenId = openId === undefined || openId === null ? '' : String(openId);
+  return (normalizedUserId && allowedUsers.includes(normalizedUserId)) ||
+    (normalizedOpenId && allowedUsers.includes(normalizedOpenId));
 }
 
 /**
  * Handle im.message.receive_v1 event.
  */
 async function handleMessageEvent(event) {
+  if (!event.event?.message || !event.event?.sender) {
+    console.warn('[lark] Malformed message event: missing event.message or event.sender');
+    return;
+  }
   const message = event.event.message;
   const sender = event.event.sender;
   const mentions = message.mentions;
@@ -887,8 +1027,6 @@ async function handleMessageEvent(event) {
     logText = logText ? `${logText}\n${fileInfo}` : fileInfo;
   }
 
-  logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
-
   // Build structured endpoint with routing metadata
   const endpoint = buildEndpoint(chatId, { chatType, rootId, parentId, messageId, threadId });
 
@@ -898,7 +1036,8 @@ async function handleMessageEvent(event) {
   // Private chat handling
   if (chatType === 'p2p') {
     if (!config.owner?.bound) {
-      await bindOwner(senderUserId, senderOpenId);
+      const boundOwner = await bindOwner(senderUserId, senderOpenId);
+      if (!boundOwner) return;
     }
 
     if (!isWhitelisted(senderUserId, senderOpenId)) {
@@ -906,6 +1045,7 @@ async function handleMessageEvent(event) {
       return;
     }
 
+    await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
     addTypingIndicator(messageId);
 
     if (threadId) {
@@ -923,14 +1063,21 @@ async function handleMessageEvent(event) {
     const threadRootId = threadId ? rootId : null;
     const rejectReply = (errMsg) => {
       removeTypingIndicator(messageId);
-      sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+      const rejectTarget = parentId || rootId || (threadId ? messageId : null);
+      if (rejectTarget) {
+        replyToMessage(rejectTarget, errMsg).then(r => {
+          if (!r.success) sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+        }).catch(() => sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message)));
+      } else {
+        sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+      }
     };
 
     if (imageKeys.length > 0) {
       const mediaPaths = [];
       for (const imgKey of imageKeys) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const localPath = path.join(MEDIA_DIR, `lark-${timestamp}-${imgKey.slice(-8)}.png`);
+        const localPath = path.join(MEDIA_DIR, `lark-${timestamp}-${imgKey.replace(/[^a-zA-Z0-9_-]/g, '').slice(-8)}.png`);
         const result = await downloadImage(messageId, imgKey, localPath);
         if (result.success) {
           mediaPaths.push(localPath);
@@ -949,7 +1096,15 @@ async function handleMessageEvent(event) {
 
     if (fileKey) {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const localPath = path.join(MEDIA_DIR, `lark-${timestamp}-${fileName}`);
+      let localPath;
+      try {
+        localPath = buildSafeDownloadPath(MEDIA_DIR, `lark-${timestamp}-`, fileName);
+      } catch (err) {
+        console.warn(`[lark] Invalid file path from API filename "${fileName}": ${err.message}`);
+        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent, threadContext, threadRootId });
+        sendToC4('lark', endpoint, msg, rejectReply);
+        return;
+      }
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
         const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath, { quotedContent, threadContext, threadRootId });
@@ -969,36 +1124,39 @@ async function handleMessageEvent(event) {
   // Group chat handling
   if (chatType === 'group') {
     const mentioned = isBotMentioned(mentions, botOpenId);
+    const senderIsOwner = isOwner(senderUserId, senderOpenId);
+    const groupPolicy = config.groupPolicy || 'allowlist';
+    if (groupPolicy === 'disabled') {
+      console.log(`[lark] Group policy disabled, ignoring group message from ${senderUserId}`);
+      return;
+    }
+    const allowedGroup = isGroupAllowed(chatId);
     const smart = isSmartGroup(chatId);
 
-    if (!isGroupAllowed(chatId)) {
-      const senderIsOwner = isOwner(senderUserId, senderOpenId);
-      if (!senderIsOwner) {
-        console.log(`[lark] Group ${chatId} not allowed by policy, ignoring`);
-        return;
-      }
+    if (!allowedGroup && !(senderIsOwner && mentioned)) {
+      console.log(`[lark] Group ${chatId} not allowed by policy, ignoring`);
+      return;
+    }
+
+    if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) && !senderIsOwner) {
+      console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
+      return;
     }
 
     if (!smart && !mentioned) {
+      if (allowedGroup) {
+        await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
+      }
       console.log(`[lark] Group message without @mention, logged only`);
       return;
     }
 
-    if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId)) {
-      const senderIsOwner = isOwner(senderUserId, senderOpenId);
-      if (!senderIsOwner) {
-        console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
-        return;
-      }
+    if (!smart && !senderIsOwner && !isWhitelisted(senderUserId, senderOpenId)) {
+      console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
+      return;
     }
 
-    if (!smart) {
-      const senderIsOwner = isOwner(senderUserId, senderOpenId);
-      if (!senderIsOwner && !isWhitelisted(senderUserId, senderOpenId)) {
-        console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
-        return;
-      }
-    }
+    await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
 
     console.log(`[lark] ${smart ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
     // Pre-populate member names (cross-tenant users + bots) before building context
@@ -1006,7 +1164,10 @@ async function handleMessageEvent(event) {
     const contextMessages = await getGroupContext(chatId, messageId);
     updateCursor(chatId, messageId);
 
-    addTypingIndicator(messageId);
+    const smartNoMention = smart && !mentioned;
+    if (!smartNoMention) {
+      addTypingIndicator(messageId);
+    }
 
     if (threadId) {
       threadContext = await getContextWithFallback(threadId, messageId, 'thread');
@@ -1021,16 +1182,38 @@ async function handleMessageEvent(event) {
     const senderName = await resolveUserName(senderUserId);
     const cleanText = resolveMentions(text, mentions);
     const threadRootId = threadId ? rootId : null;
+    const groupName = getGroupName(chatId);
     const groupRejectReply = (errMsg) => {
       removeTypingIndicator(messageId);
-      sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+      const rejectTarget = parentId || rootId || (threadId ? messageId : null);
+      if (rejectTarget) {
+        replyToMessage(rejectTarget, errMsg).then(r => {
+          if (!r.success) sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+        }).catch(() => sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message)));
+      } else {
+        sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+      }
     };
 
     if (imageKeys.length > 0) {
+      if (smartNoMention) {
+        const imageMetadata = imageKeys.map(imgKey => `[image, image_key: ${imgKey}, msg_id: ${messageId}]`).join('\n');
+        const smartText = cleanText ? `${cleanText}\n${imageMetadata}` : `[sent image]\n${imageMetadata}`;
+        const msg = formatMessage('group', senderName, smartText, contextMessages, null, {
+          quotedContent,
+          threadContext,
+          threadRootId,
+          groupName,
+          smartHint: true
+        });
+        sendToC4('lark', endpoint, msg, groupRejectReply);
+        return;
+      }
+
       const mediaPaths = [];
       for (const imgKey of imageKeys) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const localPath = path.join(MEDIA_DIR, `lark-group-${timestamp}-${imgKey.slice(-8)}.png`);
+        const localPath = path.join(MEDIA_DIR, `lark-group-${timestamp}-${imgKey.replace(/[^a-zA-Z0-9_-]/g, '').slice(-8)}.png`);
         const result = await downloadImage(messageId, imgKey, localPath);
         if (result.success) {
           mediaPaths.push(localPath);
@@ -1038,7 +1221,13 @@ async function handleMessageEvent(event) {
       }
       if (mediaPaths.length > 0) {
         const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
-        const msg = formatMessage('group', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, contextMessages, mediaPaths[0], { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('group', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, contextMessages, mediaPaths[0], {
+          quotedContent,
+          threadContext,
+          threadRootId,
+          groupName,
+          smartHint: false
+        });
         sendToC4('lark', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
@@ -1047,11 +1236,38 @@ async function handleMessageEvent(event) {
     }
 
     if (fileKey) {
+      if (smartNoMention) {
+        const fileMetadata = `[file: ${fileName}, file_key: ${fileKey}, msg_id: ${messageId}]`;
+        const smartText = cleanText ? `${cleanText}\n${fileMetadata}` : `[sent file]\n${fileMetadata}`;
+        const msg = formatMessage('group', senderName, smartText, contextMessages, null, {
+          quotedContent,
+          threadContext,
+          threadRootId,
+          groupName,
+          smartHint: true
+        });
+        sendToC4('lark', endpoint, msg, groupRejectReply);
+        return;
+      }
+
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const localPath = path.join(MEDIA_DIR, `lark-group-${timestamp}-${fileName}`);
+      let localPath;
+      try {
+        localPath = buildSafeDownloadPath(MEDIA_DIR, `lark-group-${timestamp}-`, fileName);
+      } catch (err) {
+        console.warn(`[lark] Invalid file path from API filename "${fileName}": ${err.message}`);
+        removeTypingIndicator(messageId);
+        return;
+      }
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
-        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, {
+          quotedContent,
+          threadContext,
+          threadRootId,
+          groupName,
+          smartHint: false
+        });
         sendToC4('lark', endpoint, msg, groupRejectReply);
       } else {
         removeTypingIndicator(messageId);
@@ -1059,7 +1275,13 @@ async function handleMessageEvent(event) {
       return;
     }
 
-    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, { quotedContent, threadContext, threadRootId });
+    const msg = formatMessage('group', senderName, cleanText || text, contextMessages, null, {
+      quotedContent,
+      threadContext,
+      threadRootId,
+      groupName,
+      smartHint: smartNoMention
+    });
     sendToC4('lark', endpoint, msg, groupRejectReply);
   }
 }
@@ -1127,9 +1349,9 @@ app.get('/health', (req, res) => {
 
 // Internal endpoint: record bot's outgoing messages into in-memory history
 app.post('/internal/record-outgoing', (req, res) => {
-  // Validate internal token (app_id) to prevent unauthorized injection
+  // Validate random startup token to prevent unauthorized injection
   const token = req.headers['x-internal-token'];
-  if (!token || token !== botAppId) {
+  if (!token || token !== INTERNAL_TOKEN) {
     return res.status(403).json({ error: 'unauthorized' });
   }
   const { chatId, threadId, text, messageId } = req.body || {};
@@ -1149,10 +1371,36 @@ app.post('/internal/record-outgoing', (req, res) => {
   res.json({ ok: true });
 });
 
+let server = null;
+let isShuttingDown = false;
+
 // Graceful shutdown
 function shutdown() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
   console.log(`[lark] Shutting down...`);
-  process.exit(0);
+  clearInterval(dedupCleanupInterval);
+  clearInterval(typingCheckInterval);
+  clearInterval(userCachePersistInterval);
+  persistUserCache();
+  stopWatching();
+
+  const clearTypingPromises = [];
+  for (const [messageId, state] of activeTypingIndicators) {
+    clearTimeout(state.timer);
+    clearTypingPromises.push(removeReaction(messageId, state.reactionId).catch(() => {}));
+  }
+  activeTypingIndicators.clear();
+
+  const finishExit = () => process.exit(0);
+  const closeServer = () => {
+    if (!server) return finishExit();
+    server.close(() => finishExit());
+    setTimeout(finishExit, 2000).unref();
+  };
+
+  Promise.allSettled(clearTypingPromises)
+    .finally(closeServer);
 }
 
 process.on('SIGINT', shutdown);
@@ -1168,6 +1416,35 @@ if (!config.bot?.verification_token) {
 
 // Fetch bot identity then start server
 const PORT = config.webhook_port || 3457;
+const MAX_LISTEN_RETRIES = 5;
+
+async function startServerWithRetry(port, maxRetries = MAX_LISTEN_RETRIES) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const started = await new Promise((resolve, reject) => {
+        const srv = app.listen(port, '127.0.0.1', () => {
+          srv.off('error', onError);
+          resolve(srv);
+        });
+        const onError = (err) => {
+          srv.off('error', onError);
+          reject(err);
+        };
+        srv.once('error', onError);
+      });
+      return started;
+    } catch (err) {
+      if (err.code === 'EADDRINUSE' && attempt < maxRetries) {
+        const delay = attempt * 1000;
+        console.error(`[lark] Port ${port} in use (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(`Failed to bind port ${port} after ${maxRetries} attempts`);
+}
 
 (async () => {
   // Store app_id for exact bot identification
@@ -1190,7 +1467,12 @@ const PORT = config.webhook_port || 3457;
     console.error(`[lark] Warning: getBotInfo failed: ${err.message}`);
   }
 
-  app.listen(PORT, () => {
-    console.log(`[lark] Webhook server running on port ${PORT}`);
+  server = await startServerWithRetry(PORT);
+  server.on('error', (err) => {
+    console.error(`[lark] Server error: ${err.message}`);
   });
-})();
+  console.log(`[lark] Webhook server running on 127.0.0.1:${PORT}`);
+})().catch((err) => {
+  console.error(`[lark] Fatal startup error: ${err.message}`);
+  process.exit(1);
+});
