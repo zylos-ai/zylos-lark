@@ -8,7 +8,8 @@
 
 import { loadConfig, saveConfig } from './lib/config.js';
 
-const VALID_GROUP_POLICIES = new Set(['disabled', 'allowlist', 'smart', 'mention']);
+// Global group policies (smart/mention are per-group modes, not global policies)
+const VALID_GROUP_POLICIES = new Set(['disabled', 'allowlist', 'open']);
 
 // ============================================================
 // Helper: get the groups map (new format) or derive from legacy
@@ -152,8 +153,8 @@ const commands = {
   'set-group-policy': (policy) => {
     const normalizedPolicy = String(policy || '').trim().toLowerCase();
     if (!VALID_GROUP_POLICIES.has(normalizedPolicy)) {
-      console.error(`Invalid policy "${policy || ''}". Valid values: disabled, allowlist, smart, mention.`);
-      console.error('Usage: admin.js set-group-policy <disabled|allowlist|smart|mention>');
+      console.error(`Invalid policy "${policy || ''}". Valid values: disabled, allowlist, open.`);
+      console.error('Usage: admin.js set-group-policy <disabled|allowlist|open>');
       process.exit(1);
     }
     const config = loadConfig();
@@ -311,7 +312,7 @@ const commands = {
 
   // Legacy commands mapped to new group policy
   'enable-group-whitelist': () => commands['set-group-policy']('allowlist'),
-  'disable-group-whitelist': () => commands['set-group-policy']('mention'),
+  'disable-group-whitelist': () => commands['set-group-policy']('open'),
 
   'show-owner': () => {
     const config = loadConfig();
@@ -348,7 +349,7 @@ Commands:
   list-groups                         List all configured groups
   add-group <chat_id> <name> [mode]   Add a group (mode: mention|smart)
   remove-group <chat_id>              Remove a group
-  set-group-policy <policy>           Set group policy (disabled|allowlist|smart|mention)
+  set-group-policy <policy>           Set group policy (disabled|allowlist|open)
   set-group-allowfrom <chat_id> <ids> Set per-group allowed senders
   set-group-history-limit <id> <n>    Set per-group history message limit
   migrate-groups                      Migrate legacy group config to new format
@@ -360,7 +361,7 @@ Commands:
   remove-allowed-group <id>           → remove-group
   remove-smart-group <id>             → remove-group
   enable-group-whitelist              → set-group-policy allowlist
-  disable-group-whitelist             → set-group-policy mention
+  disable-group-whitelist             → set-group-policy open
 
   Whitelist (access control):
   list-whitelist                      List whitelist entries

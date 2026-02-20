@@ -122,6 +122,9 @@ export function watchConfig(onChange) {
   }
 
   let reloadTimer = null;
+  const configDir = path.dirname(CONFIG_PATH);
+  const configBase = path.basename(CONFIG_PATH);
+
   const scheduleReload = () => {
     if (reloadTimer) clearTimeout(reloadTimer);
     reloadTimer = setTimeout(() => {
@@ -137,9 +140,9 @@ export function watchConfig(onChange) {
     }, 100);
   };
 
-  if (fs.existsSync(CONFIG_PATH)) {
-    configWatcher = fs.watch(CONFIG_PATH, (eventType) => {
-      if (eventType === 'change' || eventType === 'rename') {
+  if (fs.existsSync(configDir)) {
+    configWatcher = fs.watch(configDir, (eventType, filename) => {
+      if (filename === configBase) {
         scheduleReload();
       }
     });

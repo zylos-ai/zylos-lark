@@ -543,8 +543,14 @@ async function logMessage(chatType, chatId, userId, openId, text, messageId, tim
 
   // File log for audit — per thread when applicable
   const logId = chatType === 'p2p' ? userId : chatId;
-  const logFileName = threadId ? `${logId}_t_${threadId}.log` : `${logId}.log`;
-  const logFile = path.join(LOGS_DIR, logFileName);
+  const safeLogId = String(logId).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeThreadId = threadId ? String(threadId).replace(/[^a-zA-Z0-9_-]/g, '_') : null;
+  const logFileName = safeThreadId ? `${safeLogId}_t_${safeThreadId}.log` : `${safeLogId}.log`;
+  const logFile = path.resolve(LOGS_DIR, logFileName);
+  if (!logFile.startsWith(path.resolve(LOGS_DIR) + path.sep)) {
+    console.error(`[lark] Log path escapes LOGS_DIR: ${logFile}`);
+    return;
+  }
   fs.appendFileSync(logFile, logLine);
 
   // In-memory history for context (group chats and threads)
