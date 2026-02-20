@@ -41,6 +41,22 @@ const MEDIA_DIR = path.join(DATA_DIR, 'media');
 fs.mkdirSync(LOGS_DIR, { recursive: true });
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
+function sanitizeApiFileName(fileName) {
+  const baseName = path.basename(String(fileName || 'unknown'));
+  const sanitized = baseName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return sanitized || 'unknown';
+}
+
+function buildSafeDownloadPath(downloadDir, prefix, apiFileName) {
+  const resolvedDir = path.resolve(downloadDir);
+  const safeFileName = sanitizeApiFileName(apiFileName);
+  const resolvedPath = path.resolve(downloadDir, `${prefix}${safeFileName}`);
+  if (resolvedPath !== resolvedDir && !resolvedPath.startsWith(resolvedDir + path.sep)) {
+    throw new Error('Resolved path escapes download directory');
+  }
+  return resolvedPath;
+}
+
 // State files
 const CURSORS_PATH = path.join(DATA_DIR, 'group-cursors.json');
 const USER_CACHE_PATH = path.join(DATA_DIR, 'user-cache.json');
@@ -377,19 +393,20 @@ const _preloadedGroups = new Set();
 
 async function preloadGroupMembers(chatId) {
   if (_preloadedGroups.has(chatId)) return;
-  _preloadedGroups.add(chatId);
   try {
     const result = await listChatMembers(chatId);
     if (result.success && result.members) {
       const now = Date.now();
       let count = 0;
       for (const member of result.members) {
-        if (member.memberId && member.name && !userCacheMemory.has(member.memberId)) {
-          userCacheMemory.set(member.memberId, { name: member.name, expireAt: now + SENDER_NAME_TTL });
+        const memberId = String(member.memberId || '');
+        if (memberId && member.name && !userCacheMemory.has(memberId)) {
+          userCacheMemory.set(memberId, { name: member.name, expireAt: now + SENDER_NAME_TTL });
           _userCacheDirty = true;
           count++;
         }
       }
+      _preloadedGroups.add(chatId);
       console.log(`[lark] Preloaded ${count} member names for group ${chatId}`);
     }
   } catch (err) {
@@ -413,6 +430,7 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
       ? (config.message?.context_messages || DEFAULT_HISTORY_LIMIT)
       : getGroupHistoryLimit(containerId);
     const result = await listMessages(containerId, limit, 'desc', null, null, containerType);
+    let processedAll = false;
     if (result.success) {
       if (result.messages.length > 0) {
         // Sort by createTime to ensure chronological order
@@ -441,6 +459,9 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
         }
         console.log(`[lark] Lazy-loaded ${msgs.length} messages for ${containerType} ${containerId}`);
       }
+      processedAll = true;
+    }
+    if (processedAll) {
       _lazyLoadedContainers.add(containerId);
       return getInMemoryContext(containerId, currentMessageId);
     }
@@ -452,22 +473,23 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
 
 // Resolve user_id to name (with TTL-based in-memory cache)
 async function resolveUserName(userId) {
-  if (!userId) return 'unknown';
+  if (userId === undefined || userId === null || userId === '') return 'unknown';
+  const normalizedUserId = String(userId);
 
   // Recognize bot's own messages (exact open_id or app_id match)
-  if (botOpenId && userId === botOpenId) return botAppName || 'bot';
-  if (botAppId && userId === botAppId) return botAppName || 'bot';
+  if (botOpenId && normalizedUserId === String(botOpenId)) return botAppName || 'bot';
+  if (botAppId && normalizedUserId === String(botAppId)) return botAppName || 'bot';
 
   const now = Date.now();
-  const cached = userCacheMemory.get(userId);
+  const cached = userCacheMemory.get(normalizedUserId);
   if (cached && cached.expireAt > now) {
     return cached.name;
   }
 
   try {
-    const result = await getUserInfo(userId);
+    const result = await getUserInfo(normalizedUserId);
     if (result.success && result.user?.name) {
-      userCacheMemory.set(userId, { name: result.user.name, expireAt: now + SENDER_NAME_TTL });
+      userCacheMemory.set(normalizedUserId, { name: result.user.name, expireAt: now + SENDER_NAME_TTL });
       _userCacheDirty = true;
       return result.user.name;
     }
@@ -479,11 +501,11 @@ async function resolveUserName(userId) {
     if (permErr) {
       handlePermissionError(permErr);
     } else {
-      console.log(`[lark] Failed to lookup user ${userId}: ${err.message}`);
+      console.log(`[lark] Failed to lookup user ${normalizedUserId}: ${err.message}`);
     }
     if (cached) return cached.name;
   }
-  return userId;
+  return normalizedUserId;
 }
 
 // Decrypt message if encrypt_key is set
@@ -583,9 +605,11 @@ function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) {
     return true;
   }
   const allowed = groupConfig.allowFrom.map(s => String(s).toLowerCase());
+  const normalizedSenderUserId = senderUserId === undefined || senderUserId === null ? '' : String(senderUserId).toLowerCase();
+  const normalizedSenderOpenId = senderOpenId === undefined || senderOpenId === null ? '' : String(senderOpenId).toLowerCase();
   if (allowed.includes('*')) return true;
-  if (senderUserId && allowed.includes(senderUserId.toLowerCase())) return true;
-  if (senderOpenId && allowed.includes(senderOpenId.toLowerCase())) return true;
+  if (normalizedSenderUserId && allowed.includes(normalizedSenderUserId)) return true;
+  if (normalizedSenderOpenId && allowed.includes(normalizedSenderOpenId)) return true;
   return false;
 }
 
@@ -607,9 +631,10 @@ function getGroupName(chatId) {
 // Check if bot is mentioned
 function isBotMentioned(mentions, botId) {
   if (!mentions || !Array.isArray(mentions)) return false;
+  const normalizedBotId = botId === undefined || botId === null ? '' : String(botId);
   return mentions.some(m => {
     const mentionId = m.id?.open_id || m.id?.user_id || m.id?.app_id || '';
-    return mentionId === botId || m.key === '@_all';
+    return (normalizedBotId && String(mentionId) === normalizedBotId) || m.key === '@_all';
   });
 }
 
@@ -619,10 +644,14 @@ function isBotMentioned(mentions, botId) {
 function resolveMentions(text, mentions, { stripBot = false, botOpenId: botId } = {}) {
   if (!text || !mentions || !Array.isArray(mentions) || mentions.length === 0) return text;
 
+  const normalizedBotId = botId === undefined || botId === null ? '' : String(botId);
   let resolved = text;
   for (const m of mentions) {
     if (!m.key) continue;
-    const isBotMention = botId && (m.id?.open_id === botId || m.id?.app_id === botId);
+    const isBotMention = normalizedBotId && (
+      String(m.id?.open_id || '') === normalizedBotId ||
+      String(m.id?.app_id || '') === normalizedBotId
+    );
     if (stripBot && isBotMention) {
       resolved = resolved.replace(new RegExp(m.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*', 'g'), '');
     } else if (m.name) {
@@ -922,8 +951,11 @@ function isOwner(userId, openId) {
 function isWhitelisted(userId, openId) {
   if (isOwner(userId, openId)) return true;
   if (!config.whitelist?.enabled) return true;
-  const allowedUsers = [...(config.whitelist.private_users || []), ...(config.whitelist.group_users || [])];
-  return allowedUsers.includes(userId) || (openId && allowedUsers.includes(openId));
+  const allowedUsers = [...(config.whitelist.private_users || []), ...(config.whitelist.group_users || [])].map(String);
+  const normalizedUserId = userId === undefined || userId === null ? '' : String(userId);
+  const normalizedOpenId = openId === undefined || openId === null ? '' : String(openId);
+  return (normalizedUserId && allowedUsers.includes(normalizedUserId)) ||
+    (normalizedOpenId && allowedUsers.includes(normalizedOpenId));
 }
 
 /**
@@ -1027,7 +1059,15 @@ async function handleMessageEvent(event) {
 
     if (fileKey) {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const localPath = path.join(MEDIA_DIR, `lark-${timestamp}-${fileName}`);
+      let localPath;
+      try {
+        localPath = buildSafeDownloadPath(MEDIA_DIR, `lark-${timestamp}-`, fileName);
+      } catch (err) {
+        console.warn(`[lark] Invalid file path from API filename "${fileName}": ${err.message}`);
+        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent, threadContext, threadRootId });
+        sendToC4('lark', endpoint, msg, rejectReply);
+        return;
+      }
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
         const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath, { quotedContent, threadContext, threadRootId });
@@ -1173,7 +1213,14 @@ async function handleMessageEvent(event) {
       }
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const localPath = path.join(MEDIA_DIR, `lark-group-${timestamp}-${fileName}`);
+      let localPath;
+      try {
+        localPath = buildSafeDownloadPath(MEDIA_DIR, `lark-group-${timestamp}-`, fileName);
+      } catch (err) {
+        console.warn(`[lark] Invalid file path from API filename "${fileName}": ${err.message}`);
+        removeTypingIndicator(messageId);
+        return;
+      }
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
         const msg = formatMessage('group', senderName, `[file: ${fileName}]${cleanText ? ' ' + cleanText : ''}`, contextMessages, localPath, {

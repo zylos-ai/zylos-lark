@@ -121,18 +121,34 @@ export function watchConfig(onChange) {
     configWatcher.close();
   }
 
+  let reloadTimer = null;
+  const scheduleReload = () => {
+    if (reloadTimer) clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      if (!fs.existsSync(CONFIG_PATH)) {
+        return;
+      }
+      console.log('[lark] Config file changed, reloading...');
+      loadConfig();
+      if (onChange) {
+        onChange(config);
+      }
+    }, 100);
+  };
+
   if (fs.existsSync(CONFIG_PATH)) {
     configWatcher = fs.watch(CONFIG_PATH, (eventType) => {
-      if (eventType === 'change') {
-        console.log('[lark] Config file changed, reloading...');
-        loadConfig();
-        if (onChange) {
-          onChange(config);
-        }
+      if (eventType === 'change' || eventType === 'rename') {
+        scheduleReload();
       }
     });
     configWatcher.on('error', (err) => {
       console.warn(`[lark] Config watcher error: ${err.message}`);
+      if (reloadTimer) {
+        clearTimeout(reloadTimer);
+        reloadTimer = null;
+      }
       try {
         configWatcher.close();
       } catch {}
