@@ -1043,8 +1043,9 @@ async function handleMessageEvent(event) {
       removeTypingIndicator(messageId);
       const rejectTarget = parentId || rootId || (threadId ? messageId : null);
       if (rejectTarget) {
-        replyToMessage(rejectTarget, errMsg)
-          .catch(() => sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message)));
+        replyToMessage(rejectTarget, errMsg).then(r => {
+          if (!r.success) sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+        }).catch(() => sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message)));
       } else {
         sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
       }
@@ -1164,8 +1165,9 @@ async function handleMessageEvent(event) {
       removeTypingIndicator(messageId);
       const rejectTarget = parentId || rootId || (threadId ? messageId : null);
       if (rejectTarget) {
-        replyToMessage(rejectTarget, errMsg)
-          .catch(() => sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message)));
+        replyToMessage(rejectTarget, errMsg).then(r => {
+          if (!r.success) sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+        }).catch(() => sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message)));
       } else {
         sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
       }
