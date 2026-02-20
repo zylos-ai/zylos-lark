@@ -125,20 +125,22 @@ export async function getSpreadsheet(token) {
  * @param {string} range - Range like "A1:D10" (optional, reads all if not specified)
  */
 export async function readSheetData(token, sheetId, range = '') {
+  // If range specified, delegate to getSheetValues for actual cell data
+  if (range) {
+    const rangeStr = `${sheetId}!${range}`;
+    return getSheetValues(token, rangeStr);
+  }
+
+  // No range: return sheet metadata
   const client = getClient();
 
   try {
-    // Build the range string
-    const rangeStr = range ? `${sheetId}!${range}` : sheetId;
-
     const res = await client.sheets.spreadsheetSheet.query({
       path: {
         spreadsheet_token: token,
         sheet_id: sheetId,
       },
-      params: {
-        // Read first 100 rows by default
-      },
+      params: {},
     });
 
     if (res.code === 0) {
@@ -175,7 +177,7 @@ export async function getSheetValues(token, range) {
     // Use the valueRange API to get actual cell values
     const res = await client.request({
       method: 'GET',
-      url: `/open-apis/sheets/v2/spreadsheets/${token}/values/${range}`,
+      url: `/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(token)}/values/${encodeURIComponent(range)}`,
       params: {
         valueRenderOption: 'ToString',
         dateTimeRenderOption: 'FormattedString',
@@ -212,7 +214,7 @@ export async function copySheet(token, sourceSheetId, newTitle) {
   try {
     const res = await client.request({
       method: 'POST',
-      url: `/open-apis/sheets/v2/spreadsheets/${token}/sheets_batch_update`,
+      url: `/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(token)}/sheets_batch_update`,
       data: {
         requests: [
           {
@@ -260,7 +262,7 @@ export async function addSheet(token, title) {
   try {
     const res = await client.request({
       method: 'POST',
-      url: `/open-apis/sheets/v2/spreadsheets/${token}/sheets_batch_update`,
+      url: `/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(token)}/sheets_batch_update`,
       data: {
         requests: [
           {
@@ -305,7 +307,7 @@ export async function moveSheet(token, sheetId, index) {
   try {
     const res = await client.request({
       method: 'POST',
-      url: `/open-apis/sheets/v2/spreadsheets/${token}/sheets_batch_update`,
+      url: `/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(token)}/sheets_batch_update`,
       data: {
         requests: [
           {
@@ -349,7 +351,7 @@ export async function writeSheetValues(token, range, values) {
   try {
     const res = await client.request({
       method: 'POST',
-      url: `/open-apis/sheets/v2/spreadsheets/${token}/values_batch_update`,
+      url: `/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(token)}/values_batch_update`,
       data: {
         valueRanges: [
           {
