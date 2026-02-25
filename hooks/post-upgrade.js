@@ -56,22 +56,37 @@ if (fs.existsSync(configPath)) {
       migrations.push('Added owner structure');
     }
 
-    // Migration 5: Ensure whitelist structure
-    if (!config.whitelist) {
-      config.whitelist = { enabled: false, private_users: [], group_users: [] };
+    // Migration 5: Migrate legacy whitelist → dmPolicy/dmAllowFrom
+    if (config.whitelist && !config.dmPolicy) {
+      // Derive dmPolicy from legacy whitelist
+      const wlEnabled = config.whitelist.private_enabled ?? config.whitelist.enabled ?? false;
+      config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
+      // Merge users into dmAllowFrom
+      const legacyUsers = [
+        ...(config.whitelist.private_users || []),
+        ...(config.whitelist.group_users || [])
+      ];
+      if (legacyUsers.length) {
+        config.dmAllowFrom = [...(config.dmAllowFrom || [])];
+        for (const u of legacyUsers) {
+          if (!config.dmAllowFrom.includes(u)) config.dmAllowFrom.push(u);
+        }
+      }
+      migrations.push(`Migrated whitelist → dmPolicy=${config.dmPolicy}, ${(config.dmAllowFrom || []).length} users in dmAllowFrom`);
+      config._legacy_whitelist = config.whitelist;
+      delete config.whitelist;
       migrated = true;
-      migrations.push('Added whitelist structure');
-    } else {
-      if (!Array.isArray(config.whitelist.private_users)) {
-        config.whitelist.private_users = [];
-        migrated = true;
-        migrations.push('Added whitelist.private_users');
-      }
-      if (!Array.isArray(config.whitelist.group_users)) {
-        config.whitelist.group_users = [];
-        migrated = true;
-        migrations.push('Added whitelist.group_users');
-      }
+    }
+    // Ensure dmPolicy/dmAllowFrom defaults
+    if (config.dmPolicy === undefined) {
+      config.dmPolicy = config.whitelist ? 'open' : 'owner';
+      migrated = true;
+      migrations.push(`Added dmPolicy=${config.dmPolicy}`);
+    }
+    if (config.dmAllowFrom === undefined) {
+      config.dmAllowFrom = [];
+      migrated = true;
+      migrations.push('Added dmAllowFrom');
     }
 
     // Migration 6: Migrate legacy allowed_groups/smart_groups → groups map + groupPolicy
