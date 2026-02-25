@@ -1130,7 +1130,7 @@ async function handleMessageEvent(event) {
     const mentioned = isBotMentioned(mentions, botOpenId);
     const senderIsOwner = isOwner(senderUserId, senderOpenId);
     const groupPolicy = config.groupPolicy || 'allowlist';
-    if (groupPolicy === 'disabled' && !(senderIsOwner && mentioned)) {
+    if (groupPolicy === 'disabled') {
       if (mentioned) {
         replyToMessage(messageId, "Sorry, group chat is currently disabled.").catch(() => {});
       }
