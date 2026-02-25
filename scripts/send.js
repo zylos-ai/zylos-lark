@@ -160,7 +160,7 @@ function hasMarkdownContent(text) {
   // Bullet or numbered lists (- item or 1. item at start of line)
   if (/^[\s]*[-*]\s/m.test(text) || /^[\s]*\d+\.\s/m.test(text)) return true;
   // Tables (| col | col |)
-  if (/\|.+\|/.test(text) && /^[\s]*\|[\s]*[-:]+/.test(text)) return true;
+  if (/\|.+\|/.test(text) && /^[\s]*\|[\s]*[-:]+/m.test(text)) return true;
   return false;
 }
 

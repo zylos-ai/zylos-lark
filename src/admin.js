@@ -426,7 +426,7 @@ function migrateGroupConfig(config) {
   // Migrate legacy whitelist to dmPolicy/dmAllowFrom
   if (config.whitelist && !config.dmPolicy) {
     const wlEnabled = config.whitelist.private_enabled ?? config.whitelist.enabled ?? false;
-    config.dmPolicy = wlEnabled ? 'allowlist' : 'owner';
+    config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
     if (config.whitelist.private_users?.length) {
       config.dmAllowFrom = [...(config.dmAllowFrom || [])];
       for (const u of config.whitelist.private_users) {
