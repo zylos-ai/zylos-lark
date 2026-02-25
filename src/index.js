@@ -1131,6 +1131,9 @@ async function handleMessageEvent(event) {
     const senderIsOwner = isOwner(senderUserId, senderOpenId);
     const groupPolicy = config.groupPolicy || 'allowlist';
     if (groupPolicy === 'disabled') {
+      if (mentioned) {
+        replyToMessage(messageId, "Sorry, group chat is currently disabled.").catch(() => {});
+      }
       console.log(`[lark] Group policy disabled, ignoring group message from ${senderUserId}`);
       return;
     }
