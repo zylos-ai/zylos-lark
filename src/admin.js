@@ -424,7 +424,9 @@ function migrateGroupConfig(config) {
   }
 
   // Migrate legacy whitelist to dmPolicy/dmAllowFrom
-  if (config.whitelist && !config.dmPolicy) {
+  // Note: loadConfig() merges DEFAULT_CONFIG which includes dmPolicy,
+  // so we check whitelist presence only (lark DEFAULT_CONFIG has no whitelist)
+  if (config.whitelist) {
     const wlEnabled = config.whitelist.private_enabled ?? config.whitelist.enabled ?? false;
     config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
     // Merge both private_users and group_users into dmAllowFrom
