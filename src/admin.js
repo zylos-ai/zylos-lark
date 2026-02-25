@@ -220,6 +220,7 @@ const commands = {
 
   'set-dm-policy': (policy) => {
     const valid = ['open', 'allowlist', 'owner'];
+    policy = String(policy || '').trim().toLowerCase();
     if (!valid.includes(policy)) {
       console.error(`Usage: admin.js set-dm-policy <${valid.join('|')}>`);
       process.exit(1);
