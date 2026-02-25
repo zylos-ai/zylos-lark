@@ -28,16 +28,10 @@ export const DEFAULT_CONFIG = {
     open_id: '',
     name: ''
   },
-  // Whitelist settings
-  // private_enabled: controls private DM access (fallback to 'enabled' for backward compat)
-  // group_enabled: controls group @mention user filtering (default false — groups use groupPolicy/allowFrom)
-  whitelist: {
-    enabled: false,
-    private_enabled: false,
-    group_enabled: false,
-    private_users: [],
-    group_users: []
-  },
+  // DM policy: 'open' (anyone can DM), 'allowlist' (only dmAllowFrom), 'owner' (owner only)
+  dmPolicy: 'owner',
+  // DM allowlist — user_id or open_id values (used when dmPolicy = 'allowlist')
+  dmAllowFrom: [],
   // Group policy: 'open' (all groups), 'allowlist' (only configured groups), 'disabled' (no groups)
   groupPolicy: 'allowlist',
   // Per-group configuration map
@@ -73,10 +67,17 @@ export function loadConfig() {
       const content = fs.readFileSync(CONFIG_PATH, 'utf8');
       const parsed = JSON.parse(content);
       config = { ...DEFAULT_CONFIG, ...parsed };
-      // Runtime backward-compat: derive groupPolicy from legacy group_whitelist,
-      // but only if the file doesn't already have an explicit groupPolicy
+      // Runtime backward-compat: derive groupPolicy from legacy group_whitelist
       if (config.group_whitelist !== undefined && !('groupPolicy' in parsed)) {
         config.groupPolicy = config.group_whitelist?.enabled !== false ? 'allowlist' : 'open';
+      }
+      // Runtime backward-compat: migrate legacy whitelist to dmPolicy/dmAllowFrom
+      if (config.whitelist && !('dmPolicy' in parsed)) {
+        const wlEnabled = config.whitelist.private_enabled ?? config.whitelist.enabled ?? false;
+        config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
+        if (!('dmAllowFrom' in parsed) && config.whitelist.private_users?.length) {
+          config.dmAllowFrom = [...config.whitelist.private_users];
+        }
       }
     } else {
       console.warn(`[lark] Config file not found: ${CONFIG_PATH}`);

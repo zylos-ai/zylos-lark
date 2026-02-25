@@ -979,27 +979,24 @@ function isOwner(userId, openId) {
   return String(config.owner.user_id) === String(userId) || String(config.owner.open_id) === String(openId);
 }
 
-// Check whitelist — context-aware: 'private' uses private_users, 'group' uses group_users
-function isWhitelisted(userId, openId, context = 'private') {
+// Check DM access — uses dmPolicy + dmAllowFrom
+function isDmAllowed(userId, openId) {
   if (isOwner(userId, openId)) return true;
-
-  let enabled, userList;
-  if (context === 'group') {
-    // Group whitelist: independent toggle, defaults to false (groups have their own access control)
-    enabled = config.whitelist?.group_enabled ?? false;
-    userList = config.whitelist?.group_users || [];
-  } else {
-    // Private whitelist: falls back to legacy 'enabled' for backward compatibility
-    enabled = config.whitelist?.private_enabled ?? config.whitelist?.enabled ?? false;
-    userList = config.whitelist?.private_users || [];
+  const policy = config.dmPolicy || 'owner';
+  if (policy === 'open') return true;
+  if (policy === 'owner') return false;
+  // policy === 'allowlist'
+  const allowFrom = (config.dmAllowFrom || []).map(String);
+  // Backward compat: also check legacy whitelist.private_users
+  if (config.whitelist?.private_users?.length) {
+    for (const u of config.whitelist.private_users) {
+      if (!allowFrom.includes(String(u))) allowFrom.push(String(u));
+    }
   }
-
-  if (!enabled) return true;
-  const allowedUsers = userList.map(String);
   const normalizedUserId = userId === undefined || userId === null ? '' : String(userId);
   const normalizedOpenId = openId === undefined || openId === null ? '' : String(openId);
-  return (normalizedUserId && allowedUsers.includes(normalizedUserId)) ||
-    (normalizedOpenId && allowedUsers.includes(normalizedOpenId));
+  return (normalizedUserId && allowFrom.includes(normalizedUserId)) ||
+    (normalizedOpenId && allowFrom.includes(normalizedOpenId));
 }
 
 /**
@@ -1052,8 +1049,8 @@ async function handleMessageEvent(event) {
       if (!boundOwner) return;
     }
 
-    if (!isWhitelisted(senderUserId, senderOpenId, 'private')) {
-      console.log(`[lark] Private message from non-whitelisted user ${senderUserId}, ignoring`);
+    if (!isDmAllowed(senderUserId, senderOpenId)) {
+      console.log(`[lark] Private message from non-allowed user ${senderUserId} (dmPolicy=${config.dmPolicy || 'owner'}), ignoring`);
       return;
     }
 
@@ -1163,10 +1160,8 @@ async function handleMessageEvent(event) {
       return;
     }
 
-    if (!smart && !senderIsOwner && !isWhitelisted(senderUserId, senderOpenId, 'group')) {
-      console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
-      return;
-    }
+    // Group user access is controlled by groupPolicy + groups config + per-group allowFrom.
+    // No separate user-level whitelist for groups (dmPolicy/dmAllowFrom only applies to DMs).
 
     await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
 

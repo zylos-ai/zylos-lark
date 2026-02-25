@@ -112,16 +112,14 @@ node ~/zylos/.claude/skills/lark/src/admin.js list-smart-groups
 node ~/zylos/.claude/skills/lark/src/admin.js add-smart-group <chat_id> <name>
 node ~/zylos/.claude/skills/lark/src/admin.js remove-smart-group <chat_id>
 
-# Group Whitelist (enabled by default)
-node ~/zylos/.claude/skills/lark/src/admin.js enable-group-whitelist
-node ~/zylos/.claude/skills/lark/src/admin.js disable-group-whitelist
+# Group Policy (allowlist by default)
+node ~/zylos/.claude/skills/lark/src/admin.js set-group-policy <disabled|allowlist|open>
 
-# Whitelist
-node ~/zylos/.claude/skills/lark/src/admin.js list-whitelist
-node ~/zylos/.claude/skills/lark/src/admin.js add-whitelist <user_id_or_open_id>
-node ~/zylos/.claude/skills/lark/src/admin.js remove-whitelist <user_id_or_open_id>
-node ~/zylos/.claude/skills/lark/src/admin.js enable-whitelist
-node ~/zylos/.claude/skills/lark/src/admin.js disable-whitelist
+# DM Access Control
+node ~/zylos/.claude/skills/lark/src/admin.js set-dm-policy <open|allowlist|owner>
+node ~/zylos/.claude/skills/lark/src/admin.js list-dm-allow
+node ~/zylos/.claude/skills/lark/src/admin.js add-dm-allow <user_id_or_open_id>
+node ~/zylos/.claude/skills/lark/src/admin.js remove-dm-allow <user_id_or_open_id>
 
 # Owner info
 node ~/zylos/.claude/skills/lark/src/admin.js show-owner
@@ -255,27 +253,36 @@ Groups where the bot receives ALL messages without needing @mention:
 
 ### Permission Flow
 
-How messages are filtered (evaluated in order):
+DM and group access are controlled by **independent** top-level policies:
 
-**Private DM:**
+```json
+{
+  "dmPolicy": "owner",        // "open" | "allowlist" | "owner"
+  "dmAllowFrom": ["ou_xxx"],  // used when dmPolicy = "allowlist"
+  "groupPolicy": "allowlist", // "open" | "allowlist" | "disabled"
+  "groups": { ... }           // per-group config (used when groupPolicy = "allowlist")
+}
+```
+
+**Private DM (dmPolicy):**
 1. Owner? → always allowed
-2. `whitelist.private_enabled` (fallback: `whitelist.enabled`) is true? → check `private_users` list
-3. Not in list → message dropped
+2. `dmPolicy` = `open`? → anyone can DM
+3. `dmPolicy` = `owner`? → only owner can DM
+4. `dmPolicy` = `allowlist`? → check `dmAllowFrom` list; not in list → dropped
 
-**Group message:**
+**Group message (groupPolicy):**
 1. `groupPolicy` = `disabled`? → all group messages dropped
-2. Group in `groups` config (or legacy `allowed_groups`/`smart_groups`)? → proceed
-3. Group NOT in config? → only owner @mentions pass, all others dropped silently
+2. `groupPolicy` = `open`? → respond to @mentions from any group
+3. `groupPolicy` = `allowlist`? → only configured groups; unlisted groups → only owner passes, others dropped silently
 4. Per-group `allowFrom` set? → only listed senders pass (owner always bypasses)
 5. Smart group (mode: `smart`)? → receive all messages, no @mention needed
 6. Not smart? → only @mentions are processed, other messages are logged only
-7. `whitelist.group_enabled` is true? → check `group_users` list (off by default)
 
 **Key points:**
 - Owner always bypasses all access checks
-- Private and group whitelists are **independent** — enabling private whitelist does not affect group access
-- Group access is primarily controlled by `groupPolicy` + `groups` config + per-group `allowFrom`
-- `group_enabled` defaults to false — groups don't require user-level whitelist unless explicitly enabled
+- `dmPolicy` and `groupPolicy` are fully independent — changing one never affects the other
+- Group access is controlled by `groupPolicy` + `groups` config + per-group `allowFrom`
+- No user-level whitelist for groups; use per-group `allowFrom` if you need to restrict specific senders
 
 ## Group Context
 
