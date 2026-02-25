@@ -170,7 +170,7 @@ if (fs.existsSync(configPath)) {
 
     // Migration 8: Ensure message settings
     if (!config.message) {
-      config.message = { context_messages: 10 };
+      config.message = { context_messages: 10, useMarkdownCard: true };
       migrated = true;
       migrations.push('Added message settings');
     } else {
@@ -178,6 +178,11 @@ if (fs.existsSync(configPath)) {
         config.message.context_messages = 10;
         migrated = true;
         migrations.push('Added message.context_messages');
+      }
+      if (config.message.useMarkdownCard === undefined) {
+        config.message.useMarkdownCard = true;
+        migrated = true;
+        migrations.push('Added message.useMarkdownCard=true');
       }
       if (config.message.max_length !== undefined) {
         delete config.message.max_length;

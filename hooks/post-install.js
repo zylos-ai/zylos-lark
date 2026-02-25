@@ -28,7 +28,8 @@ const ENV_FILE = path.join(HOME, 'zylos/.env');
 // Minimal initial config - full defaults are in src/lib/config.js
 const INITIAL_CONFIG = {
   enabled: true,
-  webhook_port: 3457
+  webhook_port: 3457,
+  message: { useMarkdownCard: true }
 };
 
 const isInteractive = process.stdin.isTTY === true;
