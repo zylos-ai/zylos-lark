@@ -1140,7 +1140,7 @@ async function handleMessageEvent(event) {
     if (!allowedGroup && !(senderIsOwner && mentioned)) {
       if (mentioned) {
         console.log(`[lark] Group ${chatId} not allowed by policy, rejecting`);
-        sendMessage(chatId, "Sorry, I'm not available in this group.").catch(() => {});
+        replyToMessage(messageId, "Sorry, I'm not available in this group.").catch(() => {});
       } else {
         console.log(`[lark] Group ${chatId} not allowed by policy, ignoring`);
       }
@@ -1150,7 +1150,7 @@ async function handleMessageEvent(event) {
     if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) && !senderIsOwner) {
       if (mentioned) {
         console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, rejecting`);
-        sendMessage(chatId, "Sorry, you don't have permission to interact with me in this group.").catch(() => {});
+        replyToMessage(messageId, "Sorry, you don't have permission to interact with me in this group.").catch(() => {});
       } else {
         console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
       }
