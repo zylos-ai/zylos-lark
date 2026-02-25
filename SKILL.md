@@ -1,7 +1,16 @@
 ---
 name: lark
 version: 0.1.7
-description: Lark and Feishu communication channel
+description: >-
+  Lark (international) and Feishu (飞书, China) communication channel.
+  Use when: (1) replying to Lark/Feishu messages (DM or group @mentions),
+  (2) sending proactive messages or media (images, files) to Lark/Feishu users or groups,
+  (3) managing DM access control (dmPolicy: open/allowlist/owner, dmAllowFrom list),
+  (4) managing group access control (groupPolicy, per-group allowFrom, smart/mention modes),
+  (5) reading or creating Lark documents, spreadsheets, or calendar events via CLI,
+  (6) configuring the bot (admin CLI, markdown card settings, verification token, encrypt key),
+  (7) troubleshooting Lark webhook or service issues.
+  Config at ~/zylos/components/lark/config.json. Service: pm2 zylos-lark.
 type: communication
 
 lifecycle:
@@ -48,20 +57,9 @@ dependencies:
 
 Lark/Feishu communication channel for zylos.
 
-## Dependencies
+Depends on: comm-bridge (C4 message routing).
 
-- comm-bridge (for C4 message routing)
-
-## When to Use
-
-- Receiving messages from Lark (private chat or @mention in groups)
-- Sending messages via Lark
-- Accessing Lark documents, spreadsheets, calendar
-- Managing Lark groups and users
-
-## How to Use
-
-### Sending Messages
+## Sending Messages
 
 ```bash
 # Via C4 send interface
