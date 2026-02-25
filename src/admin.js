@@ -440,7 +440,6 @@ function migrateGroupConfig(config) {
       }
     }
     migrations.push(`Migrated whitelist: ${(config.dmAllowFrom || []).length} users in dmAllowFrom, dmPolicy=${config.dmPolicy}`);
-    config._legacy_whitelist = config.whitelist;
     delete config.whitelist;
     migrated = true;
   }
