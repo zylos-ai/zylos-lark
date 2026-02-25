@@ -427,9 +427,14 @@ function migrateGroupConfig(config) {
   if (config.whitelist && !config.dmPolicy) {
     const wlEnabled = config.whitelist.private_enabled ?? config.whitelist.enabled ?? false;
     config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
-    if (config.whitelist.private_users?.length) {
+    // Merge both private_users and group_users into dmAllowFrom
+    const legacyUsers = [
+      ...(config.whitelist.private_users || []),
+      ...(config.whitelist.group_users || [])
+    ];
+    if (legacyUsers.length) {
       config.dmAllowFrom = [...(config.dmAllowFrom || [])];
-      for (const u of config.whitelist.private_users) {
+      for (const u of legacyUsers) {
         if (!config.dmAllowFrom.includes(u)) config.dmAllowFrom.push(u);
       }
     }

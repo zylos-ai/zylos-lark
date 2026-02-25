@@ -77,8 +77,14 @@ export function loadConfig() {
       if (config.whitelist && !('dmPolicy' in parsed)) {
         const wlEnabled = config.whitelist.private_enabled ?? config.whitelist.enabled ?? false;
         config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
-        if (!('dmAllowFrom' in parsed) && config.whitelist.private_users?.length) {
-          config.dmAllowFrom = [...config.whitelist.private_users];
+        if (!('dmAllowFrom' in parsed)) {
+          const legacyUsers = [
+            ...(config.whitelist.private_users || []),
+            ...(config.whitelist.group_users || [])
+          ];
+          if (legacyUsers.length) {
+            config.dmAllowFrom = legacyUsers;
+          }
         }
       }
     } else {

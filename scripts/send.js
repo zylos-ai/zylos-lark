@@ -234,7 +234,11 @@ async function sendText(endpoint, text) {
       // Fall back to plain text if card sending fails
       if (!result.success) {
         console.log('[lark] Card send failed, falling back to text:', result.message);
-        result = await sendPlainTextChunk(endpoint, chunks[i], isFirstChunk);
+        // Re-split: card chunks (up to 4000) may exceed plain text limit (2000)
+        const subChunks = splitMessage(chunks[i], MAX_LENGTH);
+        for (let j = 0; j < subChunks.length; j++) {
+          result = await sendPlainTextChunk(endpoint, subChunks[j], isFirstChunk && j === 0);
+        }
       }
     } else {
       result = await sendPlainTextChunk(endpoint, chunks[i], isFirstChunk);
