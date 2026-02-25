@@ -99,33 +99,34 @@ npm run cli chats
 Manage bot configuration via `admin.js`:
 
 ```bash
-# Show full config
-node ~/zylos/.claude/skills/lark/src/admin.js show
+ADM="node ~/zylos/.claude/skills/lark/src/admin.js"
 
-# Allowed Groups (respond to @mentions)
-node ~/zylos/.claude/skills/lark/src/admin.js list-allowed-groups
-node ~/zylos/.claude/skills/lark/src/admin.js add-allowed-group <chat_id> <name>
-node ~/zylos/.claude/skills/lark/src/admin.js remove-allowed-group <chat_id>
-
-# Smart Groups (receive all messages, no @mention needed)
-node ~/zylos/.claude/skills/lark/src/admin.js list-smart-groups
-node ~/zylos/.claude/skills/lark/src/admin.js add-smart-group <chat_id> <name>
-node ~/zylos/.claude/skills/lark/src/admin.js remove-smart-group <chat_id>
-
-# Group Policy (allowlist by default)
-node ~/zylos/.claude/skills/lark/src/admin.js set-group-policy <disabled|allowlist|open>
+# General
+$ADM show                                    # Show full config
+$ADM show-owner                              # Show current owner
+$ADM help                                    # Show all commands
 
 # DM Access Control
-node ~/zylos/.claude/skills/lark/src/admin.js set-dm-policy <open|allowlist|owner>
-node ~/zylos/.claude/skills/lark/src/admin.js list-dm-allow
-node ~/zylos/.claude/skills/lark/src/admin.js add-dm-allow <user_id_or_open_id>
-node ~/zylos/.claude/skills/lark/src/admin.js remove-dm-allow <user_id_or_open_id>
+$ADM set-dm-policy <open|allowlist|owner>     # Set DM policy
+$ADM list-dm-allow                            # Show DM policy + allowFrom list
+$ADM add-dm-allow <user_id_or_open_id>        # Add user to dmAllowFrom
+$ADM remove-dm-allow <user_id_or_open_id>     # Remove user from dmAllowFrom
 
-# Owner info
-node ~/zylos/.claude/skills/lark/src/admin.js show-owner
+# Group Management
+$ADM list-groups                              # List all configured groups
+$ADM add-group <chat_id> <name> [mode]        # Add group (mode: mention|smart)
+$ADM remove-group <chat_id>                   # Remove a group
+$ADM set-group-policy <disabled|allowlist|open>  # Set group policy
+$ADM set-group-allowfrom <chat_id> <id1,id2>  # Set per-group allowed senders
+$ADM set-group-history-limit <chat_id> <n>    # Set per-group context message limit
+$ADM migrate-groups                           # Migrate legacy group config to new format
 
-# Help
-node ~/zylos/.claude/skills/lark/src/admin.js help
+# Legacy aliases (backward-compatible, map to commands above)
+# list-allowed-groups, add-allowed-group, remove-allowed-group → list-groups, add-group, remove-group
+# list-smart-groups, add-smart-group, remove-smart-group → list-groups, add-group, remove-group
+# enable-group-whitelist, disable-group-whitelist → set-group-policy allowlist|open
+# list-whitelist, add-whitelist, remove-whitelist → list-dm-allow, add-dm-allow, remove-dm-allow
+# enable-whitelist, disable-whitelist → set-dm-policy allowlist|open
 ```
 
 After changes, restart: `pm2 restart zylos-lark`
@@ -210,7 +211,7 @@ If your domain is behind Cloudflare proxy with Flexible SSL mode, Caddy's automa
 ## Owner
 
 First user to send a private message becomes the owner (primary partner).
-Owner is automatically whitelisted and can always communicate with the bot.
+Owner always bypasses all access checks (DM and group) regardless of policy settings.
 
 Owner info stored in config.json:
 ```json
@@ -224,32 +225,7 @@ Owner info stored in config.json:
 }
 ```
 
-## Group Settings
-
-### Allowed Groups (respond to @mentions)
-
-Groups where the bot responds when @mentioned.
-Owner can @mention bot in any group, even if not in allowed_groups.
-
-```json
-{
-  "allowed_groups": [
-    {"chat_id": "oc_xxx", "name": "研发群", "added_at": "2026-01-01T00:00:00Z"}
-  ]
-}
-```
-
-### Smart Groups (receive all messages)
-
-Groups where the bot receives ALL messages without needing @mention:
-
-```json
-{
-  "smart_groups": [
-    {"chat_id": "oc_zzz", "name": "核心群", "added_at": "2026-01-01T00:00:00Z"}
-  ]
-}
-```
+## Access Control
 
 ### Permission Flow
 
@@ -283,6 +259,49 @@ DM and group access are controlled by **independent** top-level policies:
 - `dmPolicy` and `groupPolicy` are fully independent — changing one never affects the other
 - Group access is controlled by `groupPolicy` + `groups` config + per-group `allowFrom`
 - No user-level whitelist for groups; use per-group `allowFrom` if you need to restrict specific senders
+
+### Groups Config Format
+
+Groups are stored in a map keyed by `chat_id`:
+
+```json
+{
+  "groupPolicy": "allowlist",
+  "groups": {
+    "oc_xxx": {
+      "name": "研发群",
+      "mode": "mention",
+      "requireMention": true,
+      "allowFrom": [],
+      "historyLimit": 10,
+      "added_at": "2026-01-01T00:00:00Z"
+    },
+    "oc_zzz": {
+      "name": "核心群",
+      "mode": "smart",
+      "requireMention": false
+    }
+  }
+}
+```
+
+- `mode`: `"mention"` (respond to @mentions only) or `"smart"` (receive all messages)
+- `allowFrom`: Optional list of user_id/open_id. Empty = all group members allowed. `"*"` = wildcard.
+- `historyLimit`: Optional per-group context message limit (overrides `message.context_messages`)
+
+### Markdown Card
+
+Outgoing messages can be rendered as interactive cards with proper markdown formatting (code blocks, tables, headers, etc.):
+
+```json
+{
+  "message": {
+    "useMarkdownCard": false
+  }
+}
+```
+
+Off by default due to mobile display limitations (cards cannot be long-pressed to copy on mobile). When enabled, messages containing markdown are auto-detected and sent as cards; plain text messages are sent normally. Falls back to plain text if card sending fails.
 
 ## Group Context
 
