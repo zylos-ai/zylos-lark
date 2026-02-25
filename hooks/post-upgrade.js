@@ -79,9 +79,11 @@ if (fs.existsSync(configPath)) {
     }
     // Ensure dmPolicy/dmAllowFrom defaults
     if (config.dmPolicy === undefined) {
-      // Use _legacy_whitelist (not whitelist) because Migration 9 may have already
-      // renamed it. Pre-whitelist configs should default to 'open' (matching loadConfig).
-      config.dmPolicy = config._legacy_whitelist ? 'open' : 'owner';
+      // This only runs for pre-whitelist configs (no whitelist, no dmPolicy).
+      // Migration 9 handles configs WITH whitelist. New installs already have
+      // dmPolicy from DEFAULT_CONFIG. Pre-whitelist era had no DM restrictions,
+      // so default to 'open' (matching loadConfig runtime behavior).
+      config.dmPolicy = 'open';
       migrated = true;
       migrations.push(`Added dmPolicy=${config.dmPolicy}`);
     }
