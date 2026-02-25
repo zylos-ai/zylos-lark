@@ -304,6 +304,21 @@ const commands = {
     }
   },
 
+  'set-markdown-card': (value) => {
+    value = String(value || '').trim().toLowerCase();
+    if (!['on', 'off', 'true', 'false'].includes(value)) {
+      console.error('Usage: admin.js set-markdown-card <on|off>');
+      process.exit(1);
+    }
+    const enabled = value === 'on' || value === 'true';
+    const config = loadConfig();
+    if (!config.message) config.message = {};
+    config.message.useMarkdownCard = enabled;
+    saveConfigOrExit(config);
+    console.log(`Markdown card: ${enabled ? 'ON' : 'OFF'}`);
+    console.log('Config hot-reloads, no restart needed.');
+  },
+
   'migrate-groups': () => {
     const config = loadConfig();
     const result = migrateGroupConfig(config);
@@ -355,6 +370,9 @@ Commands:
   disable-whitelist                   → set-dm-policy open
 
   show-owner                          Show current owner
+
+  Message Settings:
+  set-markdown-card <on|off>          Toggle markdown card rendering
 
 Permission flow:
   Private DM:  dmPolicy (open|allowlist|owner) + dmAllowFrom
