@@ -238,6 +238,7 @@ async function sendText(endpoint, text) {
         const subChunks = splitMessage(chunks[i], MAX_LENGTH);
         for (let j = 0; j < subChunks.length; j++) {
           result = await sendPlainTextChunk(endpoint, subChunks[j], isFirstChunk && j === 0);
+          if (!result.success) break;
         }
       }
     } else {
