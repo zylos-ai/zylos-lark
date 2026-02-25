@@ -221,7 +221,12 @@ const commands = {
   'list-whitelist': () => {
     const config = loadConfig();
     const wl = config.whitelist || { enabled: false, private_users: [], group_users: [] };
-    console.log(`Whitelist (${wl.enabled ? 'enabled' : 'disabled'}):`);
+    const privateEnabled = wl.private_enabled ?? wl.enabled ?? false;
+    const groupEnabled = wl.group_enabled ?? false;
+    console.log(`Whitelist:`);
+    console.log(`  Private DM filtering: ${privateEnabled ? 'enabled' : 'disabled'}`);
+    console.log(`  Group user filtering: ${groupEnabled ? 'enabled' : 'disabled'}`);
+    if (wl.enabled !== undefined) console.log(`  Legacy 'enabled' flag: ${wl.enabled}`);
     console.log('  Private users:', wl.private_users?.length ? wl.private_users.join(', ') : 'none');
     console.log('  Group users:', wl.group_users?.length ? wl.group_users.join(', ') : 'none');
   },
@@ -291,12 +296,14 @@ const commands = {
   'enable-whitelist': () => {
     const config = loadConfig();
     if (!config.whitelist) {
-      config.whitelist = { enabled: true, private_users: [], group_users: [] };
+      config.whitelist = { enabled: true, private_enabled: true, private_users: [], group_users: [] };
     } else {
       config.whitelist.enabled = true;
+      config.whitelist.private_enabled = true;
     }
     saveConfigOrExit(config);
-    console.log('Whitelist enabled. Only owner + whitelisted users can interact.');
+    console.log('Private whitelist enabled. Only owner + whitelisted users can DM.');
+    console.log('Note: Group user filtering is controlled separately (group_enabled).');
     console.log('Run: pm2 restart zylos-lark');
   },
 
@@ -304,9 +311,32 @@ const commands = {
     const config = loadConfig();
     if (config.whitelist) {
       config.whitelist.enabled = false;
+      config.whitelist.private_enabled = false;
     }
     saveConfigOrExit(config);
-    console.log('Whitelist disabled. All users can interact.');
+    console.log('Private whitelist disabled. All users can DM.');
+    console.log('Run: pm2 restart zylos-lark');
+  },
+
+  'enable-group-user-whitelist': () => {
+    const config = loadConfig();
+    if (!config.whitelist) {
+      config.whitelist = { enabled: false, group_enabled: true, private_users: [], group_users: [] };
+    } else {
+      config.whitelist.group_enabled = true;
+    }
+    saveConfigOrExit(config);
+    console.log('Group user whitelist enabled. Only owner + group_users can @mention in groups.');
+    console.log('Run: pm2 restart zylos-lark');
+  },
+
+  'disable-group-user-whitelist': () => {
+    const config = loadConfig();
+    if (config.whitelist) {
+      config.whitelist.group_enabled = false;
+    }
+    saveConfigOrExit(config);
+    console.log('Group user whitelist disabled. Group access controlled by groupPolicy/allowFrom only.');
     console.log('Run: pm2 restart zylos-lark');
   },
 
@@ -364,15 +394,20 @@ Commands:
   disable-group-whitelist             → set-group-policy open
 
   Whitelist (access control):
-  list-whitelist                      List whitelist entries
-  add-whitelist <user_id_or_open_id>  Add to whitelist
+  list-whitelist                      List whitelist status and entries
+  add-whitelist <user_id_or_open_id>  Add to whitelist (private + group)
   remove-whitelist <id>               Remove from whitelist
-  enable-whitelist                    Enable whitelist filtering
-  disable-whitelist                   Disable whitelist (allow all)
+  enable-whitelist                    Enable private DM whitelist
+  disable-whitelist                   Disable private DM whitelist
+  enable-group-user-whitelist         Enable group user whitelist
+  disable-group-user-whitelist        Disable group user whitelist
 
   show-owner                          Show current owner
 
-Note: Owner can @mention bot in non-disabled group policy modes.
+Permission flow:
+  Private DM:  whitelist.private_enabled (fallback: whitelist.enabled) + private_users
+  Group chat:  groupPolicy → groups config → per-group allowFrom → group user whitelist (off by default)
+  Owner always bypasses all checks.
 
 After changes, restart bot: pm2 restart zylos-lark
 `);

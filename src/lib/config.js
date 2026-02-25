@@ -28,9 +28,13 @@ export const DEFAULT_CONFIG = {
     open_id: '',
     name: ''
   },
-  // Whitelist settings (disabled by default)
+  // Whitelist settings
+  // private_enabled: controls private DM access (fallback to 'enabled' for backward compat)
+  // group_enabled: controls group @mention user filtering (default false — groups use groupPolicy/allowFrom)
   whitelist: {
     enabled: false,
+    private_enabled: false,
+    group_enabled: false,
     private_users: [],
     group_users: []
   },

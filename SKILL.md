@@ -1,6 +1,6 @@
 ---
 name: lark
-version: 0.1.6
+version: 0.1.7
 description: Lark and Feishu communication channel
 type: communication
 
@@ -252,6 +252,30 @@ Groups where the bot receives ALL messages without needing @mention:
   ]
 }
 ```
+
+### Permission Flow
+
+How messages are filtered (evaluated in order):
+
+**Private DM:**
+1. Owner? → always allowed
+2. `whitelist.private_enabled` (fallback: `whitelist.enabled`) is true? → check `private_users` list
+3. Not in list → message dropped
+
+**Group message:**
+1. `groupPolicy` = `disabled`? → all group messages dropped
+2. Group in `groups` config (or legacy `allowed_groups`/`smart_groups`)? → proceed
+3. Group NOT in config? → only owner @mentions pass, all others dropped silently
+4. Per-group `allowFrom` set? → only listed senders pass (owner always bypasses)
+5. Smart group (mode: `smart`)? → receive all messages, no @mention needed
+6. Not smart? → only @mentions are processed, other messages are logged only
+7. `whitelist.group_enabled` is true? → check `group_users` list (off by default)
+
+**Key points:**
+- Owner always bypasses all access checks
+- Private and group whitelists are **independent** — enabling private whitelist does not affect group access
+- Group access is primarily controlled by `groupPolicy` + `groups` config + per-group `allowFrom`
+- `group_enabled` defaults to false — groups don't require user-level whitelist unless explicitly enabled
 
 ## Group Context
 

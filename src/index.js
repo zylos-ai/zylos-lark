@@ -979,11 +979,23 @@ function isOwner(userId, openId) {
   return String(config.owner.user_id) === String(userId) || String(config.owner.open_id) === String(openId);
 }
 
-// Check whitelist
-function isWhitelisted(userId, openId) {
+// Check whitelist — context-aware: 'private' uses private_users, 'group' uses group_users
+function isWhitelisted(userId, openId, context = 'private') {
   if (isOwner(userId, openId)) return true;
-  if (!config.whitelist?.enabled) return true;
-  const allowedUsers = [...(config.whitelist.private_users || []), ...(config.whitelist.group_users || [])].map(String);
+
+  let enabled, userList;
+  if (context === 'group') {
+    // Group whitelist: independent toggle, defaults to false (groups have their own access control)
+    enabled = config.whitelist?.group_enabled ?? false;
+    userList = config.whitelist?.group_users || [];
+  } else {
+    // Private whitelist: falls back to legacy 'enabled' for backward compatibility
+    enabled = config.whitelist?.private_enabled ?? config.whitelist?.enabled ?? false;
+    userList = config.whitelist?.private_users || [];
+  }
+
+  if (!enabled) return true;
+  const allowedUsers = userList.map(String);
   const normalizedUserId = userId === undefined || userId === null ? '' : String(userId);
   const normalizedOpenId = openId === undefined || openId === null ? '' : String(openId);
   return (normalizedUserId && allowedUsers.includes(normalizedUserId)) ||
@@ -1040,7 +1052,7 @@ async function handleMessageEvent(event) {
       if (!boundOwner) return;
     }
 
-    if (!isWhitelisted(senderUserId, senderOpenId)) {
+    if (!isWhitelisted(senderUserId, senderOpenId, 'private')) {
       console.log(`[lark] Private message from non-whitelisted user ${senderUserId}, ignoring`);
       return;
     }
@@ -1151,7 +1163,7 @@ async function handleMessageEvent(event) {
       return;
     }
 
-    if (!smart && !senderIsOwner && !isWhitelisted(senderUserId, senderOpenId)) {
+    if (!smart && !senderIsOwner && !isWhitelisted(senderUserId, senderOpenId, 'group')) {
       console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
       return;
     }
