@@ -1138,12 +1138,22 @@ async function handleMessageEvent(event) {
     const smart = isSmartGroup(chatId);
 
     if (!allowedGroup && !(senderIsOwner && mentioned)) {
-      console.log(`[lark] Group ${chatId} not allowed by policy, ignoring`);
+      if (mentioned) {
+        console.log(`[lark] Group ${chatId} not allowed by policy, rejecting`);
+        sendMessage(chatId, "Sorry, I'm not available in this group.").catch(() => {});
+      } else {
+        console.log(`[lark] Group ${chatId} not allowed by policy, ignoring`);
+      }
       return;
     }
 
     if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) && !senderIsOwner) {
-      console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
+      if (mentioned) {
+        console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, rejecting`);
+        sendMessage(chatId, "Sorry, you don't have permission to interact with me in this group.").catch(() => {});
+      } else {
+        console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
+      }
       return;
     }
 
