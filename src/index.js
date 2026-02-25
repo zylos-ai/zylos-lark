@@ -979,15 +979,18 @@ function isOwner(userId, openId) {
   return String(config.owner.user_id) === String(userId) || String(config.owner.open_id) === String(openId);
 }
 
-// Check whitelist
-function isWhitelisted(userId, openId) {
+// Check DM access — uses dmPolicy + dmAllowFrom
+function isDmAllowed(userId, openId) {
   if (isOwner(userId, openId)) return true;
-  if (!config.whitelist?.enabled) return true;
-  const allowedUsers = [...(config.whitelist.private_users || []), ...(config.whitelist.group_users || [])].map(String);
+  const policy = config.dmPolicy || 'owner';
+  if (policy === 'open') return true;
+  if (policy === 'owner') return false;
+  // policy === 'allowlist'
+  const allowFrom = (config.dmAllowFrom || []).map(String);
   const normalizedUserId = userId === undefined || userId === null ? '' : String(userId);
   const normalizedOpenId = openId === undefined || openId === null ? '' : String(openId);
-  return (normalizedUserId && allowedUsers.includes(normalizedUserId)) ||
-    (normalizedOpenId && allowedUsers.includes(normalizedOpenId));
+  return (normalizedUserId && allowFrom.includes(normalizedUserId)) ||
+    (normalizedOpenId && allowFrom.includes(normalizedOpenId));
 }
 
 /**
@@ -1040,8 +1043,9 @@ async function handleMessageEvent(event) {
       if (!boundOwner) return;
     }
 
-    if (!isWhitelisted(senderUserId, senderOpenId)) {
-      console.log(`[lark] Private message from non-whitelisted user ${senderUserId}, ignoring`);
+    if (!isDmAllowed(senderUserId, senderOpenId)) {
+      console.log(`[lark] Private message from non-allowed user ${senderUserId} (dmPolicy=${config.dmPolicy || 'owner'}), rejecting`);
+      sendMessage(chatId, "Sorry, I'm not available for private messages. Please ask my owner to grant you access.").catch(() => {});
       return;
     }
 
@@ -1127,6 +1131,9 @@ async function handleMessageEvent(event) {
     const senderIsOwner = isOwner(senderUserId, senderOpenId);
     const groupPolicy = config.groupPolicy || 'allowlist';
     if (groupPolicy === 'disabled') {
+      if (mentioned) {
+        replyToMessage(messageId, "Sorry, group chat is currently disabled.").catch(() => {});
+      }
       console.log(`[lark] Group policy disabled, ignoring group message from ${senderUserId}`);
       return;
     }
@@ -1134,12 +1141,22 @@ async function handleMessageEvent(event) {
     const smart = isSmartGroup(chatId);
 
     if (!allowedGroup && !(senderIsOwner && mentioned)) {
-      console.log(`[lark] Group ${chatId} not allowed by policy, ignoring`);
+      if (mentioned) {
+        console.log(`[lark] Group ${chatId} not allowed by policy, rejecting`);
+        replyToMessage(messageId, "Sorry, I'm not available in this group.").catch(() => {});
+      } else {
+        console.log(`[lark] Group ${chatId} not allowed by policy, ignoring`);
+      }
       return;
     }
 
     if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) && !senderIsOwner) {
-      console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
+      if (mentioned) {
+        console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, rejecting`);
+        replyToMessage(messageId, "Sorry, you don't have permission to interact with me in this group.").catch(() => {});
+      } else {
+        console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
+      }
       return;
     }
 
@@ -1151,10 +1168,8 @@ async function handleMessageEvent(event) {
       return;
     }
 
-    if (!smart && !senderIsOwner && !isWhitelisted(senderUserId, senderOpenId)) {
-      console.log(`[lark] @mention from non-whitelisted user ${senderUserId} in group, ignoring`);
-      return;
-    }
+    // Group user access is controlled by groupPolicy + groups config + per-group allowFrom.
+    // No separate user-level whitelist for groups (dmPolicy/dmAllowFrom only applies to DMs).
 
     await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
 

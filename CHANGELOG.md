@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-02-26
+
+### Added
+- DM policy model: `dmPolicy` (open/allowlist/owner) with `dmAllowFrom` list, replacing legacy whitelist
+- On-demand media download script (`scripts/download.js`) for image/file retrieval by resource key
+- Markdown card rendering for outgoing messages (`message.useMarkdownCard` in config.json, default: true)
+- Auto-detects markdown content (code blocks, headers, bold, lists, tables) and sends as interactive card
+- Falls back to plain text if card sending fails
+- DM rejection message for non-allowed users
+- Group rejection messages for unauthorized @mentions and disabled group policy
+
+### Changed
+- Legacy whitelist config auto-migrated to dmPolicy on upgrade (post-upgrade hook)
+- Legacy admin commands (`list-whitelist`, `add-whitelist`, etc.) aliased to new dmPolicy commands
+- `useMarkdownCard` defaults to true on install and upgrade
+
 ## [0.1.6] - 2026-02-20
 
 ### Added

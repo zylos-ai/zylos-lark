@@ -18,7 +18,7 @@ import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig, DATA_DIR } from '../src/lib/config.js';
-import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage } from '../src/lib/message.js';
+import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
 
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
 
@@ -147,7 +147,69 @@ function splitMessage(text, maxLength) {
 }
 
 /**
+ * Check if text contains markdown formatting worth rendering as a card.
+ * Returns true for code blocks, headers, bold, lists, tables, etc.
+ */
+function hasMarkdownContent(text) {
+  // Code blocks (``` or indented)
+  if (/```/.test(text)) return true;
+  // Headers (# at start of line)
+  if (/^#{1,6}\s/m.test(text)) return true;
+  // Bold (**text**)
+  if (/\*\*[^*]+\*\*/.test(text)) return true;
+  // Bullet or numbered lists (- item or 1. item at start of line)
+  if (/^[\s]*[-*]\s/m.test(text) || /^[\s]*\d+\.\s/m.test(text)) return true;
+  // Tables (| col | col |)
+  if (/\|.+\|/.test(text) && /^[\s]*\|[\s]*[-:]+/m.test(text)) return true;
+  return false;
+}
+
+// Card max content length (Lark card body limit ~28KB JSON; keep text under 4000 for safety)
+const CARD_MAX_LENGTH = 4000;
+
+/**
+ * Send a single chunk as a markdown card, with routing logic.
+ * Falls back to plain text on card failure.
+ */
+async function sendCardChunk(chunk, isFirstChunk) {
+  const { chatId, root, parent, msg, type } = parsedEndpoint;
+  const isDM = type === 'p2p';
+  const isGroup = type === 'group';
+  let result;
+
+  if (root) {
+    const replyTarget = parent || root;
+    try {
+      result = await replyMarkdownCard(replyTarget, chunk);
+    } catch (err) {
+      console.log('[lark] Card reply threw, falling back:', err.message);
+      result = { success: false };
+    }
+    if (!result.success) {
+      result = await sendMarkdownCard(chatId, chunk);
+    }
+  } else if (isFirstChunk && msg && isGroup) {
+    try {
+      result = await replyMarkdownCard(msg, chunk);
+    } catch (err) {
+      console.log('[lark] Card reply threw, falling back:', err.message);
+      result = { success: false };
+    }
+    if (!result.success) {
+      result = await sendMarkdownCard(chatId, chunk);
+    }
+  } else if (isDM) {
+    result = await sendMarkdownCard(chatId, chunk);
+  } else {
+    result = await sendMarkdownCard(chatId, chunk);
+  }
+
+  return result;
+}
+
+/**
  * Send text message with auto-chunking.
+ * When useMarkdownCard is enabled and text contains markdown, sends as interactive card.
  * Routing logic (unified for DM and group):
  *   - Topic/reply (root exists): ALL chunks reply to parent||root (stay in thread)
  *   - Group @mention (no root): first chunk replies to msg, rest use sendToGroup
@@ -156,7 +218,9 @@ function splitMessage(text, maxLength) {
  * Reply failures fall back to sendMessage (DM) or sendToGroup (group).
  */
 async function sendText(endpoint, text) {
-  const chunks = splitMessage(text, MAX_LENGTH);
+  const useCard = config.message?.useMarkdownCard && hasMarkdownContent(text);
+  const maxLen = useCard ? CARD_MAX_LENGTH : MAX_LENGTH;
+  const chunks = splitMessage(text, maxLen);
   const { chatId, root, parent, msg, type } = parsedEndpoint;
   const isDM = type === 'p2p';
   const isGroup = type === 'group';
@@ -165,39 +229,20 @@ async function sendText(endpoint, text) {
     let result;
     const isFirstChunk = i === 0;
 
-    if (root) {
-      // Topic/reply thread: ALL chunks stay in topic (DM and group alike)
-      const replyTarget = parent || root;
-      try {
-        result = await replyToMessage(replyTarget, chunks[i]);
-      } catch (err) {
-        console.log('[lark] Reply threw, falling back:', err.message);
-        result = { success: false };
-      }
+    if (useCard) {
+      result = await sendCardChunk(chunks[i], isFirstChunk);
+      // Fall back to plain text if card sending fails
       if (!result.success) {
-        console.log('[lark] Reply failed, falling back:', result.message);
-        result = isDM
-          ? await sendMessage(chatId, chunks[i], 'chat_id', 'text')
-          : await sendToGroup(endpoint, chunks[i]);
+        console.log('[lark] Card send failed, falling back to text:', result.message);
+        // Re-split: card chunks (up to 4000) may exceed plain text limit (2000)
+        const subChunks = splitMessage(chunks[i], MAX_LENGTH);
+        for (let j = 0; j < subChunks.length; j++) {
+          result = await sendPlainTextChunk(endpoint, subChunks[j], isFirstChunk && j === 0);
+          if (!result.success) break;
+        }
       }
-    } else if (isFirstChunk && msg && isGroup) {
-      // Group @mention: first chunk replies to trigger message
-      try {
-        result = await replyToMessage(msg, chunks[i]);
-      } catch (err) {
-        console.log('[lark] Reply threw, falling back to sendToGroup:', err.message);
-        result = { success: false };
-      }
-      if (!result.success) {
-        console.log('[lark] Reply failed, falling back to sendToGroup:', result.message);
-        result = await sendToGroup(endpoint, chunks[i]);
-      }
-    } else if (isDM) {
-      // DM without topic/reply: send directly
-      result = await sendMessage(chatId, chunks[i], 'chat_id', 'text');
     } else {
-      // Fallback: send to group/chat directly
-      result = await sendToGroup(endpoint, chunks[i]);
+      result = await sendPlainTextChunk(endpoint, chunks[i], isFirstChunk);
     }
 
     if (!result.success) {
@@ -212,6 +257,49 @@ async function sendText(endpoint, text) {
   if (chunks.length > 1) {
     console.log(`Sent ${chunks.length} chunks`);
   }
+}
+
+/**
+ * Send a single chunk as plain text with routing logic.
+ */
+async function sendPlainTextChunk(endpoint, chunk, isFirstChunk) {
+  const { chatId, root, parent, msg, type } = parsedEndpoint;
+  const isDM = type === 'p2p';
+  const isGroup = type === 'group';
+  let result;
+
+  if (root) {
+    const replyTarget = parent || root;
+    try {
+      result = await replyToMessage(replyTarget, chunk);
+    } catch (err) {
+      console.log('[lark] Reply threw, falling back:', err.message);
+      result = { success: false };
+    }
+    if (!result.success) {
+      console.log('[lark] Reply failed, falling back:', result.message);
+      result = isDM
+        ? await sendMessage(chatId, chunk, 'chat_id', 'text')
+        : await sendToGroup(endpoint, chunk);
+    }
+  } else if (isFirstChunk && msg && isGroup) {
+    try {
+      result = await replyToMessage(msg, chunk);
+    } catch (err) {
+      console.log('[lark] Reply threw, falling back to sendToGroup:', err.message);
+      result = { success: false };
+    }
+    if (!result.success) {
+      console.log('[lark] Reply failed, falling back to sendToGroup:', result.message);
+      result = await sendToGroup(endpoint, chunk);
+    }
+  } else if (isDM) {
+    result = await sendMessage(chatId, chunk, 'chat_id', 'text');
+  } else {
+    result = await sendToGroup(endpoint, chunk);
+  }
+
+  return result;
 }
 
 /**

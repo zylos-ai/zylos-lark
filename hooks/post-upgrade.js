@@ -56,22 +56,39 @@ if (fs.existsSync(configPath)) {
       migrations.push('Added owner structure');
     }
 
-    // Migration 5: Ensure whitelist structure
-    if (!config.whitelist) {
-      config.whitelist = { enabled: false, private_users: [], group_users: [] };
+    // Migration 5: Migrate legacy whitelist → dmPolicy/dmAllowFrom
+    if (config.whitelist && !config.dmPolicy) {
+      // Derive dmPolicy from legacy whitelist
+      const wlEnabled = config.whitelist.private_enabled ?? config.whitelist.enabled ?? false;
+      config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
+      // Merge users into dmAllowFrom
+      const legacyUsers = [
+        ...(config.whitelist.private_users || []),
+        ...(config.whitelist.group_users || [])
+      ];
+      if (legacyUsers.length) {
+        config.dmAllowFrom = [...(config.dmAllowFrom || [])];
+        for (const u of legacyUsers) {
+          if (!config.dmAllowFrom.includes(u)) config.dmAllowFrom.push(u);
+        }
+      }
+      migrations.push(`Migrated whitelist → dmPolicy=${config.dmPolicy}, ${(config.dmAllowFrom || []).length} users in dmAllowFrom`);
+      delete config.whitelist;
       migrated = true;
-      migrations.push('Added whitelist structure');
-    } else {
-      if (!Array.isArray(config.whitelist.private_users)) {
-        config.whitelist.private_users = [];
-        migrated = true;
-        migrations.push('Added whitelist.private_users');
-      }
-      if (!Array.isArray(config.whitelist.group_users)) {
-        config.whitelist.group_users = [];
-        migrated = true;
-        migrations.push('Added whitelist.group_users');
-      }
+    }
+    // Ensure dmPolicy/dmAllowFrom defaults
+    if (config.dmPolicy === undefined) {
+      // Pre-whitelist config (very old, no whitelist field at all).
+      // Default to 'owner' — the most restrictive safe default.
+      // Owner binding handles bootstrap: first DM user becomes owner.
+      config.dmPolicy = 'owner';
+      migrated = true;
+      migrations.push(`Added dmPolicy=${config.dmPolicy}`);
+    }
+    if (config.dmAllowFrom === undefined) {
+      config.dmAllowFrom = [];
+      migrated = true;
+      migrations.push('Added dmAllowFrom');
     }
 
     // Migration 6: Migrate legacy allowed_groups/smart_groups → groups map + groupPolicy
@@ -153,7 +170,7 @@ if (fs.existsSync(configPath)) {
 
     // Migration 8: Ensure message settings
     if (!config.message) {
-      config.message = { context_messages: 10 };
+      config.message = { context_messages: 10, useMarkdownCard: true };
       migrated = true;
       migrations.push('Added message settings');
     } else {
@@ -161,6 +178,11 @@ if (fs.existsSync(configPath)) {
         config.message.context_messages = 10;
         migrated = true;
         migrations.push('Added message.context_messages');
+      }
+      if (config.message.useMarkdownCard === undefined) {
+        config.message.useMarkdownCard = true;
+        migrated = true;
+        migrations.push('Added message.useMarkdownCard=true');
       }
       if (config.message.max_length !== undefined) {
         delete config.message.max_length;

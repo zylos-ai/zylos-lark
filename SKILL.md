@@ -1,7 +1,16 @@
 ---
 name: lark
-version: 0.1.6
-description: Lark and Feishu communication channel
+version: 0.1.7
+description: >-
+  Lark (international) and Feishu (飞书, China) communication channel.
+  Use when: (1) replying to Lark/Feishu messages (DM or group @mentions),
+  (2) sending proactive messages or media (images, files) to Lark/Feishu users or groups,
+  (3) managing DM access control (dmPolicy: open/allowlist/owner, dmAllowFrom list),
+  (4) managing group access control (groupPolicy, per-group allowFrom, smart/mention modes),
+  (5) reading or creating Lark documents, spreadsheets, or calendar events via CLI,
+  (6) configuring the bot (admin CLI, markdown card settings, verification token, encrypt key),
+  (7) troubleshooting Lark webhook or service issues.
+  Config at ~/zylos/components/lark/config.json. Service: pm2 zylos-lark.
 type: communication
 
 lifecycle:
@@ -48,30 +57,24 @@ dependencies:
 
 Lark/Feishu communication channel for zylos.
 
-## Dependencies
+Depends on: comm-bridge (C4 message routing).
 
-- comm-bridge (for C4 message routing)
-
-## When to Use
-
-- Receiving messages from Lark (private chat or @mention in groups)
-- Sending messages via Lark
-- Accessing Lark documents, spreadsheets, calendar
-- Managing Lark groups and users
-
-## How to Use
-
-### Sending Messages
+## Sending Messages
 
 ```bash
-# Via C4 send interface
-~/zylos/.claude/skills/lark/scripts/send.js <chat_id> "Hello!"
+# Via C4 bridge (standard path)
+node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>" "Hello!"
 
 # Send image
-~/zylos/.claude/skills/lark/scripts/send.js <chat_id> "[MEDIA:image]/path/to/image.png"
+node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>" "[MEDIA:image]/path/to/image.png"
 
 # Send file
-~/zylos/.claude/skills/lark/scripts/send.js <chat_id> "[MEDIA:file]/path/to/file.pdf"
+node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>" "[MEDIA:file]/path/to/file.pdf"
+```
+
+Direct send (bypasses C4 logging, for testing only):
+```bash
+node ~/zylos/.claude/skills/lark/scripts/send.js <chat_id> "Hello!"
 ```
 
 ### CLI Commands
@@ -99,38 +102,59 @@ npm run cli chats
 Manage bot configuration via `admin.js`:
 
 ```bash
-# Show full config
-node ~/zylos/.claude/skills/lark/src/admin.js show
+ADM="node ~/zylos/.claude/skills/lark/src/admin.js"
 
-# Allowed Groups (respond to @mentions)
-node ~/zylos/.claude/skills/lark/src/admin.js list-allowed-groups
-node ~/zylos/.claude/skills/lark/src/admin.js add-allowed-group <chat_id> <name>
-node ~/zylos/.claude/skills/lark/src/admin.js remove-allowed-group <chat_id>
+# General
+$ADM show                                    # Show full config
+$ADM show-owner                              # Show current owner
+$ADM help                                    # Show all commands
 
-# Smart Groups (receive all messages, no @mention needed)
-node ~/zylos/.claude/skills/lark/src/admin.js list-smart-groups
-node ~/zylos/.claude/skills/lark/src/admin.js add-smart-group <chat_id> <name>
-node ~/zylos/.claude/skills/lark/src/admin.js remove-smart-group <chat_id>
+# DM Access Control
+$ADM set-dm-policy <open|allowlist|owner>     # Set DM policy
+$ADM list-dm-allow                            # Show DM policy + allowFrom list
+$ADM add-dm-allow <user_id_or_open_id>        # Add user to dmAllowFrom
+$ADM remove-dm-allow <user_id_or_open_id>     # Remove user from dmAllowFrom
 
-# Group Whitelist (enabled by default)
-node ~/zylos/.claude/skills/lark/src/admin.js enable-group-whitelist
-node ~/zylos/.claude/skills/lark/src/admin.js disable-group-whitelist
+# Group Management
+$ADM list-groups                              # List all configured groups
+$ADM add-group <chat_id> <name> [mode]        # Add group (mode: mention|smart)
+$ADM remove-group <chat_id>                   # Remove a group
+$ADM set-group-policy <disabled|allowlist|open>  # Set group policy
+$ADM set-group-allowfrom <chat_id> <id1,id2>  # Set per-group allowed senders
+$ADM set-group-history-limit <chat_id> <n>    # Set per-group context message limit
+$ADM migrate-groups                           # Migrate legacy group config to new format
 
-# Whitelist
-node ~/zylos/.claude/skills/lark/src/admin.js list-whitelist
-node ~/zylos/.claude/skills/lark/src/admin.js add-whitelist <user_id_or_open_id>
-node ~/zylos/.claude/skills/lark/src/admin.js remove-whitelist <user_id_or_open_id>
-node ~/zylos/.claude/skills/lark/src/admin.js enable-whitelist
-node ~/zylos/.claude/skills/lark/src/admin.js disable-whitelist
-
-# Owner info
-node ~/zylos/.claude/skills/lark/src/admin.js show-owner
-
-# Help
-node ~/zylos/.claude/skills/lark/src/admin.js help
+# Legacy aliases (backward-compatible, map to commands above)
+# list-allowed-groups, add-allowed-group, remove-allowed-group → list-groups, add-group, remove-group
+# list-smart-groups, add-smart-group, remove-smart-group → list-groups, add-group, remove-group
+# enable-group-whitelist, disable-group-whitelist → set-group-policy allowlist|open
+# list-whitelist, add-whitelist, remove-whitelist → list-dm-allow, add-dm-allow, remove-dm-allow
+# enable-whitelist, disable-whitelist → set-dm-policy allowlist|open
 ```
 
 After changes, restart: `pm2 restart zylos-lark`
+
+## Downloading Media by Resource Key
+
+In smart group mode, images and files sent without @mention are logged with
+metadata only (image_key/file_key). Use `download.js` to fetch them on demand:
+
+```bash
+# Download image
+node ~/zylos/.claude/skills/lark/scripts/download.js image <message_id> <image_key>
+
+# Download file
+node ~/zylos/.claude/skills/lark/scripts/download.js file <message_id> <file_key> [filename]
+
+# Examples:
+node ~/zylos/.claude/skills/lark/scripts/download.js image om_xxx img_v3_xxx
+node ~/zylos/.claude/skills/lark/scripts/download.js file om_xxx file_v3_xxx report.pdf
+```
+
+The keys come from context messages like `[image, image_key: xxx, msg_id: xxx]`
+or `[file: name.pdf, file_key: xxx, msg_id: xxx]`.
+
+Output: local file path on success, error message on failure.
 
 ## Config Location
 
@@ -212,7 +236,7 @@ If your domain is behind Cloudflare proxy with Flexible SSL mode, Caddy's automa
 ## Owner
 
 First user to send a private message becomes the owner (primary partner).
-Owner is automatically whitelisted and can always communicate with the bot.
+Owner always bypasses all access checks (DM and group) regardless of policy settings.
 
 Owner info stored in config.json:
 ```json
@@ -226,32 +250,83 @@ Owner info stored in config.json:
 }
 ```
 
-## Group Settings
+## Access Control
 
-### Allowed Groups (respond to @mentions)
+### Permission Flow
 
-Groups where the bot responds when @mentioned.
-Owner can @mention bot in any group, even if not in allowed_groups.
-
-```json
-{
-  "allowed_groups": [
-    {"chat_id": "oc_xxx", "name": "研发群", "added_at": "2026-01-01T00:00:00Z"}
-  ]
-}
-```
-
-### Smart Groups (receive all messages)
-
-Groups where the bot receives ALL messages without needing @mention:
+DM and group access are controlled by **independent** top-level policies:
 
 ```json
 {
-  "smart_groups": [
-    {"chat_id": "oc_zzz", "name": "核心群", "added_at": "2026-01-01T00:00:00Z"}
-  ]
+  "dmPolicy": "owner",        // "open" | "allowlist" | "owner"
+  "dmAllowFrom": ["ou_xxx"],  // used when dmPolicy = "allowlist"
+  "groupPolicy": "allowlist", // "open" | "allowlist" | "disabled"
+  "groups": { ... }           // per-group config (used when groupPolicy = "allowlist")
 }
 ```
+
+**Private DM (dmPolicy):**
+1. Owner? → always allowed
+2. `dmPolicy` = `open`? → anyone can DM
+3. `dmPolicy` = `owner`? → only owner can DM
+4. `dmPolicy` = `allowlist`? → check `dmAllowFrom` list; not in list → dropped
+
+**Group message (groupPolicy):**
+1. `groupPolicy` = `disabled`? → all group messages dropped
+2. `groupPolicy` = `open`? → respond to @mentions from any group
+3. `groupPolicy` = `allowlist`? → only configured groups; unlisted groups → only owner passes, others dropped silently
+4. Per-group `allowFrom` set? → only listed senders pass (owner always bypasses)
+5. Smart group (mode: `smart`)? → receive all messages, no @mention needed
+6. Not smart? → only @mentions are processed, other messages are logged only
+
+**Key points:**
+- Owner always bypasses all access checks
+- `dmPolicy` and `groupPolicy` are fully independent — changing one never affects the other
+- Group access is controlled by `groupPolicy` + `groups` config + per-group `allowFrom`
+- No user-level whitelist for groups; use per-group `allowFrom` if you need to restrict specific senders
+
+### Groups Config Format
+
+Groups are stored in a map keyed by `chat_id`:
+
+```json
+{
+  "groupPolicy": "allowlist",
+  "groups": {
+    "oc_xxx": {
+      "name": "研发群",
+      "mode": "mention",
+      "requireMention": true,
+      "allowFrom": [],
+      "historyLimit": 10,
+      "added_at": "2026-01-01T00:00:00Z"
+    },
+    "oc_zzz": {
+      "name": "核心群",
+      "mode": "smart",
+      "requireMention": false
+    }
+  }
+}
+```
+
+- `mode`: `"mention"` (respond to @mentions only) or `"smart"` (receive all messages)
+- `allowFrom`: Optional list of user_id/open_id. Empty = all group members allowed. `"*"` = wildcard.
+- `historyLimit`: Optional per-group context message limit (overrides `message.context_messages`)
+
+### Markdown Card
+
+Outgoing messages can be rendered as interactive cards with proper markdown formatting (code blocks, tables, headers, etc.):
+
+```json
+{
+  "message": {
+    "useMarkdownCard": true
+  }
+}
+```
+
+On by default. Note mobile display limitation: cards cannot be long-pressed to copy on mobile. Can be disabled via `node admin.js set-markdown-card off`. When enabled (cards cannot be long-pressed to copy on mobile). When enabled, messages containing markdown are auto-detected and sent as cards; plain text messages are sent normally. Falls back to plain text if card sending fails.
 
 ## Group Context
 
