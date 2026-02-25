@@ -321,12 +321,12 @@ Outgoing messages can be rendered as interactive cards with proper markdown form
 ```json
 {
   "message": {
-    "useMarkdownCard": false
+    "useMarkdownCard": true
   }
 }
 ```
 
-Off by default due to mobile display limitations (cards cannot be long-pressed to copy on mobile). When enabled, messages containing markdown are auto-detected and sent as cards; plain text messages are sent normally. Falls back to plain text if card sending fails.
+On by default. Note mobile display limitation: cards cannot be long-pressed to copy on mobile. Can be disabled via `node admin.js set-markdown-card off`. When enabled (cards cannot be long-pressed to copy on mobile). When enabled, messages containing markdown are auto-detected and sent as cards; plain text messages are sent normally. Falls back to plain text if card sending fails.
 
 ## Group Context
 
