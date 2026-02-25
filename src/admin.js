@@ -423,12 +423,10 @@ function migrateGroupConfig(config) {
     migrated = true;
   }
 
-  // Migrate legacy whitelist to dmPolicy/dmAllowFrom
-  // Note: loadConfig() merges DEFAULT_CONFIG which includes dmPolicy,
-  // so we check whitelist presence only (lark DEFAULT_CONFIG has no whitelist)
+  // Migrate legacy whitelist → cleanup and merge users into dmAllowFrom
+  // Note: dmPolicy is already correctly set by loadConfig()'s runtime migration;
+  // this migration only handles user data transfer and legacy field cleanup
   if (config.whitelist) {
-    const wlEnabled = config.whitelist.private_enabled ?? config.whitelist.enabled ?? false;
-    config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
     // Merge both private_users and group_users into dmAllowFrom
     const legacyUsers = [
       ...(config.whitelist.private_users || []),
@@ -440,7 +438,7 @@ function migrateGroupConfig(config) {
         if (!config.dmAllowFrom.includes(u)) config.dmAllowFrom.push(u);
       }
     }
-    migrations.push(`Migrated whitelist.enabled=${wlEnabled} → dmPolicy=${config.dmPolicy}, ${(config.dmAllowFrom || []).length} users in dmAllowFrom`);
+    migrations.push(`Migrated whitelist: ${(config.dmAllowFrom || []).length} users in dmAllowFrom, dmPolicy=${config.dmPolicy}`);
     config._legacy_whitelist = config.whitelist;
     delete config.whitelist;
     migrated = true;

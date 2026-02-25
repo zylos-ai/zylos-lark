@@ -73,18 +73,24 @@ export function loadConfig() {
       if (config.group_whitelist !== undefined && !('groupPolicy' in parsed)) {
         config.groupPolicy = config.group_whitelist?.enabled !== false ? 'allowlist' : 'open';
       }
-      // Runtime backward-compat: migrate legacy whitelist to dmPolicy/dmAllowFrom
-      if (config.whitelist && !('dmPolicy' in parsed)) {
-        const wlEnabled = config.whitelist.private_enabled ?? config.whitelist.enabled ?? false;
-        config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
-        if (!('dmAllowFrom' in parsed)) {
-          const legacyUsers = [
-            ...(config.whitelist.private_users || []),
-            ...(config.whitelist.group_users || [])
-          ];
-          if (legacyUsers.length) {
-            config.dmAllowFrom = legacyUsers;
+      // Runtime backward-compat: derive dmPolicy for configs without explicit dmPolicy
+      if (!('dmPolicy' in parsed)) {
+        if (config.whitelist) {
+          // Has legacy whitelist → derive from it
+          const wlEnabled = config.whitelist.private_enabled ?? config.whitelist.enabled ?? false;
+          config.dmPolicy = wlEnabled ? 'allowlist' : 'open';
+          if (!('dmAllowFrom' in parsed)) {
+            const legacyUsers = [
+              ...(config.whitelist.private_users || []),
+              ...(config.whitelist.group_users || [])
+            ];
+            if (legacyUsers.length) {
+              config.dmAllowFrom = legacyUsers;
+            }
           }
+        } else {
+          // Pre-whitelist era config → no DM restrictions existed, default to open
+          config.dmPolicy = 'open';
         }
       }
     } else {
