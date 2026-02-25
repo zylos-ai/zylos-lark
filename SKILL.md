@@ -134,6 +134,28 @@ $ADM migrate-groups                           # Migrate legacy group config to n
 
 After changes, restart: `pm2 restart zylos-lark`
 
+## Downloading Media by Resource Key
+
+In smart group mode, images and files sent without @mention are logged with
+metadata only (image_key/file_key). Use `download.js` to fetch them on demand:
+
+```bash
+# Download image
+node ~/zylos/.claude/skills/lark/scripts/download.js image <message_id> <image_key>
+
+# Download file
+node ~/zylos/.claude/skills/lark/scripts/download.js file <message_id> <file_key> [filename]
+
+# Examples:
+node ~/zylos/.claude/skills/lark/scripts/download.js image om_xxx img_v3_xxx
+node ~/zylos/.claude/skills/lark/scripts/download.js file om_xxx file_v3_xxx report.pdf
+```
+
+The keys come from context messages like `[image, image_key: xxx, msg_id: xxx]`
+or `[file: name.pdf, file_key: xxx, msg_id: xxx]`.
+
+Output: local file path on success, error message on failure.
+
 ## Config Location
 
 - Config: `~/zylos/components/lark/config.json`
