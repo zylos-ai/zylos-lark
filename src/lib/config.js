@@ -89,8 +89,9 @@ export function loadConfig() {
             }
           }
         } else {
-          // Pre-whitelist era config → no DM restrictions existed, default to open
-          config.dmPolicy = 'open';
+          // Pre-whitelist era config → default to owner (safest default).
+          // Owner binding handles bootstrap: first DM user becomes owner.
+          config.dmPolicy = 'owner';
         }
       }
     } else {
