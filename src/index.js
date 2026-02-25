@@ -987,14 +987,6 @@ function isDmAllowed(userId, openId) {
   if (policy === 'owner') return false;
   // policy === 'allowlist'
   const allowFrom = (config.dmAllowFrom || []).map(String);
-  // Backward compat: also check legacy whitelist.private_users and group_users
-  for (const legacyList of [config.whitelist?.private_users, config.whitelist?.group_users]) {
-    if (legacyList?.length) {
-      for (const u of legacyList) {
-        if (!allowFrom.includes(String(u))) allowFrom.push(String(u));
-      }
-    }
-  }
   const normalizedUserId = userId === undefined || userId === null ? '' : String(userId);
   const normalizedOpenId = openId === undefined || openId === null ? '' : String(openId);
   return (normalizedUserId && allowFrom.includes(normalizedUserId)) ||
