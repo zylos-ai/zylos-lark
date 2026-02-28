@@ -4,6 +4,8 @@
 
 <h1 align="center">🐙 zylos-lark</h1>
 
+> **Zylos** (/ˈzaɪ.lɒs/) — Give your AI a life
+
 <p align="center">
   Lark/Feishu messaging component for <a href="https://github.com/zylos-ai/zylos-core">Zylos</a> agents.
 </p>
