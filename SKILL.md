@@ -62,14 +62,20 @@ Depends on: comm-bridge (C4 message routing).
 ## Sending Messages
 
 ```bash
-# Via C4 bridge (standard path)
-node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>" "Hello!"
+# Via C4 bridge (standard path — always use stdin form)
+cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>"
+Hello!
+EOF
 
 # Send image
-node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>" "[MEDIA:image]/path/to/image.png"
+cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>"
+[MEDIA:image]/path/to/image.png
+EOF
 
 # Send file
-node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>" "[MEDIA:file]/path/to/file.pdf"
+cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>"
+[MEDIA:file]/path/to/file.pdf
+EOF
 ```
 
 Direct send (bypasses C4 logging, for testing only):
