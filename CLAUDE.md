@@ -11,6 +11,18 @@ Development guidelines for zylos-lark.
 - **Secrets in `.env` only** — Never commit secrets. Use `~/zylos/.env` for credentials, `config.json` for non-sensitive runtime config
 - **English for code** — Comments, commit messages, PR descriptions, and documentation in English
 
+## Release Process
+
+When releasing a new version, **all three files** must be updated in the same commit:
+
+1. **`package.json`** — Bump `version` field
+2. **`SKILL.md`** — Update `version` in YAML frontmatter to match package.json
+3. **`CHANGELOG.md`** — Add new version entry following [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format
+
+Version bump commit message: `chore: bump version to X.Y.Z`
+
+After merge, create a GitHub Release with tag `vX.Y.Z` from the merge commit.
+
 ## Architecture
 
 This is a **communication component** for the Zylos agent ecosystem.
