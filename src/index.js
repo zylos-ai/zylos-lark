@@ -789,6 +789,8 @@ async function fetchQuotedMessage(messageId) {
         text = content.text || '';
       } else if (msg.msg_type === 'post') {
         ({ text } = extractPostText(JSON.parse(msg.body?.content || '{}').content || [], messageId));
+      } else if (msg.msg_type === 'interactive') {
+        text = extractInteractiveText(content);
       } else {
         text = `[${msg.msg_type} message]`;
       }
@@ -922,6 +924,60 @@ function extractPostText(paragraphs, messageId) {
   return { text: lines.join('\n'), imageKeys };
 }
 
+/**
+ * Extract text from a Lark interactive card message.
+ * Cards use schema 2.0 with body.elements containing markdown/text tags.
+ * Handles both our own cards and third-party card formats.
+ */
+function extractInteractiveText(content) {
+  try {
+    // Schema 2.0 cards: body.elements[]
+    const elements = content?.body?.elements || [];
+    const parts = [];
+    for (const el of elements) {
+      if (el.tag === 'markdown' && el.content) {
+        parts.push(el.content);
+      } else if (el.tag === 'div' && el.text?.content) {
+        parts.push(el.text.content);
+      } else if (el.tag === 'plain_text' && el.content) {
+        parts.push(el.content);
+      }
+      // Nested columns (column_set → columns → elements)
+      if (el.tag === 'column_set' && el.columns) {
+        for (const col of el.columns) {
+          for (const nested of (col.elements || [])) {
+            if (nested.tag === 'markdown' && nested.content) {
+              parts.push(nested.content);
+            } else if (nested.tag === 'div' && nested.text?.content) {
+              parts.push(nested.text.content);
+            }
+          }
+        }
+      }
+    }
+    if (parts.length > 0) return parts.join('\n');
+
+    // Legacy schema 1.0: elements[] at top level
+    const legacyElements = content?.elements || [];
+    for (const section of legacyElements) {
+      if (Array.isArray(section)) {
+        for (const el of section) {
+          if (el.tag === 'text' && el.text) parts.push(el.text);
+          if (el.tag === 'markdown' && el.content) parts.push(el.content);
+        }
+      }
+    }
+    if (parts.length > 0) return parts.join('\n');
+
+    // Header fallback
+    const header = content?.header?.title?.content;
+    if (header) return `[card] ${header}`;
+  } catch {
+    // Fall through
+  }
+  return '[interactive message]';
+}
+
 // Extract content from Lark message
 // Returns imageKeys as array (all images from post messages, or single image)
 function extractMessageContent(message) {
@@ -949,6 +1005,8 @@ function extractMessageContent(message) {
       return { text: '', imageKeys: content.image_key ? [content.image_key] : [], fileKey: null, fileName: null };
     case 'file':
       return { text: '', imageKeys: [], fileKey: content.file_key, fileName: content.file_name || 'unknown' };
+    case 'interactive':
+      return { text: extractInteractiveText(content), imageKeys: [], fileKey: null, fileName: null };
     default:
       return { text: `[${msgType} message]`, imageKeys: [], fileKey: null, fileName: null };
   }
