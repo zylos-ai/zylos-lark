@@ -459,6 +459,10 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
               const content = parsed.content || [];
               ({ text } = extractPostText(content, msg.id));
             } catch { /* use raw content */ }
+          } else if (msg.type === 'interactive' && typeof text === 'string') {
+            try {
+              text = extractInteractiveText(JSON.parse(text));
+            } catch { /* use raw content */ }
           }
           if (msg.mentions && msg.mentions.length > 0) {
             text = resolveMentions(text, msg.mentions);
