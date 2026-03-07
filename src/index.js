@@ -459,6 +459,10 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
               const content = parsed.content || [];
               ({ text } = extractPostText(content, msg.id));
             } catch { /* use raw content */ }
+          } else if (msg.type === 'interactive' && typeof text === 'string') {
+            try {
+              text = extractInteractiveText(JSON.parse(text));
+            } catch { /* use raw content */ }
           }
           if (msg.mentions && msg.mentions.length > 0) {
             text = resolveMentions(text, msg.mentions);
@@ -789,6 +793,8 @@ async function fetchQuotedMessage(messageId) {
         text = content.text || '';
       } else if (msg.msg_type === 'post') {
         ({ text } = extractPostText(JSON.parse(msg.body?.content || '{}').content || [], messageId));
+      } else if (msg.msg_type === 'interactive') {
+        text = extractInteractiveText(content);
       } else {
         text = `[${msg.msg_type} message]`;
       }
@@ -922,6 +928,76 @@ function extractPostText(paragraphs, messageId) {
   return { text: lines.join('\n'), imageKeys };
 }
 
+/**
+ * Extract text from a Lark interactive card message.
+ *
+ * Important: Lark API transforms cards when reading them back.
+ * - Schema 2.0 cards lose their markdown content entirely; only title + images remain.
+ * - Legacy cards preserve text but in a flattened 2D array format.
+ * - The title moves from header.title.content to a top-level "title" string.
+ *
+ * We handle: original Schema 2.0, original legacy, and API-transformed formats.
+ */
+function extractInteractiveText(content) {
+  try {
+    const parts = [];
+
+    // Schema 2.0 cards (original, before API transformation): body.elements[]
+    const bodyElements = content?.body?.elements || [];
+    for (const el of bodyElements) {
+      if (el.tag === 'markdown' && el.content) {
+        parts.push(el.content);
+      } else if (el.tag === 'div' && el.text?.content) {
+        parts.push(el.text.content);
+      } else if (el.tag === 'plain_text' && el.content) {
+        parts.push(el.content);
+      }
+      // Nested columns (column_set → columns → elements)
+      if (el.tag === 'column_set' && el.columns) {
+        for (const col of el.columns) {
+          for (const nested of (col.elements || [])) {
+            if (nested.tag === 'markdown' && nested.content) {
+              parts.push(nested.content);
+            } else if (nested.tag === 'div' && nested.text?.content) {
+              parts.push(nested.text.content);
+            }
+          }
+        }
+      }
+    }
+    if (parts.length > 0) return parts.join('\n');
+
+    // Legacy / API-transformed format: elements[] at top level (2D array)
+    const legacyElements = content?.elements || [];
+    for (const section of legacyElements) {
+      if (Array.isArray(section)) {
+        for (const el of section) {
+          if (el.tag === 'text' && el.text) parts.push(el.text);
+          if (el.tag === 'markdown' && el.content) parts.push(el.content);
+          if (el.tag === 'lark_md' && el.content) parts.push(el.content);
+        }
+      } else if (section && typeof section === 'object') {
+        // Non-array elements (div, markdown) in legacy format
+        if (section.tag === 'div' && section.text?.content) parts.push(section.text.content);
+        if (section.tag === 'markdown' && section.content) parts.push(section.content);
+        if (section.tag === 'text' && section.text) parts.push(section.text);
+      }
+    }
+
+    // Filter out whitespace-only parts
+    const meaningful = parts.map(p => p.trim()).filter(Boolean);
+    if (meaningful.length > 0) return meaningful.join('\n');
+
+    // Title fallback: API-transformed cards have top-level "title" string,
+    // original cards have header.title.content
+    const title = content?.title || content?.header?.title?.content;
+    if (title) return `[card] ${title}`;
+  } catch {
+    // Fall through
+  }
+  return '[interactive message]';
+}
+
 // Extract content from Lark message
 // Returns imageKeys as array (all images from post messages, or single image)
 function extractMessageContent(message) {
@@ -949,6 +1025,8 @@ function extractMessageContent(message) {
       return { text: '', imageKeys: content.image_key ? [content.image_key] : [], fileKey: null, fileName: null };
     case 'file':
       return { text: '', imageKeys: [], fileKey: content.file_key, fileName: content.file_name || 'unknown' };
+    case 'interactive':
+      return { text: extractInteractiveText(content), imageKeys: [], fileKey: null, fileName: null };
     default:
       return { text: `[${msgType} message]`, imageKeys: [], fileKey: null, fileName: null };
   }
