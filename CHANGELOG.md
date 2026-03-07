@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-03-08
+
+### Added
+- Extract text from interactive card messages (#58)
+  - Support Schema 2.0 cards (body.elements with markdown, div, plain_text, column_set)
+  - Support legacy/API-transformed format (flattened 2D array with text, lark_md tags)
+  - Filter whitespace-only content from API-transformed Schema 2.0 cards
+  - Fall back to card title (both top-level and header.title.content paths)
+  - Applied to webhook messages, quoted message resolution, and group context
+
 ## [0.1.9] - 2026-03-02
 
 ### Security
