@@ -930,15 +930,21 @@ function extractPostText(paragraphs, messageId) {
 
 /**
  * Extract text from a Lark interactive card message.
- * Cards use schema 2.0 with body.elements containing markdown/text tags.
- * Handles both our own cards and third-party card formats.
+ *
+ * Important: Lark API transforms cards when reading them back.
+ * - Schema 2.0 cards lose their markdown content entirely; only title + images remain.
+ * - Legacy cards preserve text but in a flattened 2D array format.
+ * - The title moves from header.title.content to a top-level "title" string.
+ *
+ * We handle: original Schema 2.0, original legacy, and API-transformed formats.
  */
 function extractInteractiveText(content) {
   try {
-    // Schema 2.0 cards: body.elements[]
-    const elements = content?.body?.elements || [];
     const parts = [];
-    for (const el of elements) {
+
+    // Schema 2.0 cards (original, before API transformation): body.elements[]
+    const bodyElements = content?.body?.elements || [];
+    for (const el of bodyElements) {
       if (el.tag === 'markdown' && el.content) {
         parts.push(el.content);
       } else if (el.tag === 'div' && el.text?.content) {
@@ -961,21 +967,31 @@ function extractInteractiveText(content) {
     }
     if (parts.length > 0) return parts.join('\n');
 
-    // Legacy schema 1.0: elements[] at top level
+    // Legacy / API-transformed format: elements[] at top level (2D array)
     const legacyElements = content?.elements || [];
     for (const section of legacyElements) {
       if (Array.isArray(section)) {
         for (const el of section) {
           if (el.tag === 'text' && el.text) parts.push(el.text);
           if (el.tag === 'markdown' && el.content) parts.push(el.content);
+          if (el.tag === 'lark_md' && el.content) parts.push(el.content);
         }
+      } else if (section && typeof section === 'object') {
+        // Non-array elements (div, markdown) in legacy format
+        if (section.tag === 'div' && section.text?.content) parts.push(section.text.content);
+        if (section.tag === 'markdown' && section.content) parts.push(section.content);
+        if (section.tag === 'text' && section.text) parts.push(section.text);
       }
     }
-    if (parts.length > 0) return parts.join('\n');
 
-    // Header fallback
-    const header = content?.header?.title?.content;
-    if (header) return `[card] ${header}`;
+    // Filter out whitespace-only parts
+    const meaningful = parts.map(p => p.trim()).filter(Boolean);
+    if (meaningful.length > 0) return meaningful.join('\n');
+
+    // Title fallback: API-transformed cards have top-level "title" string,
+    // original cards have header.title.content
+    const title = content?.title || content?.header?.title?.content;
+    if (title) return `[card] ${title}`;
   } catch {
     // Fall through
   }
