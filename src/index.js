@@ -1074,6 +1074,10 @@ function isDmAllowed(userId, openId) {
 }
 
 const TRANSCRIBE_SCRIPT = path.join(process.env.HOME, 'zylos/bin/transcribe');
+const VOICE_ENABLED = fs.existsSync(TRANSCRIBE_SCRIPT);
+if (!VOICE_ENABLED) {
+  console.log('[lark] Voice ASR not available (~/zylos/bin/transcribe not found) — voice messages will be rejected gracefully');
+}
 
 /**
  * Transcribe an audio file using local Whisper.
@@ -1202,6 +1206,11 @@ async function handleMessageEvent(event) {
     }
 
     if (audioKey) {
+      if (!VOICE_ENABLED) {
+        const msg = formatMessage('p2p', senderName, '[语音转文字暂不支持，请发送文字]', [], null, { quotedContent, threadContext, threadRootId });
+        sendToC4('lark', endpoint, msg, rejectReply);
+        return;
+      }
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const localPath = path.join(MEDIA_DIR, `lark-${timestamp}-audio.amr`);
       addReaction(messageId, 'Loading').catch(() => {});
@@ -1388,6 +1397,10 @@ async function handleMessageEvent(event) {
       // In smart groups, only process audio when @mentioned
       if (smartNoMention) {
         console.log('[lark] Audio in smart group without @mention, skipping');
+        return;
+      }
+      if (!VOICE_ENABLED) {
+        console.log('[lark] Group audio received but voice ASR not available, skipping');
         return;
       }
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
