@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-03-17
+
+### Added
+- Voice message transcription support via optional voice-asr skill (#61)
+  - DM: all voice messages processed when voice-asr is installed; graceful "not supported" reply when not installed
+  - Group (smart mode): only when @mentioned; group (allowed mode): all voice messages
+  - Loading reaction shown during transcription; removed on completion
+  - Transcription via `~/zylos/bin/transcribe`; voice messages forwarded as `[Voice] <text>`
+  - Temp audio files cleaned up after transcription
+
+### Fixed
+- Audio download API: use `type=file` instead of `type=audio` (the latter returned error 234001) (#61)
+
 ## [0.1.10] - 2026-03-08
 
 ### Added
