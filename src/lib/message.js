@@ -303,6 +303,36 @@ export async function downloadFile(messageId, fileKey, savePath) {
 }
 
 /**
+ * Download audio message from Lark (uses type=audio endpoint)
+ */
+export async function downloadAudio(messageId, fileKey, savePath) {
+  try {
+    const token = await getAccessToken();
+    const proxy = getProxyConfig();
+
+    const res = await axios({
+      method: 'GET',
+      url: `https://open.larksuite.com/open-apis/im/v1/messages/${messageId}/resources/${fileKey}?type=file`,
+      headers: { 'Authorization': 'Bearer ' + token },
+      responseType: 'arraybuffer',
+      proxy,
+      timeout: 30000
+    });
+
+    if (res.data && res.data.length > 0) {
+      fs.writeFileSync(savePath, res.data);
+      return { success: true, path: savePath, message: 'Audio downloaded successfully' };
+    } else {
+      return { success: false, message: 'No data in response' };
+    }
+  } catch (err) {
+    const body = err.response?.data ? Buffer.from(err.response.data).toString('utf8') : null;
+    console.error('[lark] Audio download error body:', body);
+    return { success: false, message: err.message };
+  }
+}
+
+/**
  * Upload file to Lark
  */
 export async function uploadFile(filePath, fileType = 'stream') {
