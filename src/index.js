@@ -16,7 +16,7 @@ import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig, watchConfig, saveConfig, stopWatching, DATA_DIR, getCredentials } from './lib/config.js';
-import { downloadImage, downloadFile, sendMessage, replyToMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
+import { downloadImage, downloadFile, downloadAudio, sendMessage, replyToMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
 import { getBotInfo } from './lib/client.js';
@@ -1024,11 +1024,13 @@ function extractMessageContent(message) {
     case 'image':
       return { text: '', imageKeys: content.image_key ? [content.image_key] : [], fileKey: null, fileName: null };
     case 'file':
-      return { text: '', imageKeys: [], fileKey: content.file_key, fileName: content.file_name || 'unknown' };
+      return { text: '', imageKeys: [], fileKey: content.file_key, fileName: content.file_name || 'unknown', audioKey: null };
+    case 'audio':
+      return { text: '', imageKeys: [], fileKey: null, fileName: null, audioKey: content.file_key || null };
     case 'interactive':
-      return { text: extractInteractiveText(content), imageKeys: [], fileKey: null, fileName: null };
+      return { text: extractInteractiveText(content), imageKeys: [], fileKey: null, fileName: null, audioKey: null };
     default:
-      return { text: `[${msgType} message]`, imageKeys: [], fileKey: null, fileName: null };
+      return { text: `[${msgType} message]`, imageKeys: [], fileKey: null, fileName: null, audioKey: null };
   }
 }
 
@@ -1071,6 +1073,25 @@ function isDmAllowed(userId, openId) {
     (normalizedOpenId && allowFrom.includes(normalizedOpenId));
 }
 
+const TRANSCRIBE_SCRIPT = path.join(process.env.HOME, 'zylos/bin/transcribe');
+
+/**
+ * Transcribe an audio file using local Whisper.
+ * @param {string} audioPath - Local path to audio file
+ * @returns {Promise<string>} Transcribed text
+ */
+function transcribeAudio(audioPath) {
+  return new Promise((resolve, reject) => {
+    execFile(TRANSCRIBE_SCRIPT, [audioPath], { timeout: 90000, encoding: 'utf8' }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(stderr?.trim() || err.message));
+      } else {
+        resolve(stdout.trim());
+      }
+    });
+  });
+}
+
 /**
  * Handle im.message.receive_v1 event.
  */
@@ -1094,7 +1115,7 @@ async function handleMessageEvent(event) {
 
   // Dedup is already checked in the webhook handler (line ~1013)
 
-  const { text, imageKeys, fileKey, fileName } = extractMessageContent(message);
+  const { text, imageKeys, fileKey, fileName, audioKey } = extractMessageContent(message);
   console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
 
   // Build log text with file/image metadata
@@ -1106,6 +1127,10 @@ async function handleMessageEvent(event) {
   if (fileKey) {
     const fileInfo = `[file: ${fileName}, file_key: ${fileKey}, msg_id: ${messageId}]`;
     logText = logText ? `${logText}\n${fileInfo}` : fileInfo;
+  }
+  if (audioKey) {
+    const audioInfo = `[audio, file_key: ${audioKey}, msg_id: ${messageId}]`;
+    logText = logText ? `${logText}\n${audioInfo}` : audioInfo;
   }
 
   // Build structured endpoint with routing metadata
@@ -1173,6 +1198,37 @@ async function handleMessageEvent(event) {
         const msg = formatMessage('p2p', senderName, '[image download failed]', [], null, { quotedContent, threadContext, threadRootId });
         sendToC4('lark', endpoint, msg, rejectReply);
       }
+      return;
+    }
+
+    if (audioKey) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const localPath = path.join(MEDIA_DIR, `lark-${timestamp}-audio.amr`);
+      addReaction(messageId, 'Loading').catch(() => {});
+      const dlResult = await downloadAudio(messageId, audioKey, localPath);
+      if (!dlResult.success) {
+        console.error(`[lark] Audio download failed: ${dlResult.message}`);
+        removeReaction(messageId, 'Loading').catch(() => {});
+        const msg = formatMessage('p2p', senderName, '[语音消息下载失败，请发送文字]', [], null, { quotedContent, threadContext, threadRootId });
+        sendToC4('lark', endpoint, msg, rejectReply);
+        return;
+      }
+      let transcript;
+      try {
+        transcript = await transcribeAudio(localPath);
+      } catch (err) {
+        console.error(`[lark] Audio transcription failed: ${err.message}`);
+        removeReaction(messageId, 'Loading').catch(() => {});
+        fs.unlink(localPath, () => {});
+        const msg = formatMessage('p2p', senderName, '[语音转文字失败，请发送文字]', [], null, { quotedContent, threadContext, threadRootId });
+        sendToC4('lark', endpoint, msg, rejectReply);
+        return;
+      }
+      fs.unlink(localPath, () => {});
+      removeReaction(messageId, 'Loading').catch(() => {});
+      console.log(`[lark] Audio transcribed: "${transcript.substring(0, 60)}"`);
+      const msg = formatMessage('p2p', senderName, `[Voice] ${transcript}`, [], null, { quotedContent, threadContext, threadRootId });
+      sendToC4('lark', endpoint, msg, rejectReply);
       return;
     }
 
@@ -1325,6 +1381,46 @@ async function handleMessageEvent(event) {
       } else {
         removeTypingIndicator(messageId);
       }
+      return;
+    }
+
+    if (audioKey) {
+      // In smart groups, only process audio when @mentioned
+      if (smartNoMention) {
+        console.log('[lark] Audio in smart group without @mention, skipping');
+        return;
+      }
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const localPath = path.join(MEDIA_DIR, `lark-group-${timestamp}-audio.amr`);
+      addReaction(messageId, 'Loading').catch(() => {});
+      const dlResult = await downloadAudio(messageId, audioKey, localPath);
+      if (!dlResult.success) {
+        console.error(`[lark] Group audio download failed: ${dlResult.message}`);
+        removeReaction(messageId, 'Loading').catch(() => {});
+        removeTypingIndicator(messageId);
+        return;
+      }
+      let transcript;
+      try {
+        transcript = await transcribeAudio(localPath);
+      } catch (err) {
+        console.error(`[lark] Group audio transcription failed: ${err.message}`);
+        removeReaction(messageId, 'Loading').catch(() => {});
+        removeTypingIndicator(messageId);
+        fs.unlink(localPath, () => {});
+        return;
+      }
+      fs.unlink(localPath, () => {});
+      removeReaction(messageId, 'Loading').catch(() => {});
+      console.log(`[lark] Group audio transcribed: "${transcript.substring(0, 60)}"`);
+      const msg = formatMessage('group', senderName, `[Voice] ${transcript}`, contextMessages, null, {
+        quotedContent,
+        threadContext,
+        threadRootId,
+        groupName,
+        smartHint: false
+      });
+      sendToC4('lark', endpoint, msg, groupRejectReply);
       return;
     }
 

@@ -51,6 +51,7 @@ http_routes:
 
 dependencies:
   - comm-bridge
+  - voice-asr
 ---
 
 # Lark
