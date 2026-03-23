@@ -1591,9 +1591,8 @@ function shutdown() {
   isShuttingDown = true;
   console.log(`[lark] Shutting down...`);
   // Release WebSocket connection slot first (before time-consuming cleanup)
-  if (config.transport === 'websocket') {
-    stopWebSocket();
-  }
+  // Always call — stopWebSocket() is a no-op if wsClient is null
+  stopWebSocket();
   clearInterval(dedupCleanupInterval);
   clearInterval(typingCheckInterval);
   clearInterval(userCachePersistInterval);
@@ -1696,7 +1695,7 @@ async function startServerWithRetry(port, maxRetries = MAX_LISTEN_RETRIES) {
   server.on('error', (err) => {
     console.error(`[lark] Server error: ${err.message}`);
   });
-  console.log(`[lark] Webhook server running on 127.0.0.1:${PORT}`);
+  console.log(`[lark] HTTP server running on 127.0.0.1:${PORT}`);
 })().catch((err) => {
   console.error(`[lark] Fatal startup error: ${err.message}`);
   process.exit(1);
