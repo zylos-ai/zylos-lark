@@ -16,6 +16,10 @@ export const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 export const DEFAULT_CONFIG = {
   enabled: true,
   webhook_port: 3457,
+  // API domain: 'lark' (international larksuite.com) or 'feishu' (China feishu.cn)
+  domain: 'lark',
+  // Transport mode: 'webhook' (HTTP) or 'websocket' (long connection)
+  transport: 'webhook',
   // Bot settings
   bot: {
     encrypt_key: '',
