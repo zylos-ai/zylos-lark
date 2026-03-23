@@ -19,7 +19,8 @@ import { getConfig, watchConfig, saveConfig, stopWatching, DATA_DIR, getCredenti
 import { downloadImage, downloadFile, downloadAudio, sendMessage, replyToMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
-import { getBotInfo } from './lib/client.js';
+import { getBotInfo, setBotIdentity } from './lib/client.js';
+import { startWebSocket, stopWebSocket, getConnectionState } from './lib/transport/websocket.js';
 
 // C4 receive interface path
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
@@ -1542,11 +1543,19 @@ app.post('/webhook', (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({
+  const healthConfig = getConfig();
+  const health = {
     status: 'ok',
     service: 'zylos-lark',
-    cursors: Object.keys(groupCursors).length
-  });
+    domain: healthConfig.domain || 'lark',
+    transport: healthConfig.transport || 'websocket',
+    uptime: Math.floor(process.uptime()),
+    cursors: Object.keys(groupCursors).length,
+  };
+  if (healthConfig.transport === 'websocket') {
+    Object.assign(health, getConnectionState());
+  }
+  res.json(health);
 });
 
 // Internal endpoint: record bot's outgoing messages into in-memory history
@@ -1581,6 +1590,10 @@ function shutdown() {
   if (isShuttingDown) return;
   isShuttingDown = true;
   console.log(`[lark] Shutting down...`);
+  // Release WebSocket connection slot first (before time-consuming cleanup)
+  if (config.transport === 'websocket') {
+    stopWebSocket();
+  }
   clearInterval(dedupCleanupInterval);
   clearInterval(typingCheckInterval);
   clearInterval(userCachePersistInterval);
@@ -1608,12 +1621,21 @@ function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-// Startup check: verification_token is required
-if (!config.bot?.verification_token) {
-  console.error('[lark] FATAL: bot.verification_token is not configured.');
-  console.error('[lark] Set it in ~/zylos/components/lark/config.json under bot.verification_token');
-  console.error('[lark] Find it in the developer console: Event Subscriptions → Verification Token');
-  process.exit(1);
+// Transport mode selection
+if (config.transport === 'websocket') {
+  // WebSocket long connection mode — no verification_token needed
+  const wsCreds = getCredentials();
+  startWebSocket(config, wsCreds, handleMessageEvent, isDuplicate);
+  console.log('[lark] Transport: WebSocket long connection');
+} else {
+  // Webhook mode — verification_token required
+  if (!config.bot?.verification_token) {
+    console.error('[lark] FATAL: bot.verification_token is not configured.');
+    console.error('[lark] Set it in ~/zylos/components/lark/config.json under bot.verification_token');
+    console.error('[lark] Find it in the developer console: Event Subscriptions → Verification Token');
+    process.exit(1);
+  }
+  console.log('[lark] Transport: Webhook');
 }
 
 // Fetch bot identity then start server
@@ -1660,6 +1682,7 @@ async function startServerWithRetry(port, maxRetries = MAX_LISTEN_RETRIES) {
     if (botInfo.success) {
       botOpenId = botInfo.open_id;
       botAppName = botInfo.app_name || 'bot';
+      setBotIdentity({ openId: botInfo.open_id, appName: botAppName, appId: botAppId });
       console.log(`[lark] Bot identity: ${botAppName} (${botOpenId}, ${botAppId})`);
     } else {
       console.error(`[lark] Warning: Could not fetch bot info: ${botInfo.message}`);
