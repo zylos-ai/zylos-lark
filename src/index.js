@@ -1621,7 +1621,13 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 // Transport mode selection
-if (config.transport === 'websocket') {
+const transport = config.transport || 'websocket';
+if (transport !== 'websocket' && transport !== 'webhook') {
+  console.error(`[lark] FATAL: invalid transport "${transport}". Must be "websocket" or "webhook".`);
+  process.exit(1);
+}
+
+if (transport === 'websocket') {
   // WebSocket long connection mode — no verification_token needed
   const wsCreds = getCredentials();
   startWebSocket(config, wsCreds, handleMessageEvent, isDuplicate);
