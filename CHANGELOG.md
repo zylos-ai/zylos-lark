@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- WebSocket long connection support via `transport: "websocket"` config (default)
+- Configurable API domain via `domain: "feishu" | "lark"` config
+- Richer `/health` endpoint with domain, transport, connection state, and uptime
+
+### Changed
+- Pinned `@larksuiteoapi/node-sdk` to 1.59.0
+- Added PM2 `kill_timeout: 5000` for graceful WebSocket shutdown
+- `verification_token` only required in webhook mode
+
+### Known Issues
+- SDK node-sdk#177: WSClient timer leak on excessive reConnect calls. Mitigated by relying solely on autoReconnect (never calling reConnect externally) + PM2 process-level recovery.
+
 ## [0.1.11] - 2026-03-17
 
 ### Added

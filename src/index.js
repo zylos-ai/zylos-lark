@@ -19,7 +19,8 @@ import { getConfig, watchConfig, saveConfig, stopWatching, DATA_DIR, getCredenti
 import { downloadImage, downloadFile, downloadAudio, sendMessage, replyToMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
-import { getBotInfo } from './lib/client.js';
+import { getBotInfo, setBotIdentity } from './lib/client.js';
+import { startWebSocket, stopWebSocket, getConnectionState } from './lib/transport/websocket.js';
 
 // C4 receive interface path
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
@@ -1542,11 +1543,19 @@ app.post('/webhook', (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({
+  const healthConfig = getConfig();
+  const health = {
     status: 'ok',
     service: 'zylos-lark',
-    cursors: Object.keys(groupCursors).length
-  });
+    domain: healthConfig.domain || 'lark',
+    transport: healthConfig.transport || 'websocket',
+    uptime: Math.floor(process.uptime()),
+    cursors: Object.keys(groupCursors).length,
+  };
+  if (healthConfig.transport === 'websocket') {
+    Object.assign(health, getConnectionState());
+  }
+  res.json(health);
 });
 
 // Internal endpoint: record bot's outgoing messages into in-memory history
@@ -1581,6 +1590,9 @@ function shutdown() {
   if (isShuttingDown) return;
   isShuttingDown = true;
   console.log(`[lark] Shutting down...`);
+  // Release WebSocket connection slot first (before time-consuming cleanup)
+  // Always call — stopWebSocket() is a no-op if wsClient is null
+  stopWebSocket();
   clearInterval(dedupCleanupInterval);
   clearInterval(typingCheckInterval);
   clearInterval(userCachePersistInterval);
@@ -1608,12 +1620,28 @@ function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-// Startup check: verification_token is required
-if (!config.bot?.verification_token) {
-  console.error('[lark] FATAL: bot.verification_token is not configured.');
-  console.error('[lark] Set it in ~/zylos/components/lark/config.json under bot.verification_token');
-  console.error('[lark] Find it in the developer console: Event Subscriptions → Verification Token');
+// Transport mode selection
+const transport = config.transport || 'websocket';
+if (transport !== 'websocket' && transport !== 'webhook') {
+  console.error(`[lark] FATAL: invalid transport "${transport}". Must be "websocket" or "webhook".`);
   process.exit(1);
+}
+
+if (transport === 'websocket') {
+  // WebSocket long connection mode — no verification_token needed
+  const wsCreds = getCredentials();
+  startWebSocket(config, wsCreds, handleMessageEvent, isDuplicate)
+    .then(() => console.log('[lark] Transport: WebSocket long connection'))
+    .catch(err => console.error(`[lark] WebSocket start error: ${err.message}`));
+} else {
+  // Webhook mode — verification_token required
+  if (!config.bot?.verification_token) {
+    console.error('[lark] FATAL: bot.verification_token is not configured.');
+    console.error('[lark] Set it in ~/zylos/components/lark/config.json under bot.verification_token');
+    console.error('[lark] Find it in the developer console: Event Subscriptions → Verification Token');
+    process.exit(1);
+  }
+  console.log('[lark] Transport: Webhook');
 }
 
 // Fetch bot identity then start server
@@ -1660,6 +1688,7 @@ async function startServerWithRetry(port, maxRetries = MAX_LISTEN_RETRIES) {
     if (botInfo.success) {
       botOpenId = botInfo.open_id;
       botAppName = botInfo.app_name || 'bot';
+      setBotIdentity({ openId: botInfo.open_id, appName: botAppName, appId: botAppId });
       console.log(`[lark] Bot identity: ${botAppName} (${botOpenId}, ${botAppId})`);
     } else {
       console.error(`[lark] Warning: Could not fetch bot info: ${botInfo.message}`);
@@ -1673,7 +1702,7 @@ async function startServerWithRetry(port, maxRetries = MAX_LISTEN_RETRIES) {
   server.on('error', (err) => {
     console.error(`[lark] Server error: ${err.message}`);
   });
-  console.log(`[lark] Webhook server running on 127.0.0.1:${PORT}`);
+  console.log(`[lark] HTTP server running on 127.0.0.1:${PORT}`);
 })().catch((err) => {
   console.error(`[lark] Fatal startup error: ${err.message}`);
   process.exit(1);
