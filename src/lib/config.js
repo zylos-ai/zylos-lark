@@ -18,8 +18,8 @@ export const DEFAULT_CONFIG = {
   webhook_port: 3457,
   // API domain: 'lark' (international larksuite.com) or 'feishu' (China feishu.cn)
   domain: 'lark',
-  // Transport mode: 'webhook' (HTTP) or 'websocket' (long connection)
-  transport: 'webhook',
+  // Transport mode: 'websocket' (long connection, default) or 'webhook' (HTTP)
+  transport: 'websocket',
   // Bot settings
   bot: {
     encrypt_key: '',

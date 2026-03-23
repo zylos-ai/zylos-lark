@@ -8,9 +8,19 @@
  */
 
 import * as lark from '@larksuiteoapi/node-sdk';
-import { getCredentials } from './config.js';
+import { getCredentials, getConfig } from './config.js';
+
+const DOMAIN_MAP = {
+  feishu: lark.Domain.Feishu,
+  lark: lark.Domain.Lark,
+};
 
 let clientInstance = null;
+
+// Bot identity — set once at startup, read by multiple modules
+let _botIdentity = { openId: '', appName: 'bot', appId: '' };
+export function setBotIdentity(identity) { _botIdentity = { ..._botIdentity, ...identity }; }
+export function getBotIdentity() { return _botIdentity; }
 
 /**
  * Create and return Lark client instance
@@ -26,11 +36,12 @@ export function getClient() {
     throw new Error('LARK_APP_ID and LARK_APP_SECRET must be set in ~/zylos/.env');
   }
 
+  const cfg = getConfig();
   clientInstance = new lark.Client({
     appId: creds.app_id,
     appSecret: creds.app_secret,
     appType: lark.AppType.SelfBuild,
-    domain: lark.Domain.Lark,  // International version (larksuite.com)
+    domain: DOMAIN_MAP[cfg.domain] || lark.Domain.Lark,
   });
 
   return clientInstance;
