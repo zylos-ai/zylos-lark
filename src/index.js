@@ -1630,8 +1630,9 @@ if (transport !== 'websocket' && transport !== 'webhook') {
 if (transport === 'websocket') {
   // WebSocket long connection mode — no verification_token needed
   const wsCreds = getCredentials();
-  startWebSocket(config, wsCreds, handleMessageEvent, isDuplicate);
-  console.log('[lark] Transport: WebSocket long connection');
+  startWebSocket(config, wsCreds, handleMessageEvent, isDuplicate)
+    .then(() => console.log('[lark] Transport: WebSocket long connection'))
+    .catch(err => console.error(`[lark] WebSocket start error: ${err.message}`));
 } else {
   // Webhook mode — verification_token required
   if (!config.bot?.verification_token) {

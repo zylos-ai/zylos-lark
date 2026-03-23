@@ -29,7 +29,7 @@ let connectionState = {
  * @param {function} handleMessageEvent - the message handler from index.js
  * @param {function} isDuplicate - dedup check function from index.js
  */
-export function startWebSocket(config, credentials, handleMessageEvent, isDuplicate) {
+export async function startWebSocket(config, credentials, handleMessageEvent, isDuplicate) {
   const domain = DOMAIN_MAP[config.domain] || lark.Domain.Lark;
 
   const eventDispatcher = new lark.EventDispatcher({}).register({
@@ -60,7 +60,7 @@ export function startWebSocket(config, credentials, handleMessageEvent, isDuplic
     autoReconnect: true,
   });
 
-  wsClient.start({ eventDispatcher });
+  await wsClient.start({ eventDispatcher });
   connectionState.connected = true;
   connectionState.connectedSince = new Date().toISOString();
   console.log('[lark] WebSocket client started');
