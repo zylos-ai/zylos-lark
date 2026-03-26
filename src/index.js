@@ -764,6 +764,7 @@ function sendToC4(source, endpoint, content, onReject, onSuccess) {
       execFile('node', args, { encoding: 'utf8', timeout: 35000 }, (retryError, retryStdout) => {
         if (!retryError) {
           console.log(`[lark] Sent to C4 (retry): ${content.substring(0, 50)}...`);
+          if (onSuccess) onSuccess();
           return;
         }
         const retryResponse = parseC4Response(retryError.stdout || retryStdout);
