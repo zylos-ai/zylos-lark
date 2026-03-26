@@ -345,29 +345,49 @@ const DEFAULT_HISTORY_LIMIT = 5;
 const chatHistories = new Map();
 
 function recordHistoryEntry(chatId, entry) {
-  if (!chatHistories.has(chatId)) {
-    chatHistories.set(chatId, []);
+  const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
+  if (!chatHistories.has(normalizedChatId)) {
+    chatHistories.set(normalizedChatId, []);
   }
-  const history = chatHistories.get(chatId);
+  const history = chatHistories.get(normalizedChatId);
   // Deduplicate by message_id (lazy load + real-time can overlap)
   if (entry.message_id && history.some(m => m.message_id === entry.message_id)) {
     return;
   }
   history.push(entry);
-  const limit = getGroupHistoryLimit(chatId);
+  const limit = getGroupHistoryLimit(normalizedChatId);
   if (history.length > limit * 2) {
-    chatHistories.set(chatId, history.slice(-limit));
+    chatHistories.set(normalizedChatId, history.slice(-limit));
   }
 }
 
-function getInMemoryContext(chatId, currentMessageId) {
-  const history = chatHistories.get(chatId);
+function sortContextChronologically(messages) {
+  return [...messages].sort((a, b) => {
+    const timeA = Date.parse(a.timestamp || '') || 0;
+    const timeB = Date.parse(b.timestamp || '') || 0;
+    if (timeA !== timeB) return timeA - timeB;
+    return String(a.message_id || '').localeCompare(String(b.message_id || ''));
+  });
+}
+
+function getInMemoryContext(chatId, currentMessageId, { afterMessageId = null } = {}) {
+  const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
+  const history = chatHistories.get(normalizedChatId);
   if (!history || history.length === 0) return [];
 
-  const limit = getGroupHistoryLimit(chatId);
+  const limit = getGroupHistoryLimit(normalizedChatId);
   const filtered = history.filter(m => m.message_id !== currentMessageId);
-  const count = Math.min(limit, filtered.length);
-  return filtered.slice(-count);
+
+  let window = filtered;
+  if (afterMessageId) {
+    const cursorIndex = filtered.findIndex(m => m.message_id === afterMessageId);
+    if (cursorIndex !== -1) {
+      window = filtered.slice(cursorIndex + 1);
+    }
+  }
+
+  const count = Math.min(limit, window.length);
+  return sortContextChronologically(window.slice(-count));
 }
 
 /**
@@ -431,13 +451,13 @@ async function preloadGroupMembers(chatId) {
  */
 const _lazyLoadedContainers = new Set();
 
-async function getContextWithFallback(containerId, currentMessageId, containerType = 'chat') {
+async function getContextWithFallback(containerId, currentMessageId, containerType = 'chat', options = {}) {
   const normalizedContainerId = containerId === undefined || containerId === null ? '' : String(containerId);
   if (!normalizedContainerId) {
-    return getInMemoryContext(containerId, currentMessageId);
+    return getInMemoryContext(containerId, currentMessageId, options);
   }
   if (_lazyLoadedContainers.has(normalizedContainerId)) {
-    return getInMemoryContext(normalizedContainerId, currentMessageId);
+    return getInMemoryContext(normalizedContainerId, currentMessageId, options);
   }
 
   try {
@@ -482,12 +502,12 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
     }
     if (processedAll) {
       _lazyLoadedContainers.add(normalizedContainerId);
-      return getInMemoryContext(normalizedContainerId, currentMessageId);
+      return getInMemoryContext(normalizedContainerId, currentMessageId, options);
     }
   } catch (err) {
     console.log(`[lark] Lazy-load failed for ${containerType} ${normalizedContainerId}: ${err.message}`);
   }
-  return getInMemoryContext(normalizedContainerId, currentMessageId);
+  return getInMemoryContext(normalizedContainerId, currentMessageId, options);
 }
 
 // Resolve user_id to name (with TTL-based in-memory cache)
@@ -583,11 +603,16 @@ async function logMessage(chatType, chatId, userId, openId, text, messageId, tim
 
 // Get group context messages (with API fallback after restart)
 async function getGroupContext(chatId, currentMessageId) {
-  return getContextWithFallback(chatId, currentMessageId, 'chat');
+  const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
+  const lastHandledMessageId = groupCursors[normalizedChatId] || null;
+  return getContextWithFallback(normalizedChatId, currentMessageId, 'chat', {
+    afterMessageId: lastHandledMessageId
+  });
 }
 
 function updateCursor(chatId, messageId) {
-  groupCursors[chatId] = messageId;
+  const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
+  groupCursors[normalizedChatId] = messageId;
   if (!saveCursors(groupCursors)) {
     console.log('[lark] Cursor persistence failed');
   }
