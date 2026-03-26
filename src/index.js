@@ -376,7 +376,9 @@ function getInMemoryContext(chatId, currentMessageId, { afterMessageId = null } 
   if (!history || history.length === 0) return [];
 
   const limit = getGroupHistoryLimit(normalizedChatId);
-  const filtered = history.filter(m => m.message_id !== currentMessageId);
+  const filtered = sortContextChronologically(
+    history.filter(m => m.message_id !== currentMessageId)
+  );
 
   let window = filtered;
   if (afterMessageId) {
@@ -387,7 +389,7 @@ function getInMemoryContext(chatId, currentMessageId, { afterMessageId = null } 
   }
 
   const count = Math.min(limit, window.length);
-  return sortContextChronologically(window.slice(-count));
+  return window.slice(-count);
 }
 
 /**
@@ -732,7 +734,7 @@ function parseC4Response(stdout) {
 /**
  * Send message to Claude via C4 (with 1 retry on unexpected failure)
  */
-function sendToC4(source, endpoint, content, onReject) {
+function sendToC4(source, endpoint, content, onReject, onSuccess) {
   if (!content) {
     console.error('[lark] sendToC4 called with empty content');
     return;
@@ -748,6 +750,7 @@ function sendToC4(source, endpoint, content, onReject) {
   execFile('node', args, { encoding: 'utf8', timeout: 35000 }, (error, stdout) => {
     if (!error) {
       console.log(`[lark] Sent to C4: ${content.substring(0, 50)}...`);
+      if (onSuccess) onSuccess();
       return;
     }
     const response = parseC4Response(error.stdout || stdout);
@@ -1346,7 +1349,12 @@ async function handleMessageEvent(event) {
     // Pre-populate member names (cross-tenant users + bots) before building context
     await preloadGroupMembers(chatId);
     const contextMessages = await getGroupContext(chatId, messageId);
-    updateCursor(chatId, messageId);
+    let cursorUpdated = false;
+    const markCursorDelivered = () => {
+      if (cursorUpdated) return;
+      cursorUpdated = true;
+      updateCursor(chatId, messageId);
+    };
 
     const smartNoMention = smart && !mentioned;
     if (!smartNoMention) {
@@ -1390,7 +1398,7 @@ async function handleMessageEvent(event) {
           groupName,
           smartHint: true
         });
-        sendToC4('lark', endpoint, msg, groupRejectReply);
+        sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
         return;
       }
 
@@ -1412,7 +1420,7 @@ async function handleMessageEvent(event) {
           groupName,
           smartHint: false
         });
-        sendToC4('lark', endpoint, msg, groupRejectReply);
+        sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
       } else {
         removeTypingIndicator(messageId);
       }
@@ -1459,7 +1467,7 @@ async function handleMessageEvent(event) {
         groupName,
         smartHint: false
       });
-      sendToC4('lark', endpoint, msg, groupRejectReply);
+      sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
       return;
     }
 
@@ -1474,7 +1482,7 @@ async function handleMessageEvent(event) {
           groupName,
           smartHint: true
         });
-        sendToC4('lark', endpoint, msg, groupRejectReply);
+        sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
         return;
       }
 
@@ -1496,7 +1504,7 @@ async function handleMessageEvent(event) {
           groupName,
           smartHint: false
         });
-        sendToC4('lark', endpoint, msg, groupRejectReply);
+        sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
       } else {
         removeTypingIndicator(messageId);
       }
@@ -1510,7 +1518,7 @@ async function handleMessageEvent(event) {
       groupName,
       smartHint: smartNoMention
     });
-    sendToC4('lark', endpoint, msg, groupRejectReply);
+    sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
   }
 }
 
