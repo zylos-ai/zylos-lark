@@ -1,6 +1,6 @@
 ---
 name: lark
-version: 0.2.1
+version: 0.2.2
 description: >-
   Lark (international) and Feishu (飞书, China) communication channel.
   Use when: (1) replying to Lark/Feishu messages (DM or group @mentions),
