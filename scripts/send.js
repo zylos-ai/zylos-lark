@@ -18,6 +18,7 @@ import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { getConfig, DATA_DIR } from '../src/lib/config.js';
+import { hasMarkdownContent } from '../src/lib/markdown.js';
 import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
 
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
@@ -144,24 +145,6 @@ function splitMessage(text, maxLength) {
   }
 
   return chunks;
-}
-
-/**
- * Check if text contains markdown formatting worth rendering as a card.
- * Returns true for code blocks, headers, bold, lists, tables, etc.
- */
-function hasMarkdownContent(text) {
-  // Code blocks (``` or indented)
-  if (/```/.test(text)) return true;
-  // Headers (# at start of line)
-  if (/^#{1,6}\s/m.test(text)) return true;
-  // Bold (**text**)
-  if (/\*\*[^*]+\*\*/.test(text)) return true;
-  // Bullet or numbered lists (- item or 1. item at start of line)
-  if (/^[\s]*[-*]\s/m.test(text) || /^[\s]*\d+\.\s/m.test(text)) return true;
-  // Tables (| col | col |)
-  if (/\|.+\|/.test(text) && /^[\s]*\|[\s]*[-:]+/m.test(text)) return true;
-  return false;
 }
 
 // Card max content length (Lark card body limit ~28KB JSON; keep text under 4000 for safety)

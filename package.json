@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "cli": "node src/cli.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test"
   },
   "homepage": "https://github.com/zylos-ai/zylos-lark#readme",
   "bugs": {
