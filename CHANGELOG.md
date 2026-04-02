@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-04-02
+
+### Fixed
+- Markdown-card auto-detection now preserves plain text replies as normal text messages while still rendering markdown content as interactive cards (#69)
+- Runtime config loading now preserves nested `message.useMarkdownCard` defaults for partial configs (#69)
+- Webhook message deduplication extracted into a dedicated helper with regression coverage for issue #68 (#70)
+
+### Security
+- Resolved the `path-to-regexp` audit alert in the Express dependency tree (#70)
+
 ## [0.2.1] - 2026-03-26
 
 ### Fixed
