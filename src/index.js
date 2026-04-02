@@ -20,6 +20,7 @@ import { downloadImage, downloadFile, downloadAudio, sendMessage, replyToMessage
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
 import { getBotInfo, setBotIdentity } from './lib/client.js';
+import { createMessageDeduper, MESSAGE_DEDUP_TTL_MS } from './lib/message-dedup.js';
 import { startWebSocket, stopWebSocket, getConnectionState } from './lib/transport/websocket.js';
 
 // C4 receive interface path
@@ -74,33 +75,21 @@ const USER_CACHE_PATH = path.join(DATA_DIR, 'user-cache.json');
 // ============================================================
 // Message deduplication
 // ============================================================
-const DEDUP_TTL = 5 * 60 * 1000; // 5 minutes
-const processedMessages = new Map();
+const messageDeduper = createMessageDeduper({
+  ttlMs: MESSAGE_DEDUP_TTL_MS,
+  logDuplicate: (messageId) => {
+    console.log(`[lark] Duplicate message_id ${messageId}, skipping`);
+  }
+});
 
 function isDuplicate(messageId) {
-  if (!messageId) return false;
-  if (processedMessages.has(messageId)) {
-    console.log(`[lark] Duplicate message_id ${messageId}, skipping`);
-    return true;
-  }
-  processedMessages.set(messageId, Date.now());
-  // Cleanup old entries
-  if (processedMessages.size > 200) {
-    const now = Date.now();
-    for (const [id, ts] of processedMessages) {
-      if (now - ts > DEDUP_TTL) processedMessages.delete(id);
-    }
-  }
-  return false;
+  return messageDeduper.checkAndMark(messageId);
 }
 
 // Periodic cleanup of expired dedup entries (avoids accumulation in low-traffic chats)
 const dedupCleanupInterval = setInterval(() => {
-  const now = Date.now();
-  for (const [id, ts] of processedMessages) {
-    if (now - ts > DEDUP_TTL) processedMessages.delete(id);
-  }
-}, DEDUP_TTL);
+  messageDeduper.sweepExpired();
+}, MESSAGE_DEDUP_TTL_MS);
 
 // Load configuration
 let config = getConfig();
