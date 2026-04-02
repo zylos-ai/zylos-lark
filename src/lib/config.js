@@ -55,13 +55,36 @@ export const DEFAULT_CONFIG = {
   // Message settings
   message: {
     context_messages: 10,
-    useMarkdownCard: false
+    useMarkdownCard: true
   }
 };
 
 let config = null;
 let configWatcher = null;
 let configReloadTimer = null;
+
+export function mergeConfigWithDefaults(parsed = {}) {
+  return {
+    ...DEFAULT_CONFIG,
+    ...parsed,
+    bot: {
+      ...DEFAULT_CONFIG.bot,
+      ...(parsed.bot || {})
+    },
+    owner: {
+      ...DEFAULT_CONFIG.owner,
+      ...(parsed.owner || {})
+    },
+    proxy: {
+      ...DEFAULT_CONFIG.proxy,
+      ...(parsed.proxy || {})
+    },
+    message: {
+      ...DEFAULT_CONFIG.message,
+      ...(parsed.message || {})
+    }
+  };
+}
 
 /**
  * Load configuration from file
@@ -71,7 +94,7 @@ export function loadConfig() {
     if (fs.existsSync(CONFIG_PATH)) {
       const content = fs.readFileSync(CONFIG_PATH, 'utf8');
       const parsed = JSON.parse(content);
-      config = { ...DEFAULT_CONFIG, ...parsed };
+      config = mergeConfigWithDefaults(parsed);
       // Runtime backward-compat: derive groupPolicy from legacy group_whitelist
       if (config.group_whitelist !== undefined && !('groupPolicy' in parsed)) {
         config.groupPolicy = config.group_whitelist?.enabled !== false ? 'allowlist' : 'open';
@@ -99,11 +122,11 @@ export function loadConfig() {
       }
     } else {
       console.warn(`[lark] Config file not found: ${CONFIG_PATH}`);
-      config = { ...DEFAULT_CONFIG };
+      config = mergeConfigWithDefaults();
     }
   } catch (err) {
     console.error(`[lark] Failed to load config: ${err.message}`);
-    config = { ...DEFAULT_CONFIG };
+    config = mergeConfigWithDefaults();
   }
   return config;
 }
