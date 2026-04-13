@@ -162,10 +162,31 @@ async function main() {
 
         result = await listMessages(args[1], msgLimit, 'desc', startTime, endTime);
         if (result.success && result.messages) {
+          // Build sender name map from group members
+          const nameMap = {};
+          const membersResult = await listChatMembers(args[1], 'open_id');
+          if (membersResult.success && membersResult.members) {
+            membersResult.members.forEach(m => {
+              if (m.memberId && m.name) nameMap[m.memberId] = m.name;
+            });
+          }
+
           console.log(`Found ${result.messages.length} messages:\n`);
           result.messages.forEach(msg => {
             const time = new Date(msg.createTime).toLocaleString();
-            console.log(`[${time}] ${msg.sender}: ${msg.content}`);
+            const senderName = nameMap[msg.sender] || msg.sender;
+
+            // Replace @_user_N placeholders with real names from mentions
+            let content = msg.content;
+            if (msg.mentions && msg.mentions.length > 0) {
+              msg.mentions.forEach(m => {
+                if (m.key && m.name) {
+                  content = content.replaceAll(m.key, `@${m.name}`);
+                }
+              });
+            }
+
+            console.log(`[${time}] ${senderName}: ${content}`);
           });
           process.exit(0);
         }
@@ -298,7 +319,7 @@ async function main() {
           console.error('Usage: lark-cli members <chat_id>');
           process.exit(1);
         }
-        result = await listChatMembers(args[1]);
+        result = await listChatMembers(args[1], args[2] || 'user_id');
         if (result.success && result.members) {
           result.members.forEach(member => {
             console.log(`${member.memberId}  ${member.name || '(no name)'}`);

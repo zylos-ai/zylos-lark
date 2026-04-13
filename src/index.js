@@ -416,7 +416,7 @@ async function preloadGroupMembers(chatId) {
   const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
   if (!normalizedChatId || _preloadedGroups.has(normalizedChatId)) return;
   try {
-    const result = await listChatMembers(normalizedChatId);
+    const result = await listChatMembers(normalizedChatId, 'user_id');
     if (result.success && result.members) {
       const now = Date.now();
       let count = 0;
