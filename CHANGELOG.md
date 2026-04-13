@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.3] - 2026-04-13
 
 ### Fixed
+- CLI `messages` command now displays in chronological order (oldest first) instead of reverse
 - CLI `messages` command now resolves sender open_id to real names via group member lookup (#74)
 - CLI `messages` command replaces `@_user_N` mention placeholders with real display names (#74)
 - CLI `members` command defaults to `user_id` format for consistency with webhook path (#74)
