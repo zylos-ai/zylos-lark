@@ -164,7 +164,7 @@ async function main() {
         if (result.success && result.messages) {
           // Build sender name map from group members
           const nameMap = {};
-          const membersResult = await listChatMembers(args[1], 'open_id');
+          const membersResult = await listChatMembers(args[1], 'user_id');
           if (membersResult.success && membersResult.members) {
             membersResult.members.forEach(m => {
               if (m.memberId && m.name) nameMap[m.memberId] = m.name;
@@ -319,7 +319,7 @@ async function main() {
           console.error('Usage: lark-cli members <chat_id>');
           process.exit(1);
         }
-        result = await listChatMembers(args[1]);
+        result = await listChatMembers(args[1], args[2] || 'user_id');
         if (result.success && result.members) {
           result.members.forEach(member => {
             console.log(`${member.memberId}  ${member.name || '(no name)'}`);
