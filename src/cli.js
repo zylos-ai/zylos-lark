@@ -164,7 +164,7 @@ async function main() {
         if (result.success && result.messages) {
           // Build sender name map from group members
           const nameMap = {};
-          const membersResult = await listChatMembers(args[1], 'user_id');
+          const membersResult = await listChatMembers(args[1], 'open_id');
           if (membersResult.success && membersResult.members) {
             membersResult.members.forEach(m => {
               if (m.memberId && m.name) nameMap[m.memberId] = m.name;
