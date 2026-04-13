@@ -162,6 +162,8 @@ async function main() {
 
         result = await listMessages(args[1], msgLimit, 'desc', startTime, endTime);
         if (result.success && result.messages) {
+          // Reverse to display in chronological order (oldest first)
+          result.messages.reverse();
           // Build sender name map from group members
           const nameMap = {};
           const membersResult = await listChatMembers(args[1], 'open_id');
