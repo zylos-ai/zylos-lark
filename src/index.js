@@ -1011,9 +1011,17 @@ function extractInteractiveText(content) {
     // original cards have header.title.content
     const title = content?.title || content?.header?.title?.content;
     if (title) return `[card] ${title}`;
-  } catch {
-    // Fall through
+  } catch (err) {
+    try {
+      const preview = JSON.stringify(content).slice(0, 2000);
+      console.log(`[lark] extractInteractiveText threw (${err.message}); content preview: ${preview}`);
+    } catch { /* unable to stringify */ }
+    return '[interactive message]';
   }
+  try {
+    const preview = JSON.stringify(content).slice(0, 2000);
+    console.log(`[lark] extractInteractiveText: unrecognized card schema, content preview: ${preview}`);
+  } catch { /* unable to stringify */ }
   return '[interactive message]';
 }
 
