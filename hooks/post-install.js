@@ -84,11 +84,11 @@ installLarkCliBinary();
 console.log('\nEnsuring lark-cli sub-skills are installed...');
 installLarkCliSkills(SKILL_DIR);
 
-// 5. Sync App ID / Secret from ~/zylos/.env into lark-cli's keychain
-//    Reuses zylos-core/cli/lib/config-init-store.js — interoperable with the
-//    Go lark-cli binary, so subsequent `--as bot` calls just work.
+// 5. Sync App ID / Secret from ~/zylos/.env into lark-cli's keychain.
+//    Uses src/lib/config-init-store.js — interoperable with the Go
+//    lark-cli binary, so subsequent `--as bot` calls just work.
 console.log('\nSyncing App credentials to lark-cli keychain...');
-await syncCredentialsToLarkCli();
+syncCredentialsToLarkCli();
 
 // 6. Prompt for verification token (terminal mode only)
 if (isInteractive) {

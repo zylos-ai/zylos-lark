@@ -299,7 +299,7 @@ console.log('\nEnsuring lark-cli integration is in place...');
 try {
   installLarkCliBinary();
   installLarkCliSkills(SKILL_DIR);
-  await syncCredentialsToLarkCli();
+  syncCredentialsToLarkCli();
 } catch (err) {
   console.error('lark-cli integration migration failed:', err.message);
   process.exit(1);

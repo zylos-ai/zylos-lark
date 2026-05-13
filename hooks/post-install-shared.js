@@ -17,6 +17,7 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import { parse as parseDotenv } from 'dotenv';
+import { saveLarkCliConfig } from '../src/lib/config-init-store.js';
 
 const LARK_CLI_NPM_PACKAGE = '@larksuite/cli';
 const XC_SKILLS_SOURCE = 'https://github.com/larksuite/cli';
@@ -86,11 +87,11 @@ export function installLarkCliSkills(skillDir) {
  *
  * Throws if both appId and appSecret cannot be resolved.
  *
- * Writes via zylos-core's `saveLarkCliConfig` — identical schema and
- * AES-256-GCM keychain layout to the Go lark-cli, so the binary
- * picks up the secret on its next call.
+ * Writes via `saveLarkCliConfig` (../src/lib/config-init-store.js) — same
+ * schema and AES-256-GCM keychain layout as the Go lark-cli, so the
+ * binary picks up the secret on its next call.
  */
-export async function syncCredentialsToLarkCli(opts = {}) {
+export function syncCredentialsToLarkCli(opts = {}) {
   let { appId, appSecret, envFile = DEFAULT_ENV_FILE } = opts;
 
   if ((!appId || !appSecret) && fs.existsSync(envFile)) {
@@ -108,7 +109,6 @@ export async function syncCredentialsToLarkCli(opts = {}) {
     );
   }
 
-  const { saveLarkCliConfig } = await loadConfigInitStore();
   const result = saveLarkCliConfig({
     appId,
     appSecret,
@@ -119,45 +119,4 @@ export async function syncCredentialsToLarkCli(opts = {}) {
   console.log(`${LOG_PREFIX}   config:   ${result.configPath}`);
   console.log(`${LOG_PREFIX}   keychain: ${result.keychainID}`);
   return result;
-}
-
-/**
- * Locate zylos-core's `cli/lib/config-init-store.js` and dynamic-import it.
- *
- * Search order:
- *   1. process.env.ZYLOS_CORE_LIB (explicit override; future-proof)
- *   2. dirname(realpath(`zylos` binary)) + 'lib'
- *      This works for both:
- *        - npm-installed: `$(npm root -g)/zylos/cli/lib/...`
- *        - dev clone:     `~/zylos/workspace/zylos-core/cli/lib/...` (via symlink)
- */
-async function loadConfigInitStore() {
-  const candidates = [];
-
-  if (process.env.ZYLOS_CORE_LIB) {
-    candidates.push(process.env.ZYLOS_CORE_LIB);
-  }
-
-  try {
-    const binPath = execSync('command -v zylos', { encoding: 'utf8' }).trim();
-    if (binPath) {
-      const realPath = fs.realpathSync(binPath);
-      candidates.push(path.join(path.dirname(realPath), 'lib'));
-    }
-  } catch {
-    // zylos binary not on PATH; fall through to error if no other candidate
-  }
-
-  for (const dir of candidates) {
-    const filePath = path.join(dir, 'config-init-store.js');
-    if (fs.existsSync(filePath)) {
-      return await import(`file://${filePath}`);
-    }
-  }
-
-  throw new Error(
-    `Could not locate zylos-core's config-init-store.js. ` +
-    `Set ZYLOS_CORE_LIB env var, or ensure the \`zylos\` command is on PATH. ` +
-    `Searched: [${candidates.join(', ') || '(no candidates)'}]`
-  );
 }
