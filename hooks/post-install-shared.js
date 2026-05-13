@@ -6,7 +6,8 @@
  *   1. installLarkCliBinary()           - probe + `npm install -g @larksuite/cli`
  *   2. installLarkCliSkills(skillDir)   - probe + `npx xc-skills add larksuite/cli`
  *                                          (populates skillDir/references/)
- *   3. syncCredentialsToLarkCli(opts)   - read ~/zylos/.env, call saveLarkCliConfig
+ *   3. syncCredentialsToLarkCli(opts)   - read ~/zylos/.env, delegate to
+ *                                          `lark-cli config init --app-secret-stdin`
  *                                          (writes lark-cli config + keychain)
  *
  * Each function throws on failure; the caller decides whether to abort.
@@ -15,15 +16,14 @@
 
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { parse as parseDotenv } from 'dotenv';
-import { saveLarkCliConfig } from '../src/lib/config-init-store.js';
 
 const LARK_CLI_NPM_PACKAGE = '@larksuite/cli';
 const XC_SKILLS_SOURCE = 'https://github.com/larksuite/cli';
 const SUB_SKILL_PROBE = path.join('lark-im', 'SKILL.md');
 const LARK_BRAND = 'lark';
-const LARK_LANG = 'zh';
+const DEFAULT_LARK_LANG = 'zh';
 const DEFAULT_ENV_FILE = path.join(process.env.HOME || '', 'zylos/.env');
 const LOG_PREFIX = '[zylos-lark]';
 
@@ -77,30 +77,43 @@ export function installLarkCliSkills(skillDir) {
 }
 
 /**
- * Push LARK_APP_ID / LARK_APP_SECRET into lark-cli's keychain so that
- * `--as bot` calls work out of the box (no separate `lark-cli config init`).
+ * Push LARK_APP_ID / LARK_APP_SECRET into lark-cli's keychain by delegating
+ * to `lark-cli config init --app-secret-stdin`. The Go binary already
+ * implements all the AES-256-GCM keychain writing logic; calling it
+ * removes ~1000 lines of duplicate code and eliminates the risk of
+ * schema drift between our copy and lark-cli's source of truth.
  *
- * Resolution order for credentials:
- *   1. Explicit `opts.appId` / `opts.appSecret`
- *   2. `~/zylos/.env` (parsed via dotenv.parse, no side effects on process.env)
- *   3. process.env.LARK_APP_ID / LARK_APP_SECRET
+ * Prerequisite: `lark-cli` must be on PATH — call installLarkCliBinary()
+ * before this function.
  *
- * Throws if both appId and appSecret cannot be resolved.
+ * Resolution order (first non-empty wins per field):
+ *   appId / appSecret:
+ *     1. opts.appId / opts.appSecret
+ *     2. ~/zylos/.env  (parsed via dotenv.parse, no side effects on process.env)
+ *     3. process.env.LARK_APP_ID / LARK_APP_SECRET
+ *   lang:
+ *     1. opts.lang
+ *     2. ~/zylos/.env  LARK_LANG
+ *     3. process.env.LARK_LANG
+ *     4. fallback 'zh'
  *
- * Writes via `saveLarkCliConfig` (../src/lib/config-init-store.js) — same
- * schema and AES-256-GCM keychain layout as the Go lark-cli, so the
- * binary picks up the secret on its next call.
+ * Throws if appId or appSecret cannot be resolved, or if `lark-cli config
+ * init` itself fails (non-zero exit).
+ *
+ * Secret is piped via stdin so it never appears in the process listing.
  */
 export function syncCredentialsToLarkCli(opts = {}) {
-  let { appId, appSecret, envFile = DEFAULT_ENV_FILE } = opts;
+  let { appId, appSecret, lang, envFile = DEFAULT_ENV_FILE } = opts;
 
-  if ((!appId || !appSecret) && fs.existsSync(envFile)) {
+  if (fs.existsSync(envFile)) {
     const parsed = parseDotenv(fs.readFileSync(envFile));
     appId = appId || parsed.LARK_APP_ID;
     appSecret = appSecret || parsed.LARK_APP_SECRET;
+    lang = lang || parsed.LARK_LANG;
   }
   appId = appId || process.env.LARK_APP_ID;
   appSecret = appSecret || process.env.LARK_APP_SECRET;
+  lang = lang || process.env.LARK_LANG || DEFAULT_LARK_LANG;
 
   if (!appId || !appSecret) {
     throw new Error(
@@ -109,14 +122,24 @@ export function syncCredentialsToLarkCli(opts = {}) {
     );
   }
 
-  const result = saveLarkCliConfig({
-    appId,
-    appSecret,
-    brand: LARK_BRAND,
-    lang: LARK_LANG,
+  execFileSync('lark-cli', [
+    'config', 'init',
+    '--app-id', appId,
+    '--app-secret-stdin',
+    '--brand', LARK_BRAND,
+    '--lang', lang,
+  ], {
+    input: appSecret + '\n',
+    stdio: ['pipe', 'inherit', 'inherit'],
   });
-  console.log(`${LOG_PREFIX} synced App credentials to lark-cli`);
-  console.log(`${LOG_PREFIX}   config:   ${result.configPath}`);
-  console.log(`${LOG_PREFIX}   keychain: ${result.keychainID}`);
-  return result;
+
+  console.log(`${LOG_PREFIX} synced App credentials to lark-cli (brand=${LARK_BRAND}, lang=${lang})`);
+
+  return {
+    appId,
+    brand: LARK_BRAND,
+    lang,
+    configPath: path.join(process.env.HOME || '', '.lark-cli', 'config.json'),
+    keychainID: `appsecret:${appId}`,
+  };
 }
