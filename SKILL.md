@@ -7,7 +7,7 @@ description: >-
   (2) sending proactive messages or media (images, files) to Lark/Feishu users or groups,
   (3) managing DM access control (dmPolicy: open/allowlist/owner, dmAllowFrom list),
   (4) managing group access control (groupPolicy, per-group allowFrom, smart/mention modes),
-  (5) reading or creating Lark documents, spreadsheets, or calendar events via CLI,
+  (5) operating Feishu/Lark productivity surfaces via the bundled lark-cli — documents, sheets, slides, multidim Base, calendar, tasks, mail, drive, wiki/whiteboard, OKR, approval, attendance, video conferencing, minutes, native OpenAPI explorer (see "Bundled Capability Modules" section in SKILL.md body — full module index under references/),
   (6) configuring the bot (admin CLI, markdown card settings, verification token, encrypt key),
   (7) troubleshooting Lark webhook or service issues.
   Config at ~/zylos/components/lark/config.json. Service: pm2 zylos-lark.
@@ -59,6 +59,84 @@ dependencies:
 Lark/Feishu communication channel for zylos.
 
 Depends on: comm-bridge (C4 message routing).
+
+## Bundled Capability Modules (lark-cli)
+
+This skill bundles **25 capability modules** under `references/`, each operating against Feishu/Lark via the `lark-cli` binary. **They are not auto-loaded as top-level skills** — Claude Code's skill discovery only scans top-level directories, and these sub-modules live inside this skill. The parent `SKILL.md` (this file) is the entry point.
+
+**How to use a module**: when a user's request maps to one of the modules below, `Read` that module's `SKILL.md` first to learn its exact commands/flags, then invoke `lark-cli <module> ...`.
+
+**Prerequisites** (installed automatically by `zylos add lark` / `zylos upgrade lark` — see `hooks/post-install-shared.js`):
+- `lark-cli` binary on PATH (`npm install -g @larksuite/cli`).
+- 25 sub-skill folders under `references/lark-*/` (`npx xc-skills add larksuite/cli`).
+- App credentials in lark-cli's keychain (`~/.lark-cli/config.json` + AES-256-GCM encrypted file under `~/.local/share/lark-cli/`); pushed from `~/zylos/.env` automatically.
+
+**Identity (`--as bot` vs `--as user`)**:
+- `--as bot` works out of the box for surfaces that operate on app/tenant-level resources (IM messaging, contacts, app-level docs, events). No extra login needed.
+- `--as user` is required for surfaces tied to a real user's data (calendar, mail-write, tasks, attendance, OKR, minutes, VC-agent). The user runs `lark-cli auth login --domain <name>` once; on auth failure, `src/lib/lark-cli-bridge.js` catches the typed error and can DM the owner with the login command.
+
+### Module Index
+
+Path prefix for all entries: `references/`
+
+#### Messaging & people
+| Module | Use when… |
+|---|---|
+| `lark-im/SKILL.md` | Send/search messages, manage groups and members, upload/download media (chunked for large files) |
+| `lark-contact/SKILL.md` | Resolve names/emails ↔ open_ids; look up department / contact info |
+
+#### Docs & drive
+| Module | Use when… |
+|---|---|
+| `lark-doc/SKILL.md` | Lark Docs v2: create / fetch / update (DocxXML or Markdown); search Drive |
+| `lark-sheets/SKILL.md` | Spreadsheets: create, read/write cells, append rows, find |
+| `lark-slides/SKILL.md` | Presentations: create, read, page/element ops (XML protocol) |
+| `lark-markdown/SKILL.md` | Markdown file create / read / upload / edit |
+| `lark-drive/SKILL.md` | Drive files & folders: upload, download, copy, move, metadata |
+| `lark-wiki/SKILL.md` | Wiki: spaces, members, node hierarchy |
+| `lark-whiteboard/SKILL.md` | Whiteboards: query, export preview image, DSL edits |
+
+#### Productivity
+| Module | Use when… |
+|---|---|
+| `lark-base/SKILL.md` | Base (multi-dim tables): search base, tables, fields, records, views, dashboards, forms, roles |
+| `lark-calendar/SKILL.md` | Calendar events: agenda, create, update, delete, attendees, reminders |
+| `lark-task/SKILL.md` | Task lists, subtasks, collaborators, status |
+| `lark-mail/SKILL.md` | Mail: draft / send / reply / forward / search; drafts, folders, labels, contacts, attachments, rules |
+
+#### HR / workflow
+| Module | Use when… |
+|---|---|
+| `lark-approval/SKILL.md` | Approval instances and tasks |
+| `lark-attendance/SKILL.md` | Personal attendance / clock-in records |
+| `lark-okr/SKILL.md` | OKR cycles, objectives, key results, alignment, metrics |
+
+#### Meetings & A/V
+| Module | Use when… |
+|---|---|
+| `lark-vc/SKILL.md` | Video conferencing history, meeting summaries (notes/todos/chapters/transcripts), participant snapshots |
+| `lark-vc-agent/SKILL.md` | Have the bot join/leave a live meeting on the user's behalf; consume real-time events |
+| `lark-minutes/SKILL.md` | Minutes: list, basic info, transcripts, AI summaries |
+
+#### Workflows & platform
+| Module | Use when… |
+|---|---|
+| `lark-workflow-meeting-summary/SKILL.md` | Roll up meeting minutes over a time range |
+| `lark-workflow-standup-report/SKILL.md` | Orchestrate calendar + task into a standup summary |
+| `lark-event/SKILL.md` | Subscribe / consume real-time events as NDJSON streams |
+| `lark-openapi-explorer/SKILL.md` | Discover native OpenAPI endpoints not yet wrapped by CLI shortcuts |
+| `lark-skill-maker/SKILL.md` | Author new sub-skills wrapping lark-cli (atomic APIs or multi-step flows) |
+| `lark-shared/SKILL.md` | Shared utilities / types referenced by other modules (rarely invoked directly) |
+
+### Loading Convention
+
+Before running `lark-cli <module> <subcmd>`:
+
+1. Read `references/<module>/SKILL.md` to confirm exact subcommands, flags, and required vs. optional args.
+2. If that module's `SKILL.md` references additional docs under its own `references/` subdirectory, read those as well.
+3. Run the command.
+
+Skipping step 1 risks calling wrong subcommand names or missing required flags — `lark-cli` is feature-rich and each module covers dozens of subcommands.
 
 ## Sending Messages
 
