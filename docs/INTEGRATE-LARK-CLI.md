@@ -4,7 +4,8 @@
 > - v1 (`00237f8`): initial draft
 > - v2: address review comments from PR #77 — 取消 `xc-skills` 全局安装,改 `npx @latest`;`lark-cli` 安装失败改为中止安装;`appId/appSecret` 由 `zylos-lark` 注入 `lark-cli`,user 认证延迟到首次调用时再做;补充升级路径与 skill 自动发现的说明。
 > - v3: 补齐 `lark-cli` 二进制(`@larksuite/cli`)的安装步骤;`add`/`upgrade` 流程均改为「先探测,缺失才装」;升级路径补齐对老版 `zylos-lark`(只有 `.env`、没有 lark-cli)的迁移;凭据写入通过 `saveLarkCliConfig`(与 Go 版 lark-cli 同字段、同算法,直接落 keychain)。
-> - **v4 (this revision)**: 把 `config-init-store.js` 从 `zylos-core` 挪进 `zylos-lark/src/lib/`。zylos-core 自己没人 import 这个文件(`feat/update-lark` 上的 `add.js` 集成是探索版本,已废弃),留在那里只会给 zylos-lark 的 hook 制造一个跨仓库 import 解析的麻烦。挪到本仓库后,hook 走相对路径 import,版本演进独立,测试无需 mock 路径。
+> - v4: 把 `config-init-store.js` 从 `zylos-core` 挪进 `zylos-lark/src/lib/`。zylos-core 自己没人 import 这个文件(`feat/update-lark` 上的 `add.js` 集成是探索版本,已废弃),留在那里只会给 zylos-lark 的 hook 制造一个跨仓库 import 解析的麻烦。挪到本仓库后,hook 走相对路径 import,版本演进独立,测试无需 mock 路径。
+> - **v5 (this revision)**: 回应 PR #78 review 第一点 —— **彻底删掉 `src/lib/config-init-store.js`(1003 行)**,改成在 `syncCredentialsToLarkCli` 里直接 `execFileSync('lark-cli', ['config', 'init', '--app-id', ..., '--app-secret-stdin', ...])` 调 Go 二进制自带的非交互模式。等价性已实测:同 `config.json` schema、同 `.enc` 字节布局、同 AES-256-GCM master.key。Go 是源头,永不漂移。另加 `lang` 字段优先级:`opts.lang` → `.env` `LARK_LANG` → `process.env.LARK_LANG` → 默认 `'zh'`。
 
 ## 1. 背景
 
@@ -80,7 +81,7 @@ npx xc-skills@latest add https://github.com/larksuite/cli --out <target-dir> -y
 | --- | --- | --- | --- |
 | 1 | `zylos-core` | `cli/commands/add.js` | 确保 `add` 流程会调用被安装 skill 的 `post-install` 钩子。 |
 | 2 | `zylos-lark` | `hooks/post-install.js` | **(a)** 探测 `lark-cli` 二进制是否在 PATH 上;缺失则 `npm install -g @larksuite/cli`。**(b)** 探测 `${SKILL_DIR}/references/lark-im/SKILL.md` 是否存在(子 skill 已铺探针);缺失则 `npx xc-skills@latest add https://github.com/larksuite/cli --out ${SKILL_DIR}/references -y` 平铺装 20+ Agent Skill。两步任一失败即中止。 |
-| 3 | `zylos-lark` | `hooks/post-install.js` + `src/lib/config-init-store.js`(新) | 把 `~/zylos/.env` 的 `LARK_APP_ID` / `LARK_APP_SECRET` 同步给 `lark-cli`(写 `~/.lark-cli/config.json` + 加密 secret 落 keychain)。`config-init-store.js` 字节复制自 `zylos-core feat/update-lark @ e9b63d1` (gavin 的原版),挪到 zylos-lark 后做相对路径 import,字段名、AES-256-GCM 算法、文件布局与 Go 版 lark-cli 完全互操作(见 §4.4)。 |
+| 3 | `zylos-lark` | `hooks/post-install.js` | 把 `~/zylos/.env` 的 `LARK_APP_ID` / `LARK_APP_SECRET` 同步给 `lark-cli`:`syncCredentialsToLarkCli` 直接 `execFileSync('lark-cli', ['config', 'init', '--app-id', ..., '--app-secret-stdin', '--brand lark', '--lang', lang])`,secret 走 stdin 不进 process 列表。Go 二进制自己写 `~/.lark-cli/config.json` + AES-256-GCM 加密 secret 落 keychain,跟它自己 `config init` 完全等价(见 §4.4)。 |
 | 4 | `zylos-lark` | `hooks/post-upgrade.js` | 老版 `zylos-lark`(无 lark-cli)升级时,**幂等地**跑同样的 (a)/(b)/凭据同步三步,把缺失的部分补齐(见 §4.6)。 |
 | 5 | `zylos-lark` | `SKILL.md` | 增加 `Bundled Sub-skills` 章节,描述 `references/` 下 20+ 子 skill 的存在 + 职责分工。 |
 | 6 | `zylos-lark` | `src/lib/lark-cli-bridge.js`(新文件) | 包一层 `runLarkCli()`,识别 user-auth 缺失时通过 C4 引导 owner 完成 `auth login`(见 §4.5)。 |
@@ -108,11 +109,10 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-// keychain 写入逻辑(与 Go 版 lark-cli 互操作)。
-// 该模块封装了:写 ~/.lark-cli/config.json(appSecret 字段存 {source:"keychain", id:"appsecret:<appId>"})、
-// AES-256-GCM 加密 appSecret 到 ~/.local/share/lark-cli/appsecret_<appId>.enc(Linux)、
-// 主密钥落同目录 master.key,macOS 走 system Keychain / Windows 走 DPAPI+registry。
-import { saveLarkCliConfig } from '../src/lib/config-init-store.js';
+// 直接调 lark-cli config init 自带的非交互模式 —— Go 二进制已经实现了所有
+// keychain 写入逻辑(config.json schema、AES-256-GCM、master.key、跨平台
+// keystore),没必要在 JS 里再写一遍。
+import { execSync, execFileSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const skillRoot = path.resolve(__dirname, '..');
@@ -156,27 +156,35 @@ function installLarkCliSkills() {
   );
 }
 
-function syncCredentialsToLarkCli() {
-  const appId = process.env.LARK_APP_ID;
-  const appSecret = process.env.LARK_APP_SECRET;
+function syncCredentialsToLarkCli({ appId, appSecret, lang } = {}) {
+  // 优先级:opts > .env file > process.env > default(lang 才有 default)
+  // 这里省略 .env 读取细节;实现以仓库代码为准
+  appId = appId || process.env.LARK_APP_ID;
+  appSecret = appSecret || process.env.LARK_APP_SECRET;
+  lang = lang || process.env.LARK_LANG || 'zh';
   if (!appId || !appSecret) {
-    throw new Error('LARK_APP_ID / LARK_APP_SECRET missing in env');
+    throw new Error('LARK_APP_ID / LARK_APP_SECRET missing');
   }
-  // saveLarkCliConfig 内部完成:
-  //   1) 把 appSecret 明文 AES-256-GCM 加密,写到 ~/.local/share/lark-cli/appsecret_<appId>.enc
-  //   2) master.key(同目录,0600)缺失则创建
-  //   3) 写 ~/.lark-cli/config.json,appSecret 字段使用 {source:"keychain", id:"appsecret:<appId>"} 引用
-  //   4) 与 Go 版 lark-cli 的 keychain 字段名、加密参数、文件布局完全一致 —— lark-cli 下次启动可直接读
-  const result = saveLarkCliConfig({
-    appId,
-    appSecret,
-    brand: 'lark',  // 本组件即为 lark,固定写死
-    lang: 'zh',
+
+  // 直接调 Go 二进制的非交互模式:
+  //   - --app-id 走 argv,不敏感
+  //   - --app-secret-stdin 把明文通过 stdin 喂进去,不进 process listing
+  //   - brand 固定 'lark'(本组件即为 lark)
+  //   - lark-cli 内部:写 ~/.lark-cli/config.json + AES-256-GCM 加密 secret 落
+  //     ~/.local/share/lark-cli/appsecret_<appId>.enc(Linux);macOS 走系统
+  //     Keychain;Windows 走 DPAPI+registry。schema/算法跟它自己 `config init`
+  //     完全等价,我们不再维护一份 JS port。
+  execFileSync('lark-cli', [
+    'config', 'init',
+    '--app-id', appId,
+    '--app-secret-stdin',
+    '--brand', 'lark',
+    '--lang', lang,
+  ], {
+    input: appSecret + '\n',
+    stdio: ['pipe', 'inherit', 'inherit'],
   });
-  console.log('[zylos-lark] synced App credentials to lark-cli:', {
-    configPath: result.configPath,
-    keychainID: result.keychainID,
-  });
+  console.log(`[zylos-lark] synced App credentials to lark-cli (brand=lark, lang=${lang})`);
 }
 
 // 三步均失败即中止,与 §4.4 "中止 + 回滚" 一致
@@ -195,28 +203,44 @@ console.log(
 - **三步均幂等 + 先探测后安装**:
   - `lark-cli` 二进制:`command -v` 探测,缺失才 `npm install -g @larksuite/cli`。
   - 子 skill 包:`references/lark-im/SKILL.md` 探针,缺失才 `npx xc-skills add`。
-  - 凭据同步:每次都调 `saveLarkCliConfig`(`atomicWrite` + 写 keychain),覆盖式更新,Owner 在 `zylos add lark` 时输入的最新值始终落地。
+  - 凭据同步:每次都调 `lark-cli config init --app-secret-stdin`(Go 自己用 `atomicWrite` 写 config + 加密 keychain),覆盖式更新,Owner 在 `zylos add lark` 时输入的最新值始终落地。
 - **非全局 xc-skills**:`npx xc-skills@latest`,绕开对 npm 全局目录的写权限要求(`@larksuite/cli` 本身必须 `-g`,但只在 lark-cli 首次安装时执行一次,可接受)。
 - **失败中止**:不再 `try/catch + warn`,任一环节非零退出 → `add.js` 回滚 zylos-lark 主体安装。
-- **凭据复用 = 直接落 lark-cli keychain**:不写 YAML / dotfile,直接调 `saveLarkCliConfig`,与 Go 版 lark-cli 的 `~/.lark-cli/config.json` schema + AES-256-GCM keychain 完全互操作。User 不需要在 lark-cli 里再 `config init` 一次。
+- **凭据复用 = 直接调 lark-cli 自己的 `config init`**:不写 YAML / dotfile,不在 JS 里 reimplement 加密逻辑,直接执行 `lark-cli config init --app-id ... --app-secret-stdin --brand lark --lang <lang>`。Go 二进制自己写 `~/.lark-cli/config.json` schema + AES-256-GCM keychain,User 不需要在 lark-cli 里再 `config init` 一次。
+- **`lang` 字段优先级**:`opts.lang` → `.env` 的 `LARK_LANG` → `process.env.LARK_LANG` → 默认 `'zh'`。覆盖到 lark-cli 提示语言、报错日志语言等可本地化的输出。
 - **末尾提示**:User 级 OAuth 是延迟触发的,但仍打印一条提示告知 owner 「有需要时再 `auth login`」,避免用户误以为漏装了什么。
 
-### 4.2.1 `saveLarkCliConfig` 来源
+### 4.2.1 为什么是 `execFileSync('lark-cli', ['config', 'init', ...])` 而不是自己写 JS keychain
 
-**`config-init-store.js` 字节复制自 `zylos-core feat/update-lark @ e9b63d1`(gavin 的原版),完整搬到 `zylos-lark/src/lib/config-init-store.js`,不再走跨仓库 import**。
+v3/v4 早期版本里有一份 `src/lib/config-init-store.js`(1003 行,做了 AES-256-GCM 加密、master.key 管理、`~/.lark-cli/config.json` 原子写、跨平台 keystore 等)。v5 全部删了 —— **直接调 Go 二进制自己的 `lark-cli config init` 非交互模式**。
 
-为什么不留在 zylos-core:
+`lark-cli config init -h` 列出的非交互 flag(实测可用):
 
-| 维度 | 留在 zylos-core | 挪进 zylos-lark(本方案) |
+```
+--app-id string      App ID (non-interactive)
+--app-secret-stdin   Read App Secret from stdin to avoid process list exposure
+--brand string       feishu or lark (default feishu)
+--lang string        language for prompts (zh or en)
+--name string        create or update a named profile (append instead of replace)
+```
+
+实测等价性(用 `config init --app-id <test> --app-secret-stdin` 写一个测试 profile,跟 JS port 的产出比对):
+
+| 维度 | JS port(已删) | `lark-cli config init`(本方案) |
 |---|---|---|
-| 唯一消费者 | zylos-lark | zylos-lark ✓ |
-| 内容性质 | `SERVICE = "lark-cli"` 硬编码,全是 lark-cli keychain 互操作逻辑 | 与 zylos-lark "我就是 lark 组件" 职责对齐 |
-| import 复杂度 | 运行时 `which zylos → realpath → 拼 lib/ → 动态 import(file://...)` | `import from '../src/lib/config-init-store.js'` 一行 |
-| 跨仓库依赖 | 需要 `npm link` 或 `ZYLOS_CORE_LIB` 环境变量解析 | 零依赖 |
-| 版本耦合 | lark-cli 改 keychain 格式 → zylos-core 和 zylos-lark 必须协调发版 | 只 zylos-lark 改一处 |
-| 测试 | 单测必须 mock import 路径 | 普通相对 import,直接测 |
+| `~/.lark-cli/config.json` schema | `{source:"keychain", id:"appsecret:<appId>"}` 引用 | 同 ✓ |
+| `~/.local/share/lark-cli/appsecret_<appId>.enc` 布局 | 12 nonce + ciphertext + 16 GCM tag | 同 ✓ |
+| 加密算法 | AES-256-GCM | 同 ✓ |
+| `master.key`(同目录) | 复用 / 不存在则创建 | 完全一样 ✓ |
+| 多 profile / cleanup 语义(无 `--name` 时清空其他 app) | 同 | 同 ✓ |
 
-未来如果出现第二个 lark-cli-using zylos 组件需要复用,届时再考虑抽包,YAGNI。
+为什么这么改:
+
+- **删 1003 行**:维护负担消失;JS 那份不再独立测试,集成测改成"调 Go 二进制后读 `config show` 断言"。
+- **永不漂移**:Go 是 keychain 格式的唯一源头,后续 lark-cli 改字段或加 entropy mode,我们自动跟上;不再需要"手动同步"。
+- **secret 走 stdin 不进 process list**:跟之前的 JS path 一致(JS path 也是接收 `appSecret` 参数,不经 argv),这条没退化。
+
+前置约束:`lark-cli` 必须在 PATH 上。本方案的 hook 顺序是 `installLarkCliBinary` → `installLarkCliSkills` → `syncCredentialsToLarkCli`,二进制装好才会跑到这一步,约束自动满足。
 
 ### 4.3 改动:`zylos-lark/SKILL.md` 增加 `Bundled Sub-skills` 章节
 
@@ -264,7 +288,7 @@ console.log(
 | `zylos-lark` 主体安装失败 | 中止 + 回滚 | 与改前一致 |
 | `npm install -g @larksuite/cli` 失败(npm 网络 / 全局写权限) | 中止 + 回滚 | 安装失败,提示检查 npm 全局目录权限或网络,可手动跑后重试 |
 | `npx xc-skills add` 失败(网络 / 包不可达) | 中止 + 回滚 | 安装失败,提示重试 |
-| `saveLarkCliConfig` 失败(`.env` 缺字段 / keychain 写入失败 / `config.json` 原子写失败) | 中止 + 回滚 | 安装失败,提示先在 `zylos add lark` 阶段把 `appId/appSecret` 配齐 |
+| `lark-cli config init` 失败(`.env` 缺字段 / keychain 写入失败 / Go 二进制非零退出) | 中止 + 回滚 | 安装失败,提示先在 `zylos add lark` 阶段把 `appId/appSecret` 配齐 |
 | runtime user-scope 未认证 | `runLarkCli` 捕获 → C4 发 DM 引导 `auth login` | owner 收 IM,扫码后告诉 agent 重试 |
 
 → 与 v1 的关键差异:**不再有 "warn 并继续"** 的分支。`lark-cli` 任何环节出错都拒绝完成本次 `zylos add lark`,与 review comment #2 一致。
@@ -336,8 +360,8 @@ console.log('[zylos-lark] post-upgrade migration done');
 
 为什么 `syncCredentialsToLarkCli` 不做"已存在则跳过":
 
-- `.env` 是 owner 凭据的**单一来源**,owner 在 Lark 后台 Reset App Secret 后只需改 `.env`;`post-upgrade` 跑一次 `saveLarkCliConfig` 即可把新 secret 推进 keychain,无需手动 `lark-cli config init`。
-- `saveLarkCliConfig` 内部用 `atomicWrite` + `keychainSet` 覆盖式写,幂等且并发安全。
+- `.env` 是 owner 凭据的**单一来源**,owner 在 Lark 后台 Reset App Secret 后只需改 `.env`;`post-upgrade` 跑一次 `syncCredentialsToLarkCli` 即可把新 secret 推进 keychain,无需手动 `lark-cli config init`。
+- `syncCredentialsToLarkCli` 内部直接 exec `lark-cli config init`,Go 二进制自己保证原子写 + keychain 覆盖,幂等且并发安全。
 
 边界情况:
 
@@ -357,19 +381,20 @@ console.log('[zylos-lark] post-upgrade migration done');
   ```
 - `lark-cli` 自带的 20+ Agent Skill 由 xc-skills **平铺**装到 `references/`(不嵌套在 `references/lark-cli/` 子目录里),每个 `references/lark-*/` 都是一个独立的 skill,**agent 会自动发现并加载它们**(因为各自带 SKILL.md)。
   → 这意味着 §4.3 的 `Bundled Sub-skills` 章节不是为"被发现"而存在,而是为「告诉 agent 在 zylos-lark 自身能力与 `references/` 下子 skill 之间该选谁」存在。
-- **`lark-cli` 的 keychain 已验证可互操作**:用 `src/lib/config-init-store.js` 的 `saveLarkCliConfig` 写入凭据后,lark-cli 进程能正确读取并完成端到端调用(实测 `lark-cli api GET /open-apis/bot/v3/info --as bot` 返回 `code:0` + bot 真身信息)。strace 确认进程依序读取 `~/.lark-cli/config.json` → `appsecret_<appId>.enc` → `master.key`,然后向 `/open-apis/auth/v3/tenant_access_token/internal` 换 token。
+- **`lark-cli` 的 keychain 已验证可互操作**:`syncCredentialsToLarkCli` 直接调 `lark-cli config init --app-secret-stdin` 写入凭据;后续 `lark-cli api GET /open-apis/bot/v3/info --as bot` 返回 `code:0` + bot 真身信息(已实测)。strace 确认进程依序读取 `~/.lark-cli/config.json` → `appsecret_<appId>.enc` → `master.key`,然后向 `/open-apis/auth/v3/tenant_access_token/internal` 换 token。
+- **`lark-cli config init` 自带完整非交互模式**:`--app-id` + `--app-secret-stdin` + `--brand` + `--lang` 即可,secret 走 stdin 不进 process listing。与 v3/v4 临时引入的 JS port 在 schema、字节布局、加密参数上完全一致(已实测对比)。v5 删 JS port,改调 Go 二进制。
 - **App 认证无需浏览器跳转**:有了 `appId + appSecret` 直接 POST `tenant_access_token/internal` 即可换出 `tenant_access_token`(`expire ~ 7200s`);浏览器跳转仅用于 user-scope 的 `auth login`,不适用于 App 身份。
 - `lark-cli` 的 User 认证必须通过 `auth login --recommend`(扫码 / 浏览器),无法在安装阶段自动完成。
 
 ## 6. 待验证
 
 - `add.js` 当前是否已经调用 `post-install` 钩子?(决定 §4.1 的实际工作量)
-- ~~`lark-cli` config 文件的真实路径与 schema~~ **(v3 已解决)**:实测路径 `~/.lark-cli/config.json`(JSON 而非 YAML);`appSecret` 字段不是明文,而是 `{source:"keychain", id:"appsecret:<appId>"}` 引用;明文经 AES-256-GCM 加密落 `~/.local/share/lark-cli/appsecret_<appId>.enc`,主密钥 `master.key` 同目录、0600。`saveLarkCliConfig` 已封装,直接复用即可。
-- ~~`saveLarkCliConfig` 的依赖路径~~ **(v4 已解决)**:`config-init-store.js` 直接挪进 `zylos-lark/src/lib/`,hook 走相对路径 import,不再需要跨仓库解析。
+- ~~`lark-cli` config 文件的真实路径与 schema~~ **(v3 已解决)**:实测路径 `~/.lark-cli/config.json`(JSON 而非 YAML);`appSecret` 字段不是明文,而是 `{source:"keychain", id:"appsecret:<appId>"}` 引用;明文经 AES-256-GCM 加密落 `~/.local/share/lark-cli/appsecret_<appId>.enc`,主密钥 `master.key` 同目录、0600。
+- ~~`saveLarkCliConfig` 的依赖路径~~ **(v5 不适用)**:JS port 已删,本方案直接 `execFileSync('lark-cli', ['config', 'init', ...])` 调 Go 二进制非交互模式;v4 的 vendor 路径讨论作废。
 - **`lark-cli` "未认证"错误的具体字串 / exit code**:`runLarkCli()` 的兜底匹配需要枚举确认,避免漏判 / 误判。实测 calendar/mail 等域返回 `calendar_user_login_required` 类型 + exit code 3,可作为匹配锚点;其它域待补全。
 - **`lark-cli auth login` 是否支持 device code flow**:决定能否把扫码 URL 直接推到 IM。
 - **多 runtime 影响**:Claude Code / Codex 都会读 `SKILL.md`,理论上无差异;需要在 Codex 上跑一次确认。
-- **凭据轮换联动**:owner 在 Lark 后台 Reset App Secret 后改 `.env`,需要触发一次 `saveLarkCliConfig` 才能让 lark-cli 也用新值。已规划两条触发点:(a) `zylos upgrade lark` 的 `post-upgrade` 钩子无条件重同步(§4.6.1);(b) zylos-lark 自带的 `admin set-app-credentials` 命令(本次先打 TODO)。
+- **凭据轮换联动**:owner 在 Lark 后台 Reset App Secret 后改 `.env`,需要触发一次 `syncCredentialsToLarkCli` 才能让 lark-cli 也用新值。已规划两条触发点:(a) `zylos upgrade lark` 的 `post-upgrade` 钩子无条件重同步(§4.6.1);(b) zylos-lark 自带的 `admin set-app-credentials` 命令(本次先打 TODO)。
 
 ## 7. 测试方案
 
@@ -381,7 +406,7 @@ console.log('[zylos-lark] post-upgrade migration done');
 - `installLarkCliSkills`:mock 探针文件存在 / 不存在;`npx xc-skills add` 成功 / 失败。
 - `syncCredentialsToLarkCli`:
   - mock `.env` 缺 `LARK_APP_ID` → 抛错 → hook 非零退出。
-  - mock `saveLarkCliConfig` 抛 keychain 写入异常 → 同样非零退出。
+  - mock `execFileSync('lark-cli', ...)` 抛非零退出 → hook 同样非零退出。
   - 正常路径:断言 `~/.lark-cli/config.json` 里 `appSecret.id === "appsecret:<appId>"`、`~/.local/share/lark-cli/appsecret_<appId>.enc` 长度 = 12+ciphertext+16。
 
 ### 集成测试
@@ -391,7 +416,7 @@ console.log('[zylos-lark] post-upgrade migration done');
   - `references/` 下 lark-cli 的 20+ 子 skill 全部存在(至少抽样断言 `lark-im/SKILL.md`、`lark-calendar/SKILL.md`、`lark-mail/SKILL.md` 存在)
   - `~/.lark-cli/config.json` 中 `apps[0].appId` 等于 `.env` 里的 `LARK_APP_ID`
   - `~/.local/share/lark-cli/appsecret_<appId>.enc` 存在且非空,`master.key` 存在且为 32 字节
-  - 用 `saveLarkCliConfig` 导出的 `decryptData` 解出来的明文 == `.env` 里的 `LARK_APP_SECRET`(端到端回环)
+  - 跑完 hook 后 `lark-cli api GET /open-apis/bot/v3/info --as bot` 返回 `code:0`(端到端 token 交换打通,等价于"keychain 写入了正确的 secret")
   - 终端打印了 user OAuth 提示
 - **再次 `zylos add lark`** → 断言所有三步走"已存在则跳过"或"覆盖式重写",整体退出码 0。
 - **模拟离线** → 断言**主体安装失败**(不是 warn 继续)。
@@ -420,7 +445,7 @@ console.log('[zylos-lark] post-upgrade migration done');
 
 > Q2. lark-cli 的 App 认证是否可以复用 zylos-lark 的?
 
-**可以,而且本方案把它列为强约束**。`post-install` / `post-upgrade` 调用 `syncCredentialsToLarkCli`(§4.2),底层直接调用本仓库 `src/lib/config-init-store.js`(v4 从 zylos-core vendor 进来)的 `saveLarkCliConfig`,把 `.env` 的 `appId/appSecret` 写进 `~/.lark-cli/config.json` + `~/.local/share/lark-cli/appsecret_<appId>.enc`(AES-256-GCM,master.key 同目录)。Owner 不需要再跑 `lark-cli config init`,后续浏览器跳转那一步也不需要(App 身份的 `tenant_access_token` 用 `appId + 解密后的 appSecret` 直接换,见 §5 已验证决策)。
+**可以,而且本方案把它列为强约束**。`post-install` / `post-upgrade` 调用 `syncCredentialsToLarkCli`(§4.2),底层直接 `execFileSync('lark-cli', ['config', 'init', '--app-id', ..., '--app-secret-stdin', ...])` —— 让 Go 二进制自己把 `.env` 的 `appId/appSecret` 写进 `~/.lark-cli/config.json` + `~/.local/share/lark-cli/appsecret_<appId>.enc`(AES-256-GCM,master.key 同目录)。Owner 不需要再交互式跑 `lark-cli config init`,后续浏览器跳转那一步也不需要(App 身份的 `tenant_access_token` 用 `appId + 解密后的 appSecret` 直接换,见 §5 已验证决策)。
 
 > Q3. User 认证应该装完就让用户认证,还是用到时再认证?
 
