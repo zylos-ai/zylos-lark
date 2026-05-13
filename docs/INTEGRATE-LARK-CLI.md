@@ -420,8 +420,43 @@ console.log('[zylos-lark] post-upgrade migration done');
 
 > Q2. lark-cli 的 App 认证是否可以复用 zylos-lark 的?
 
-**可以,而且本方案把它列为强约束**。`post-install` / `post-upgrade` 调用 `syncCredentialsToLarkCli`(§4.2),底层直接复用 `zylos-core/cli/lib/config-init-store.js` 的 `saveLarkCliConfig`,把 `.env` 的 `appId/appSecret` 写进 `~/.lark-cli/config.json` + `~/.local/share/lark-cli/appsecret_<appId>.enc`(AES-256-GCM,master.key 同目录)。Owner 不需要再跑 `lark-cli config init`,后续浏览器跳转那一步也不需要(App 身份的 `tenant_access_token` 用 `appId + 解密后的 appSecret` 直接换,见 §5 已验证决策)。
+**可以,而且本方案把它列为强约束**。`post-install` / `post-upgrade` 调用 `syncCredentialsToLarkCli`(§4.2),底层直接调用本仓库 `src/lib/config-init-store.js`(v4 从 zylos-core vendor 进来)的 `saveLarkCliConfig`,把 `.env` 的 `appId/appSecret` 写进 `~/.lark-cli/config.json` + `~/.local/share/lark-cli/appsecret_<appId>.enc`(AES-256-GCM,master.key 同目录)。Owner 不需要再跑 `lark-cli config init`,后续浏览器跳转那一步也不需要(App 身份的 `tenant_access_token` 用 `appId + 解密后的 appSecret` 直接换,见 §5 已验证决策)。
 
 > Q3. User 认证应该装完就让用户认证,还是用到时再认证?
 
 **用到时再认证**(reviewer 也是这个意见)。安装阶段只在终端打一句提示,不阻塞 `zylos add lark` 流程;runtime 首次触发 user-scope 命令时,由 `runLarkCli` 捕获错误 → C4 给 owner 发 DM 引导。这样既不打扰只用 IM 通道的用户,也不会让真用 user-scope 功能的人陷在"不知道还要登录"的盲区。
+
+> Q4. `npm install -g @larksuite/cli` 里的 `-g` 加不加有什么影响?
+
+**必须加 `-g`**(`installLarkCliBinary` 在 §4.2 已固定加上)。三点理由:
+
+| 加 `-g`(本方案) | 不加 `-g`(❌) |
+|---|---|
+| 装到 npm 全局 bin 目录(如 `~/.nvm/versions/node/v24.15.0/bin/lark-cli`),该目录在全局 PATH 上,任何 shell 都能直接 `lark-cli ...` 调用 | 装到**当前 cwd** 的 `node_modules/`(前提是 cwd 是个 npm 项目);只能 `npx lark-cli` 或脚本里 `require` —— shell 里直接 `lark-cli` 拿不到命令,后续 hook / agent / 子 skill 全部失效 |
+| 不需要 root —— 只要 node 是当前用户装的(如通过 nvm),npm 全局 bin 目录就在用户家目录下,无需 `sudo` | 取决于当前 cwd 是不是 Node 项目;非 Node 项目目录跑会直接报错 |
+| 跨项目共用,只装一次 | 每个 Node 项目都得装一次 |
+
+→ `installLarkCliBinary` 的 `commandExists('lark-cli')` 探针检查的是**全局 PATH**,不加 `-g` 的话永远命中失败,陷入死循环或反复 npm install。
+
+> Q5. 这套方案 Claude(Claude Code)和 Codex 都用得了吗?
+
+**Codex:开箱即用**,会自动把 `references/lark-*/SKILL.md` 全部识别为独立 skill(20+ 子 skill 都进 available 列表)。
+
+**Claude(Claude Code):不能自动发现子 skill**,必须靠父 `SKILL.md` 做"目录索引 + 调度指引":
+
+- Claude Code 的 skill 自动发现机制**只扫描顶层目录** `~/.claude/skills/<name>/SKILL.md`,**不递归子目录**。所以 `references/lark-im/SKILL.md`、`references/lark-doc/SKILL.md` 等等不会出现在 Claude 的 available-skills 列表里,也不会被 description 自动匹配触发。
+- 解决办法:在父 `SKILL.md`(本仓库根)里,把每个子 skill 的能力、入口、加载约定写清楚,让 Claude 通过父 skill 的 description 命中后,再 `Read references/<module>/SKILL.md` 拿命令清单。
+- 这就是 §4.3 的"Bundled Sub-skills"章节存在的根本原因 —— 不是给 Codex 看的(Codex 自己能发现),是给 Claude 看的。
+
+→ 同一份 `references/lark-*/` 目录布局,**两个 runtime 都能用**;差别只在父 `SKILL.md` 需不需要写索引段 —— 写了 Codex 无副作用,不写 Claude 直接瞎。所以本方案统一写,通吃。
+
+> Q6. 简要版:权限认证复用是怎么解决的?
+
+`zylos add lark` 安装时两步走:
+
+1. **zylos-core(`add.js` 第 6 步)** 提示用户输入 `LARK_APP_ID` / `LARK_APP_SECRET`,写入 `~/zylos/.env`
+2. **zylos-lark(`hooks/post-install.js`)** 跑 `syncCredentialsToLarkCli()`,从 `.env` 读 appId/appSecret,经 AES-256-GCM 加密后写入 `~/.local/share/lark-cli/appsecret_<appId>.enc`,同时在 `~/.lark-cli/config.json` 里建立 `{source:"keychain", id:"appsecret:<appId>"}` 引用
+
+lark-cli 启动时按 `config.json` 的引用解密 `.enc` 拿到明文 appSecret,跟 Go 版 lark-cli 自己 `config init` 的产物完全等价。**用户全程不需要再单独跑一次 `lark-cli config init` 或粘贴一次 appSecret**。
+
+详细字段名、算法选型、互操作性证据见 §4.2 / §5 / Q2。
