@@ -3,7 +3,8 @@
 > Revision history
 > - v1 (`00237f8`): initial draft
 > - v2: address review comments from PR #77 — 取消 `xc-skills` 全局安装,改 `npx @latest`;`lark-cli` 安装失败改为中止安装;`appId/appSecret` 由 `zylos-lark` 注入 `lark-cli`,user 认证延迟到首次调用时再做;补充升级路径与 skill 自动发现的说明。
-> - **v3 (this revision)**: 补齐 `lark-cli` 二进制(`@larksuite/cli`)的安装步骤;`add`/`upgrade` 流程均改为「先探测,缺失才装」;升级路径补齐对老版 `zylos-lark`(只有 `.env`、没有 lark-cli)的迁移;凭据写入复用 `zylos-core/cli/lib/config-init-store.js` 的 `saveLarkCliConfig`(与 Go 版 lark-cli 同字段、同算法,直接落 keychain)。
+> - v3: 补齐 `lark-cli` 二进制(`@larksuite/cli`)的安装步骤;`add`/`upgrade` 流程均改为「先探测,缺失才装」;升级路径补齐对老版 `zylos-lark`(只有 `.env`、没有 lark-cli)的迁移;凭据写入通过 `saveLarkCliConfig`(与 Go 版 lark-cli 同字段、同算法,直接落 keychain)。
+> - **v4 (this revision)**: 把 `config-init-store.js` 从 `zylos-core` 挪进 `zylos-lark/src/lib/`。zylos-core 自己没人 import 这个文件(`feat/update-lark` 上的 `add.js` 集成是探索版本,已废弃),留在那里只会给 zylos-lark 的 hook 制造一个跨仓库 import 解析的麻烦。挪到本仓库后,hook 走相对路径 import,版本演进独立,测试无需 mock 路径。
 
 ## 1. 背景
 
@@ -79,7 +80,7 @@ npx xc-skills@latest add https://github.com/larksuite/cli --out <target-dir> -y
 | --- | --- | --- | --- |
 | 1 | `zylos-core` | `cli/commands/add.js` | 确保 `add` 流程会调用被安装 skill 的 `post-install` 钩子。 |
 | 2 | `zylos-lark` | `hooks/post-install.js` | **(a)** 探测 `lark-cli` 二进制是否在 PATH 上;缺失则 `npm install -g @larksuite/cli`。**(b)** 探测 `${SKILL_DIR}/references/lark-im/SKILL.md` 是否存在(子 skill 已铺探针);缺失则 `npx xc-skills@latest add https://github.com/larksuite/cli --out ${SKILL_DIR}/references -y` 平铺装 20+ Agent Skill。两步任一失败即中止。 |
-| 3 | `zylos-lark` | `hooks/post-install.js` | 把 `~/zylos/.env` 的 `LARK_APP_ID` / `LARK_APP_SECRET` 同步给 `lark-cli`(写 `~/.lark-cli/config.json` + 加密 secret 落 keychain)。**复用 `zylos-core/cli/lib/config-init-store.js` 的 `saveLarkCliConfig`**,字段名、AES-256-GCM 算法、文件布局与 Go 版 lark-cli 完全互操作(见 §4.4)。 |
+| 3 | `zylos-lark` | `hooks/post-install.js` + `src/lib/config-init-store.js`(新) | 把 `~/zylos/.env` 的 `LARK_APP_ID` / `LARK_APP_SECRET` 同步给 `lark-cli`(写 `~/.lark-cli/config.json` + 加密 secret 落 keychain)。`config-init-store.js` 字节复制自 `zylos-core feat/update-lark @ e9b63d1` (gavin 的原版),挪到 zylos-lark 后做相对路径 import,字段名、AES-256-GCM 算法、文件布局与 Go 版 lark-cli 完全互操作(见 §4.4)。 |
 | 4 | `zylos-lark` | `hooks/post-upgrade.js` | 老版 `zylos-lark`(无 lark-cli)升级时,**幂等地**跑同样的 (a)/(b)/凭据同步三步,把缺失的部分补齐(见 §4.6)。 |
 | 5 | `zylos-lark` | `SKILL.md` | 增加 `Bundled Sub-skills` 章节,描述 `references/` 下 20+ 子 skill 的存在 + 职责分工。 |
 | 6 | `zylos-lark` | `src/lib/lark-cli-bridge.js`(新文件) | 包一层 `runLarkCli()`,识别 user-auth 缺失时通过 C4 引导 owner 完成 `auth login`(见 §4.5)。 |
@@ -107,11 +108,11 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-// 复用 zylos-core 已有的、跟 Go 版 lark-cli 互操作的 keychain 写入逻辑。
+// keychain 写入逻辑(与 Go 版 lark-cli 互操作)。
 // 该模块封装了:写 ~/.lark-cli/config.json(appSecret 字段存 {source:"keychain", id:"appsecret:<appId>"})、
 // AES-256-GCM 加密 appSecret 到 ~/.local/share/lark-cli/appsecret_<appId>.enc(Linux)、
 // 主密钥落同目录 master.key,macOS 走 system Keychain / Windows 走 DPAPI+registry。
-import { saveLarkCliConfig } from '<zylos-core>/cli/lib/config-init-store.js';
+import { saveLarkCliConfig } from '../src/lib/config-init-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const skillRoot = path.resolve(__dirname, '..');
@@ -202,7 +203,20 @@ console.log(
 
 ### 4.2.1 `saveLarkCliConfig` 来源
 
-**直接 import 复用 `zylos-core/cli/lib/config-init-store.js`,不重写、不 vendor**。该模块已实现与 Go 版 lark-cli 完全互操作的 keychain 写入逻辑(AES-256-GCM、`master.key`、`~/.lark-cli/config.json` 中 `{source:"keychain", id:"appsecret:<appId>"}` 引用形式),`zylos-lark` 的 hook 通过 import 直接调用即可,日后 schema 变更也只需 zylos-core 一处维护。具体 import 路径(相对路径 / Node module resolution / 由 `add.js` 注入)由 §4.1 `add.js` 的实现确定。
+**`config-init-store.js` 字节复制自 `zylos-core feat/update-lark @ e9b63d1`(gavin 的原版),完整搬到 `zylos-lark/src/lib/config-init-store.js`,不再走跨仓库 import**。
+
+为什么不留在 zylos-core:
+
+| 维度 | 留在 zylos-core | 挪进 zylos-lark(本方案) |
+|---|---|---|
+| 唯一消费者 | zylos-lark | zylos-lark ✓ |
+| 内容性质 | `SERVICE = "lark-cli"` 硬编码,全是 lark-cli keychain 互操作逻辑 | 与 zylos-lark "我就是 lark 组件" 职责对齐 |
+| import 复杂度 | 运行时 `which zylos → realpath → 拼 lib/ → 动态 import(file://...)` | `import from '../src/lib/config-init-store.js'` 一行 |
+| 跨仓库依赖 | 需要 `npm link` 或 `ZYLOS_CORE_LIB` 环境变量解析 | 零依赖 |
+| 版本耦合 | lark-cli 改 keychain 格式 → zylos-core 和 zylos-lark 必须协调发版 | 只 zylos-lark 改一处 |
+| 测试 | 单测必须 mock import 路径 | 普通相对 import,直接测 |
+
+未来如果出现第二个 lark-cli-using zylos 组件需要复用,届时再考虑抽包,YAGNI。
 
 ### 4.3 改动:`zylos-lark/SKILL.md` 增加 `Bundled Sub-skills` 章节
 
@@ -343,7 +357,7 @@ console.log('[zylos-lark] post-upgrade migration done');
   ```
 - `lark-cli` 自带的 20+ Agent Skill 由 xc-skills **平铺**装到 `references/`(不嵌套在 `references/lark-cli/` 子目录里),每个 `references/lark-*/` 都是一个独立的 skill,**agent 会自动发现并加载它们**(因为各自带 SKILL.md)。
   → 这意味着 §4.3 的 `Bundled Sub-skills` 章节不是为"被发现"而存在,而是为「告诉 agent 在 zylos-lark 自身能力与 `references/` 下子 skill 之间该选谁」存在。
-- **`lark-cli` 的 keychain 已验证可互操作**:用 `zylos-core/cli/lib/config-init-store.js` 的 `saveLarkCliConfig` 写入凭据后,lark-cli 进程能正确读取并完成端到端调用(实测 `lark-cli api GET /open-apis/bot/v3/info --as bot` 返回 `code:0` + bot 真身信息)。strace 确认进程依序读取 `~/.lark-cli/config.json` → `appsecret_<appId>.enc` → `master.key`,然后向 `/open-apis/auth/v3/tenant_access_token/internal` 换 token。
+- **`lark-cli` 的 keychain 已验证可互操作**:用 `src/lib/config-init-store.js` 的 `saveLarkCliConfig` 写入凭据后,lark-cli 进程能正确读取并完成端到端调用(实测 `lark-cli api GET /open-apis/bot/v3/info --as bot` 返回 `code:0` + bot 真身信息)。strace 确认进程依序读取 `~/.lark-cli/config.json` → `appsecret_<appId>.enc` → `master.key`,然后向 `/open-apis/auth/v3/tenant_access_token/internal` 换 token。
 - **App 认证无需浏览器跳转**:有了 `appId + appSecret` 直接 POST `tenant_access_token/internal` 即可换出 `tenant_access_token`(`expire ~ 7200s`);浏览器跳转仅用于 user-scope 的 `auth login`,不适用于 App 身份。
 - `lark-cli` 的 User 认证必须通过 `auth login --recommend`(扫码 / 浏览器),无法在安装阶段自动完成。
 
@@ -351,7 +365,7 @@ console.log('[zylos-lark] post-upgrade migration done');
 
 - `add.js` 当前是否已经调用 `post-install` 钩子?(决定 §4.1 的实际工作量)
 - ~~`lark-cli` config 文件的真实路径与 schema~~ **(v3 已解决)**:实测路径 `~/.lark-cli/config.json`(JSON 而非 YAML);`appSecret` 字段不是明文,而是 `{source:"keychain", id:"appsecret:<appId>"}` 引用;明文经 AES-256-GCM 加密落 `~/.local/share/lark-cli/appsecret_<appId>.enc`,主密钥 `master.key` 同目录、0600。`saveLarkCliConfig` 已封装,直接复用即可。
-- **`saveLarkCliConfig` 的依赖路径**:§4.2.1 推荐通过 `add.js` 注入 `ZYLOS_CORE_LIB` 环境变量动态 import;实际选 A 还是 B 由 `add.js` 实现确定。
+- ~~`saveLarkCliConfig` 的依赖路径~~ **(v4 已解决)**:`config-init-store.js` 直接挪进 `zylos-lark/src/lib/`,hook 走相对路径 import,不再需要跨仓库解析。
 - **`lark-cli` "未认证"错误的具体字串 / exit code**:`runLarkCli()` 的兜底匹配需要枚举确认,避免漏判 / 误判。实测 calendar/mail 等域返回 `calendar_user_login_required` 类型 + exit code 3,可作为匹配锚点;其它域待补全。
 - **`lark-cli auth login` 是否支持 device code flow**:决定能否把扫码 URL 直接推到 IM。
 - **多 runtime 影响**:Claude Code / Codex 都会读 `SKILL.md`,理论上无差异;需要在 Codex 上跑一次确认。
