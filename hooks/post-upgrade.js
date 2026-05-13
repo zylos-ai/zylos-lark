@@ -8,12 +8,24 @@
  * This hook handles component-specific migrations:
  * - Config schema migrations
  * - Data format updates
+ * - lark-cli integration migration (idempotent; covers legacy installs
+ *   that predate the lark-cli bundle — see docs/INTEGRATE-LARK-CLI.md §4.6.1)
  *
  * Note: Service restart is handled by Claude after this hook.
  */
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+import {
+  installLarkCliBinary,
+  installLarkCliSkills,
+  syncCredentialsToLarkCli,
+} from './post-install-shared.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SKILL_DIR = path.resolve(__dirname, '..');
 
 const HOME = process.env.HOME;
 const DATA_DIR = path.join(HOME, 'zylos/components/lark');
@@ -269,6 +281,28 @@ if (fs.existsSync(configPath)) {
   }
 } else {
   console.log('No config file found, skipping migrations.');
+}
+
+// lark-cli integration migration
+//
+// Legacy zylos-lark installs (pre-bundle) have only .env credentials and
+// no lark-cli on PATH / no references/. This block brings them in line
+// with the current install layout. All three steps are idempotent:
+//   - installLarkCliBinary:    no-op when `lark-cli` is already on PATH
+//   - installLarkCliSkills:    no-op when references/lark-im/SKILL.md exists
+//   - syncCredentialsToLarkCli: overwrites keychain every run, so secret
+//                                rotations propagate after `zylos upgrade lark`
+//
+// On failure: hard-fail with exit(1) to abort the upgrade, matching the
+// config migration block above and §4.4 "abort + rollback" policy.
+console.log('\nEnsuring lark-cli integration is in place...');
+try {
+  installLarkCliBinary();
+  installLarkCliSkills(SKILL_DIR);
+  await syncCredentialsToLarkCli();
+} catch (err) {
+  console.error('lark-cli integration migration failed:', err.message);
+  process.exit(1);
 }
 
 console.log('\n[post-upgrade] Complete!');
