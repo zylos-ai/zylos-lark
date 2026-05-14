@@ -85,6 +85,7 @@ if (fs.existsSync(configPath)) {
         }
       }
       migrations.push(`Migrated whitelist → dmPolicy=${config.dmPolicy}, ${(config.dmAllowFrom || []).length} users in dmAllowFrom`);
+      config._legacy_whitelist = config.whitelist;
       delete config.whitelist;
       migrated = true;
     }
@@ -145,6 +146,9 @@ if (fs.existsSync(configPath)) {
       if (config.smart_groups?.length > 0) {
         config._legacy_smart_groups = config.smart_groups;
       }
+      if (config.group_whitelist !== undefined) {
+        config._legacy_group_whitelist = config.group_whitelist;
+      }
 
       delete config.allowed_groups;
       delete config.smart_groups;
@@ -197,9 +201,10 @@ if (fs.existsSync(configPath)) {
         migrations.push('Added message.useMarkdownCard=true');
       }
       if (config.message.max_length !== undefined) {
+        config._legacy_message_max_length = config.message.max_length;
         delete config.message.max_length;
         migrated = true;
-        migrations.push('Removed unused message.max_length');
+        migrations.push('Removed unused message.max_length (preserved as _legacy_message_max_length)');
       }
     }
 
