@@ -5,7 +5,8 @@
 > - v2: address review comments from PR #77 — 取消 `xc-skills` 全局安装,改 `npx @latest`;`lark-cli` 安装失败改为中止安装;`appId/appSecret` 由 `zylos-lark` 注入 `lark-cli`,user 认证延迟到首次调用时再做;补充升级路径与 skill 自动发现的说明。
 > - v3: 补齐 `lark-cli` 二进制(`@larksuite/cli`)的安装步骤;`add`/`upgrade` 流程均改为「先探测,缺失才装」;升级路径补齐对老版 `zylos-lark`(只有 `.env`、没有 lark-cli)的迁移;凭据写入通过 `saveLarkCliConfig`(与 Go 版 lark-cli 同字段、同算法,直接落 keychain)。
 > - v4: 把 `config-init-store.js` 从 `zylos-core` 挪进 `zylos-lark/src/lib/`。zylos-core 自己没人 import 这个文件(`feat/update-lark` 上的 `add.js` 集成是探索版本,已废弃),留在那里只会给 zylos-lark 的 hook 制造一个跨仓库 import 解析的麻烦。挪到本仓库后,hook 走相对路径 import,版本演进独立,测试无需 mock 路径。
-> - **v5 (this revision)**: 回应 PR #78 review 第一点 —— **彻底删掉 `src/lib/config-init-store.js`(1003 行)**,改成在 `syncCredentialsToLarkCli` 里直接 `execFileSync('lark-cli', ['config', 'init', '--app-id', ..., '--app-secret-stdin', ...])` 调 Go 二进制自带的非交互模式。等价性已实测:同 `config.json` schema、同 `.enc` 字节布局、同 AES-256-GCM master.key。Go 是源头,永不漂移。另加 `lang` 字段优先级:`opts.lang` → `.env` `LARK_LANG` → `process.env.LARK_LANG` → 默认 `'zh'`。
+> - v5: 回应 PR #78 review 第一点 —— **彻底删掉 `src/lib/config-init-store.js`(1003 行)**,改成在 `syncCredentialsToLarkCli` 里直接 `execFileSync('lark-cli', ['config', 'init', '--app-id', ..., '--app-secret-stdin', ...])` 调 Go 二进制自带的非交互模式。等价性已实测:同 `config.json` schema、同 `.enc` 字节布局、同 AES-256-GCM master.key。Go 是源头,永不漂移。另加 `lang` 字段优先级:`opts.lang` → `.env` `LARK_LANG` → `process.env.LARK_LANG` → 默认 `'zh'`。
+> - **v6 (this revision)**: 软化"凭据缺失"的失败模式 —— `syncCredentialsToLarkCli` 在 `appId/appSecret` 解析不到时**不再抛错**,改为 `console.warn` + 返回 `{skipped:true, reason:'credentials_missing'}`,**不阻塞** hook 后续步骤(创建子目录、装子 skill、提示 webhook 配置等都继续完成)。Owner 后续补上 `.env` 后,再跑一次 hook(或 `zylos upgrade lark`)即可完成同步。`lark-cli config init` 本身非零退出仍然抛——那是真问题,要让 caller 看到。
 
 ## 1. 背景
 
@@ -288,10 +289,11 @@ v3/v4 早期版本里有一份 `src/lib/config-init-store.js`(1003 行,做了 AE
 | `zylos-lark` 主体安装失败 | 中止 + 回滚 | 与改前一致 |
 | `npm install -g @larksuite/cli` 失败(npm 网络 / 全局写权限) | 中止 + 回滚 | 安装失败,提示检查 npm 全局目录权限或网络,可手动跑后重试 |
 | `npx xc-skills add` 失败(网络 / 包不可达) | 中止 + 回滚 | 安装失败,提示重试 |
-| `lark-cli config init` 失败(`.env` 缺字段 / keychain 写入失败 / Go 二进制非零退出) | 中止 + 回滚 | 安装失败,提示先在 `zylos add lark` 阶段把 `appId/appSecret` 配齐 |
+| `lark-cli config init` 失败(keychain 写入失败 / Go 二进制非零退出 / 二进制不存在等真问题) | 中止 + 回滚 | 安装失败,需要排查 lark-cli 状态 |
+| **`.env` 缺 `LARK_APP_ID` / `LARK_APP_SECRET`(v6 软失败)** | **`console.warn` + 返回 `{skipped:true}`,继续后续步骤** | 安装本身成功,stderr 一条警告提醒用户补 `.env` 后重跑 hook 同步 |
 | runtime user-scope 未认证 | `runLarkCli` 捕获 → C4 发 DM 引导 `auth login` | owner 收 IM,扫码后告诉 agent 重试 |
 
-→ 与 v1 的关键差异:**不再有 "warn 并继续"** 的分支。`lark-cli` 任何环节出错都拒绝完成本次 `zylos add lark`,与 review comment #2 一致。
+→ 与 v3/v4/v5 的关键差异:**凭据缺失从"中止"放宽为"软失败 + 警告 + 继续"**(v6)。其它 lark-cli 故障(二进制不存在、keychain 写入失败、Go 进程非零退出)仍然中止——那些是真的需要 caller 介入的问题。Review comment #2 说的"安装失败即中止"约束保留,只是把"缺凭据"从该集合里挪出来,因为缺凭据更像配置盲区而非故障。
 
 ### 4.5 改动:`src/lib/lark-cli-bridge.js`(新文件,runtime 兜底)
 
@@ -367,7 +369,7 @@ console.log('[zylos-lark] post-upgrade migration done');
 
 | 情况 | 行为 |
 |---|---|
-| 老版升新版,`.env` 没设 `LARK_APP_ID/SECRET` | 中止升级,提示 owner 先把 `.env` 配齐再 `zylos upgrade lark`(与 §4.4 一致) |
+| 老版升新版,`.env` 没设 `LARK_APP_ID/SECRET`(v6) | 软失败:`syncCredentialsToLarkCli` warn + 返回 `{skipped:true}`,升级流程继续完成(binary 仍装、子 skill 仍装);owner 补 `.env` 后再 `zylos upgrade lark` 触发一次同步即可 |
 | 老版升新版,`lark-cli` 已被其它 skill 装过 | `commandExists('lark-cli')` 命中,跳过二进制安装 |
 | 新版升更新版(已经历过迁移) | 三个探针都命中,三步全跳;仅 `syncCredentialsToLarkCli` 覆盖式重写(开销可忽略) |
 | 多次升级中途失败 | 三步独立幂等,重跑 `zylos upgrade lark` 即可继续 |
@@ -405,7 +407,7 @@ console.log('[zylos-lark] post-upgrade migration done');
 - `installLarkCliBinary`:mock `commandExists` 命中 → 跳过 npm;mock 不命中 + `npm install -g` 成功 / 失败两种状态。
 - `installLarkCliSkills`:mock 探针文件存在 / 不存在;`npx xc-skills add` 成功 / 失败。
 - `syncCredentialsToLarkCli`:
-  - mock `.env` 缺 `LARK_APP_ID` → 抛错 → hook 非零退出。
+  - mock `.env` 缺 `LARK_APP_ID` → **不抛错**,函数返回 `{skipped:true, reason:'credentials_missing'}`,stderr 含一条 warning;hook 整体退出码 0(其它步骤照常完成)。
   - mock `execFileSync('lark-cli', ...)` 抛非零退出 → hook 同样非零退出。
   - 正常路径:断言 `~/.lark-cli/config.json` 里 `appSecret.id === "appsecret:<appId>"`、`~/.local/share/lark-cli/appsecret_<appId>.enc` 长度 = 12+ciphertext+16。
 
