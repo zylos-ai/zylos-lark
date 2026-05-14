@@ -97,8 +97,12 @@ export function installLarkCliSkills(skillDir) {
  *     3. process.env.LARK_LANG
  *     4. fallback 'zh'
  *
- * Throws if appId or appSecret cannot be resolved, or if `lark-cli config
- * init` itself fails (non-zero exit).
+ * If appId or appSecret cannot be resolved, logs a warning and returns
+ * {skipped: true, reason: 'credentials_missing'} — does NOT throw, so the
+ * hook can keep going (subdirs, sub-skill install, etc.). The user can add
+ * credentials to .env later and re-run the hook to complete the sync.
+ *
+ * Throws only if `lark-cli config init` itself fails (non-zero exit).
  *
  * Secret is piped via stdin so it never appears in the process listing.
  */
@@ -116,10 +120,18 @@ export function syncCredentialsToLarkCli(opts = {}) {
   lang = lang || process.env.LARK_LANG || DEFAULT_LARK_LANG;
 
   if (!appId || !appSecret) {
-    throw new Error(
-      `LARK_APP_ID / LARK_APP_SECRET missing. ` +
-      `Set them in ${envFile} (or pass {appId, appSecret} explicitly).`
+    // Soft-fail: log and skip credential sync without aborting the hook.
+    // Rationale: a missing credential at install/upgrade time is not always
+    // fatal — the user may add them to .env later and re-trigger sync. The
+    // hook should not block the rest of the install (subdir creation,
+    // sub-skill setup, etc.). Any sub-skill needing lark-cli will surface
+    // its own credential error at call time.
+    console.warn(
+      `${LOG_PREFIX} LARK_APP_ID / LARK_APP_SECRET not found in ${envFile} ` +
+      `or process.env; skipping lark-cli keychain sync. ` +
+      `Add the variables to ${envFile} and re-run this hook (or 'zylos upgrade lark') to sync.`
     );
+    return { skipped: true, reason: 'credentials_missing' };
   }
 
   execFileSync('lark-cli', [
