@@ -21,7 +21,36 @@ import { parse as parseDotenv } from 'dotenv';
 
 const LARK_CLI_NPM_PACKAGE = '@larksuite/cli';
 const XC_SKILLS_SOURCE = 'https://github.com/larksuite/cli';
-const SUB_SKILL_PROBE = path.join('lark-im', 'SKILL.md');
+// Canonical list of bundled lark-cli sub-skills declared in SKILL.md.
+// Checked exhaustively on every run to catch partial-install / manual
+// deletion scenarios where a single-probe check would have skipped.
+const EXPECTED_SUB_SKILLS = Object.freeze([
+  'lark-approval',
+  'lark-attendance',
+  'lark-base',
+  'lark-calendar',
+  'lark-contact',
+  'lark-doc',
+  'lark-drive',
+  'lark-event',
+  'lark-im',
+  'lark-mail',
+  'lark-markdown',
+  'lark-minutes',
+  'lark-okr',
+  'lark-openapi-explorer',
+  'lark-shared',
+  'lark-sheets',
+  'lark-skill-maker',
+  'lark-slides',
+  'lark-task',
+  'lark-vc',
+  'lark-vc-agent',
+  'lark-whiteboard',
+  'lark-wiki',
+  'lark-workflow-meeting-summary',
+  'lark-workflow-standup-report',
+]);
 const LARK_BRAND = 'lark';
 const DEFAULT_LARK_LANG = 'zh';
 const DEFAULT_ENV_FILE = path.join(process.env.HOME || '', 'zylos/.env');
@@ -53,9 +82,13 @@ export function installLarkCliBinary() {
 }
 
 /**
- * Install lark-cli's 20+ bundled Agent Skills into `<skillDir>/references/`.
+ * Install lark-cli's bundled Agent Skills into `<skillDir>/references/`.
  * Each sub-skill lands as its own folder (lark-im/, lark-doc/, ...).
- * Skipped if the probe file (`lark-im/SKILL.md`) already exists.
+ *
+ * Audits every module in EXPECTED_SUB_SKILLS — rerunning the install
+ * whenever any are missing — so partial-install state (an aborted prior
+ * run, or manually removed folders) gets repaired instead of silently
+ * skipped on the basis of a single probe file.
  */
 export function installLarkCliSkills(skillDir) {
   if (!skillDir) {
@@ -64,16 +97,33 @@ export function installLarkCliSkills(skillDir) {
   const bundlesDir = path.join(skillDir, 'references');
   fs.mkdirSync(bundlesDir, { recursive: true });
 
-  const probe = path.join(bundlesDir, SUB_SKILL_PROBE);
-  if (fs.existsSync(probe)) {
-    console.log(`${LOG_PREFIX} lark-cli sub-skills already present, skipping`);
+  const findMissing = () =>
+    EXPECTED_SUB_SKILLS.filter(
+      (name) => !fs.existsSync(path.join(bundlesDir, name, 'SKILL.md'))
+    );
+
+  const missing = findMissing();
+  if (missing.length === 0) {
+    console.log(
+      `${LOG_PREFIX} all ${EXPECTED_SUB_SKILLS.length} lark-cli sub-skills present, skipping`
+    );
     return;
   }
-  console.log(`${LOG_PREFIX} installing lark-cli sub-skills into ${bundlesDir}`);
+
+  console.log(
+    `${LOG_PREFIX} ${missing.length}/${EXPECTED_SUB_SKILLS.length} sub-skill(s) missing (${missing.join(', ')}), repairing into ${bundlesDir}`
+  );
   execSync(
     `npx xc-skills@latest add ${XC_SKILLS_SOURCE} --out "${bundlesDir}" -y`,
     { stdio: 'inherit' }
   );
+
+  const stillMissing = findMissing();
+  if (stillMissing.length > 0) {
+    throw new Error(
+      `installLarkCliSkills: still missing after install: ${stillMissing.join(', ')}`
+    );
+  }
 }
 
 /**

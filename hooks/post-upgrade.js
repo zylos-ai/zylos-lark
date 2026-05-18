@@ -51,9 +51,20 @@ function semverGt(a, b) {
 // newer than 0.5.0. 0.5.0 itself is not enough — it misses pipeline
 // behavior this hook relies on. Abort the post-upgrade work early with
 // a clear message rather than letting the upgrade silently produce a
-// broken install.
+// broken install. Fails closed: an unknown / unparsable core version
+// also aborts, since continuing on an incompatible core would leave a
+// half-upgraded state.
 const coreVersion = readCoreVersion();
-if (coreVersion && !semverGt(coreVersion, MIN_CORE_VERSION)) {
+if (!coreVersion) {
+  console.error(
+    `[post-upgrade] zylos-lark requires zylos-core > ${MIN_CORE_VERSION}, but \`zylos --version\` could not be read.`
+  );
+  console.error(
+    '[post-upgrade] Aborting to avoid a half-upgraded state. Please run: zylos upgrade --self  (then retry).'
+  );
+  process.exit(1);
+}
+if (!semverGt(coreVersion, MIN_CORE_VERSION)) {
   console.error(
     `[post-upgrade] zylos-lark requires zylos-core > ${MIN_CORE_VERSION}, found ${coreVersion}.`
   );
