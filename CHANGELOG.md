@@ -5,14 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - TBD
+## [0.3.0] - 2026-05-18
 
 ### Compatibility
 
 - **Requires zylos-core > 0.5.0** (0.5.0 itself is not enough). The
   post-upgrade hook checks the installed core version on first run and
-  aborts with a clear message if the core is 0.5.0 or older. Run
-  `zylos upgrade --self` first, then `zylos upgrade lark`.
+  aborts with a clear message if the core is 0.5.0 or older. Unknown /
+  unparsable core versions also abort (fail-closed). Run
+  `zylos upgrade --self` first, then `zylos upgrade lark` (#78).
+
+### Added
+- **Bundled lark-cli integration**: `npm install -g @larksuite/cli` runs
+  automatically during install/upgrade. The 25 lark-cli sub-skills
+  (lark-im, lark-contact, lark-doc, lark-sheets, lark-slides,
+  lark-markdown, lark-drive, lark-wiki, lark-whiteboard, lark-base,
+  lark-calendar, lark-task, lark-mail, lark-approval, lark-attendance,
+  lark-okr, lark-vc, lark-vc-agent, lark-minutes,
+  lark-workflow-meeting-summary, lark-workflow-standup-report,
+  lark-event, lark-openapi-explorer, lark-skill-maker, lark-shared) are
+  installed under `references/` via `npx xc-skills add larksuite/cli`,
+  and LARK_APP_ID / LARK_APP_SECRET are pushed into lark-cli's keychain
+  via `lark-cli config init`. All three steps are idempotent (#78).
+- `src/lib/lark-cli-bridge.js` with test coverage — runtime helper that
+  surfaces `lark-cli` auth errors and can DM the owner with the login
+  command (#78).
+
+### Fixed
+- Post-upgrade hook now backs up `config.json` to
+  `config.json.backup.<ISO-timestamp>` before mutation and uses atomic
+  write (temp + rename with unique suffix and failure cleanup) for the
+  new config (#78).
+- `installLarkCliSkills` now audits all 25 expected sub-skills instead
+  of probing a single `lark-im/SKILL.md` file. Partial-install state
+  (aborted prior run, manually removed folders) is repaired instead of
+  silently skipped, and a post-install verification ensures the repair
+  succeeded (#78).
+
+### Removed
+- Reverted in-config `_legacy_*` field injection introduced in 7cd2090
+  (`_legacy_whitelist`, `_legacy_group_whitelist`,
+  `_legacy_message_max_length`) in favor of whole-file backups; the
+  original config schema is preserved. Pre-existing `_legacy_*`
+  references in main are untouched (#78).
 
 ## [0.2.3] - 2026-04-13
 
