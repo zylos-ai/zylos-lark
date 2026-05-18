@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Compatibility
 
-- **Requires zylos-core >= 0.5.0.** The post-upgrade hook checks the installed
-  core version on first run and aborts with a clear message if it's too old.
-  Run `zylos upgrade --self` first, then `zylos upgrade lark`.
+- **Requires zylos-core > 0.5.0** (0.5.0 itself is not enough). The
+  post-upgrade hook checks the installed core version on first run and
+  aborts with a clear message if the core is 0.5.0 or older. Run
+  `zylos upgrade --self` first, then `zylos upgrade lark`.
 
 ## [0.2.3] - 2026-04-13
 

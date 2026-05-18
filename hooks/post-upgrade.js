@@ -37,24 +37,25 @@ function readCoreVersion() {
   }
 }
 
-function semverGte(a, b) {
+function semverGt(a, b) {
   const pa = a.split('.').map((n) => parseInt(n, 10) || 0);
   const pb = b.split('.').map((n) => parseInt(n, 10) || 0);
   for (let i = 0; i < 3; i++) {
     if ((pa[i] || 0) > (pb[i] || 0)) return true;
     if ((pa[i] || 0) < (pb[i] || 0)) return false;
   }
-  return true;
+  return false;
 }
 
-// Compatibility guard: zylos-lark >= 0.3.0 requires zylos-core >= 0.5.0.
-// Older cores miss pipeline steps that this hook relies on, so we abort
-// the post-upgrade work early with a clear message rather than letting
-// the upgrade silently produce a broken install.
+// Compatibility guard: zylos-lark >= 0.3.0 requires zylos-core strictly
+// newer than 0.5.0. 0.5.0 itself is not enough — it misses pipeline
+// behavior this hook relies on. Abort the post-upgrade work early with
+// a clear message rather than letting the upgrade silently produce a
+// broken install.
 const coreVersion = readCoreVersion();
-if (coreVersion && !semverGte(coreVersion, MIN_CORE_VERSION)) {
+if (coreVersion && !semverGt(coreVersion, MIN_CORE_VERSION)) {
   console.error(
-    `[post-upgrade] zylos-lark requires zylos-core >= ${MIN_CORE_VERSION}, found ${coreVersion}.`
+    `[post-upgrade] zylos-lark requires zylos-core > ${MIN_CORE_VERSION}, found ${coreVersion}.`
   );
   console.error('[post-upgrade] Please run: zylos upgrade --self  (then retry).');
   process.exit(1);
