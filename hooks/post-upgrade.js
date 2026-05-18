@@ -23,6 +23,28 @@ import {
   syncCredentialsToLarkCli,
 } from './post-install-shared.js';
 
+function timestampSuffix() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function backupConfigFile(filePath) {
+  if (!fs.existsSync(filePath)) return null;
+  const backupPath = `${filePath}.backup.${timestampSuffix()}`;
+  fs.copyFileSync(filePath, backupPath);
+  return backupPath;
+}
+
+function atomicWriteJSON(filePath, obj) {
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2));
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    throw err;
+  }
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SKILL_DIR = path.resolve(__dirname, '..');
@@ -85,7 +107,6 @@ if (fs.existsSync(configPath)) {
         }
       }
       migrations.push(`Migrated whitelist → dmPolicy=${config.dmPolicy}, ${(config.dmAllowFrom || []).length} users in dmAllowFrom`);
-      config._legacy_whitelist = config.whitelist;
       delete config.whitelist;
       migrated = true;
     }
@@ -146,9 +167,6 @@ if (fs.existsSync(configPath)) {
       if (config.smart_groups?.length > 0) {
         config._legacy_smart_groups = config.smart_groups;
       }
-      if (config.group_whitelist !== undefined) {
-        config._legacy_group_whitelist = config.group_whitelist;
-      }
 
       delete config.allowed_groups;
       delete config.smart_groups;
@@ -201,10 +219,9 @@ if (fs.existsSync(configPath)) {
         migrations.push('Added message.useMarkdownCard=true');
       }
       if (config.message.max_length !== undefined) {
-        config._legacy_message_max_length = config.message.max_length;
         delete config.message.max_length;
         migrated = true;
-        migrations.push('Removed unused message.max_length (preserved as _legacy_message_max_length)');
+        migrations.push('Removed unused message.max_length');
       }
     }
 
@@ -274,7 +291,9 @@ if (fs.existsSync(configPath)) {
 
     // Save if migrated
     if (migrated) {
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      const backupPath = backupConfigFile(configPath);
+      if (backupPath) console.log(`[post-upgrade] Backed up config to ${path.basename(backupPath)}`);
+      atomicWriteJSON(configPath, config);
       console.log('Config migrations applied:');
       migrations.forEach(m => console.log('  - ' + m));
     } else {
