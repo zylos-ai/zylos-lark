@@ -321,7 +321,7 @@ If your domain is behind Cloudflare proxy with Flexible SSL mode, Caddy's automa
 ## Owner
 
 First user to send a private message becomes the owner (primary partner).
-Owner always bypasses all access checks (DM and group) regardless of policy settings.
+Owner bypasses DM policy and per-group/per-channel allowlist checks. However, `groupPolicy: disabled` blocks all group messages, including from the owner.
 
 Owner info stored in config.json:
 ```json
@@ -365,7 +365,7 @@ DM and group access are controlled by **independent** top-level policies:
 6. Not smart? → only @mentions are processed, other messages are logged only
 
 **Key points:**
-- Owner always bypasses all access checks
+- Owner bypasses allowlist checks only; `groupPolicy: disabled` blocks all group messages, including from owner
 - `dmPolicy` and `groupPolicy` are fully independent — changing one never affects the other
 - Group access is controlled by `groupPolicy` + `groups` config + per-group `allowFrom`
 - No user-level whitelist for groups; use per-group `allowFrom` if you need to restrict specific senders

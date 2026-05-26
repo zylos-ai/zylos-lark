@@ -377,7 +377,7 @@ Commands:
 Permission flow:
   Private DM:  dmPolicy (open|allowlist|owner) + dmAllowFrom
   Group chat:  groupPolicy → groups config → per-group allowFrom
-  Owner always bypasses all checks.
+  Owner bypasses allowlist checks only. groupPolicy: disabled blocks all group messages, including from owner.
 
 After changes, restart bot: pm2 restart zylos-lark
 `);
