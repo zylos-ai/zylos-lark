@@ -1337,11 +1337,12 @@ async function handleMessageEvent(event) {
     // Group user access is controlled by groupPolicy + groups config + per-group allowFrom.
     // No separate user-level whitelist for groups (dmPolicy/dmAllowFrom only applies to DMs).
 
-    await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
-
     console.log(`[lark] ${smart ? 'Smart group' : 'Bot @mentioned in'} group ${chatId}`);
-    // Pre-populate member names (cross-tenant users + bots) before building context
+    // Pre-populate member names (cross-tenant users + bots) before logging and context build,
+    // so resolveUserName inside logMessage can hit the cache rather than fall back to user_id.
     await preloadGroupMembers(chatId);
+
+    await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
     const contextMessages = await getGroupContext(chatId, messageId);
     let cursorUpdated = false;
     const markCursorDelivered = () => {
