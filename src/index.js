@@ -276,7 +276,7 @@ function handlePermissionError(permErr) {
 // ============================================================
 // User name cache with TTL (in-memory primary, file for cold start)
 // ============================================================
-const SENDER_NAME_TTL = 60 * 60 * 1000; // 1 hour
+const SENDER_NAME_TTL = 5 * 60 * 1000; // 5 minutes (TEMP — testing)
 
 const userCacheMemory = new Map();
 
@@ -411,7 +411,7 @@ function pinRootMessage(context, rootId, threadId) {
  * Uses im.chat.members API which returns names for ALL members including cross-tenant.
  */
 const _preloadedGroups = new Map(); // chatId → lastPreloadAt (ms)
-const PRELOAD_TTL = 60 * 60 * 1000; // 1 hour — re-preload after this window
+const PRELOAD_TTL = 5 * 60 * 1000; // 5 minutes (TEMP — testing); re-preload after this window
 
 async function preloadGroupMembers(chatId) {
   const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
@@ -425,7 +425,10 @@ async function preloadGroupMembers(chatId) {
       let count = 0;
       for (const member of result.members) {
         const memberId = String(member.memberId || '');
-        if (memberId && member.name && !userCacheMemory.has(memberId)) {
+        if (!memberId || !member.name) continue;
+        const existing = userCacheMemory.get(memberId);
+        // Refresh missing or expired entries so preload actually reseeds stale cache.
+        if (!existing || existing.expireAt <= now) {
           userCacheMemory.set(memberId, { name: member.name, expireAt: now + SENDER_NAME_TTL });
           _userCacheDirty = true;
           count++;
