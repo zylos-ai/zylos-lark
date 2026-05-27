@@ -9,21 +9,31 @@
  * This hook handles lark-specific setup:
  * - Create subdirectories (logs, media)
  * - Create default config.json
- * - Check for environment variables (informational)
+ * - Install lark-cli binary (npm install -g @larksuite/cli) if missing
+ * - Install 20+ lark-cli sub-skills into references/ if missing
+ * - Sync App credentials from ~/zylos/.env into lark-cli's keychain
  * - Prompt for verification token (terminal mode only, required)
+ *
+ * The three lark-cli steps are idempotent and abort the install on failure
+ * (see docs/INTEGRATE-LARK-CLI.md §4.2, §4.4).
  */
 
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
+import {
+  installLarkCliBinary,
+  installLarkCliSkills,
+  syncCredentialsToLarkCli,
+} from './post-install-shared.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const SKILL_DIR = path.resolve(__dirname, '..');
 
 const HOME = process.env.HOME;
 const DATA_DIR = path.join(HOME, 'zylos/components/lark');
-const ENV_FILE = path.join(HOME, 'zylos/.env');
 
 // Minimal initial config - full defaults are in src/lib/config.js
 const INITIAL_CONFIG = {
@@ -66,23 +76,21 @@ if (!fs.existsSync(configPath)) {
   console.log('\nConfig already exists, skipping.');
 }
 
-// 3. Check environment variables (informational)
-console.log('\nChecking environment variables...');
-let envContent = '';
-try {
-  envContent = fs.readFileSync(ENV_FILE, 'utf8');
-} catch (e) {}
+// 3. Ensure lark-cli binary is installed
+console.log('\nEnsuring lark-cli binary is installed...');
+installLarkCliBinary();
 
-const hasAppId = envContent.includes('LARK_APP_ID');
-const hasAppSecret = envContent.includes('LARK_APP_SECRET');
+// 4. Ensure lark-cli sub-skills are present under references/
+console.log('\nEnsuring lark-cli sub-skills are installed...');
+installLarkCliSkills(SKILL_DIR);
 
-if (!hasAppId || !hasAppSecret) {
-  console.log('  LARK_APP_ID and/or LARK_APP_SECRET not yet in .env.');
-} else {
-  console.log('  Credentials found.');
-}
+// 5. Sync App ID / Secret from ~/zylos/.env into lark-cli's keychain.
+//    Uses src/lib/config-init-store.js — interoperable with the Go
+//    lark-cli binary, so subsequent `--as bot` calls just work.
+console.log('\nSyncing App credentials to lark-cli keychain...');
+syncCredentialsToLarkCli();
 
-// 4. Prompt for verification token (terminal mode only)
+// 6. Prompt for verification token (terminal mode only)
 if (isInteractive) {
   console.log('\nVerification Token (REQUIRED for webhook security):');
   const token = await ask('  Verification Token (from Event Subscriptions page): ');

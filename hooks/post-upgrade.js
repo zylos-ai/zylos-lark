@@ -8,12 +8,95 @@
  * This hook handles component-specific migrations:
  * - Config schema migrations
  * - Data format updates
+ * - lark-cli integration migration (idempotent; covers legacy installs
+ *   that predate the lark-cli bundle — see docs/INTEGRATE-LARK-CLI.md §4.6.1)
  *
  * Note: Service restart is handled by Claude after this hook.
  */
 
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
+import {
+  installLarkCliBinary,
+  installLarkCliSkills,
+  syncCredentialsToLarkCli,
+} from './post-install-shared.js';
+
+const MIN_CORE_VERSION = '0.5.0';
+
+function readCoreVersion() {
+  try {
+    return execSync('zylos --version', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function semverGt(a, b) {
+  const pa = a.split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = b.split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) > (pb[i] || 0)) return true;
+    if ((pa[i] || 0) < (pb[i] || 0)) return false;
+  }
+  return false;
+}
+
+// Compatibility guard: zylos-lark >= 0.3.0 requires zylos-core strictly
+// newer than 0.5.0. 0.5.0 itself is not enough — it misses pipeline
+// behavior this hook relies on. Abort the post-upgrade work early with
+// a clear message rather than letting the upgrade silently produce a
+// broken install. Fails closed: an unknown / unparsable core version
+// also aborts, since continuing on an incompatible core would leave a
+// half-upgraded state.
+const coreVersion = readCoreVersion();
+if (!coreVersion) {
+  console.error(
+    `[post-upgrade] zylos-lark requires zylos-core > ${MIN_CORE_VERSION}, but \`zylos --version\` could not be read.`
+  );
+  console.error(
+    '[post-upgrade] Aborting to avoid a half-upgraded state. Please run: zylos upgrade --self  (then retry).'
+  );
+  process.exit(1);
+}
+if (!semverGt(coreVersion, MIN_CORE_VERSION)) {
+  console.error(
+    `[post-upgrade] zylos-lark requires zylos-core > ${MIN_CORE_VERSION}, found ${coreVersion}.`
+  );
+  console.error('[post-upgrade] Please run: zylos upgrade --self  (then retry).');
+  process.exit(1);
+}
+
+function timestampSuffix() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function backupConfigFile(filePath) {
+  if (!fs.existsSync(filePath)) return null;
+  const backupPath = `${filePath}.backup.${timestampSuffix()}`;
+  fs.copyFileSync(filePath, backupPath);
+  return backupPath;
+}
+
+function atomicWriteJSON(filePath, obj) {
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2));
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    throw err;
+  }
+}
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SKILL_DIR = path.resolve(__dirname, '..');
 
 const HOME = process.env.HOME;
 const DATA_DIR = path.join(HOME, 'zylos/components/lark');
@@ -257,7 +340,9 @@ if (fs.existsSync(configPath)) {
 
     // Save if migrated
     if (migrated) {
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      const backupPath = backupConfigFile(configPath);
+      if (backupPath) console.log(`[post-upgrade] Backed up config to ${path.basename(backupPath)}`);
+      atomicWriteJSON(configPath, config);
       console.log('Config migrations applied:');
       migrations.forEach(m => console.log('  - ' + m));
     } else {
@@ -269,6 +354,28 @@ if (fs.existsSync(configPath)) {
   }
 } else {
   console.log('No config file found, skipping migrations.');
+}
+
+// lark-cli integration migration
+//
+// Legacy zylos-lark installs (pre-bundle) have only .env credentials and
+// no lark-cli on PATH / no references/. This block brings them in line
+// with the current install layout. All three steps are idempotent:
+//   - installLarkCliBinary:    no-op when `lark-cli` is already on PATH
+//   - installLarkCliSkills:    no-op when references/lark-im/SKILL.md exists
+//   - syncCredentialsToLarkCli: overwrites keychain every run, so secret
+//                                rotations propagate after `zylos upgrade lark`
+//
+// On failure: hard-fail with exit(1) to abort the upgrade, matching the
+// config migration block above and §4.4 "abort + rollback" policy.
+console.log('\nEnsuring lark-cli integration is in place...');
+try {
+  installLarkCliBinary();
+  installLarkCliSkills(SKILL_DIR);
+  syncCredentialsToLarkCli();
+} catch (err) {
+  console.error('lark-cli integration migration failed:', err.message);
+  process.exit(1);
 }
 
 console.log('\n[post-upgrade] Complete!');
