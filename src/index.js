@@ -861,7 +861,7 @@ function formatMessage(
     : `[Lark GROUP:${escapeXml(groupName || 'unknown')}]`;
   const safeUserName = escapeXml(userName);
   const safeText = escapeXml(text);
-  let parts = [`${prefix} ${safeUserName} said: `];
+  let parts = [`${prefix}\n`];
 
   if (threadContext && threadContext.length > 0) {
     const lines = [];
@@ -893,7 +893,7 @@ Decide whether to respond. Reply with exactly [SKIP] when a response is unnecess
 </smart-mode>\n\n`);
   }
 
-  parts.push(`<current-message>\n${safeText}\n</current-message>`);
+  parts.push(`<current-message>\n${safeUserName} said: ${safeText}\n</current-message>`);
 
   let message = parts.join('');
 
