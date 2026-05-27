@@ -73,7 +73,7 @@ This skill bundles **25 capability modules** under `references/`, each operating
 
 **Identity (`--as bot` vs `--as user`)**:
 - `--as bot` works out of the box for surfaces that operate on app/tenant-level resources (IM messaging, contacts, app-level docs, events). No extra login needed.
-- `--as user` is required for surfaces tied to a real user's data (calendar, mail-write, tasks, attendance, OKR, minutes, VC-agent). The user runs `lark-cli auth login --domain <name>` once; on auth failure, `src/lib/lark-cli-bridge.js` catches the typed error and can DM the owner with the login command.
+- `--as user` is required for surfaces tied to a real user's data (calendar, mail-write, tasks, attendance, OKR, minutes, VC-agent). The user runs `lark-cli auth login --domain <name>` once. On auth failure lark-cli exits with a `<domain>_user_login_required` error envelope; the agent should detect this and notify the owner of the login command.
 
 ### Module Index
 
