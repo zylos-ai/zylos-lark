@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-05-27
+
+### Security
+- **Cleared 9 npm production-dependency vulnerabilities** (6 moderate,
+  2 high, 1 critical) reported by `npm audit --omit=dev`. Affected
+  packages: `protobufjs` (critical: code execution, prototype pollution,
+  DoS), `axios` (high: SSRF, prototype pollution, header injection, and
+  13 others), `@protobufjs/utf8`, `follow-redirects`, `qs`, `body-parser`,
+  `express`, `ws` (moderate). After fix: `npm audit` reports 0
+  vulnerabilities (#82).
+
+### Changed
+- **`axios` direct dep bumped `^1.6.0` → `^1.16.0`**, plus a
+  package.json `overrides` entry forces the entire dependency tree —
+  including `@larksuiteoapi/node-sdk@1.59.0`, which declares `axios
+  ~1.13.3` — onto `^1.16.0` as well. The SDK keeps running on its
+  current minor (1.59.0) and resolves a single deduped `axios@1.16.1`
+  rather than being downgraded to 1.56.1 by `npm audit fix --force`.
+- All other affected indirect deps were upgraded through the safe
+  `npm audit fix` path (no breaking changes).
+
 ## [0.3.0] - 2026-05-27
 
 ### Compatibility
