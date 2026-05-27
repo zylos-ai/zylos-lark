@@ -20,6 +20,9 @@ import { execSync, execFileSync } from 'child_process';
 import { parse as parseDotenv } from 'dotenv';
 
 const LARK_CLI_NPM_PACKAGE = '@larksuite/cli';
+// Single source-of-truth for the lark-cli upstream release. Used for both
+// the npm package version (no prefix) and the git tag ref (prefixed 'v').
+const LARK_CLI_VERSION = '1.0.41';
 const XC_SKILLS_SOURCE = 'https://github.com/larksuite/cli';
 // Canonical list of bundled lark-cli sub-skills declared in SKILL.md.
 // Checked exhaustively on every run to catch partial-install / manual
@@ -74,10 +77,10 @@ export function installLarkCliBinary() {
     console.log(`${LOG_PREFIX} lark-cli already on PATH, skipping binary install`);
     return;
   }
-  console.log(`${LOG_PREFIX} installing lark-cli: npm install -g ${LARK_CLI_NPM_PACKAGE}`);
-  execSync(`npm install -g ${LARK_CLI_NPM_PACKAGE}`, { stdio: 'inherit' });
+  console.log(`${LOG_PREFIX} installing lark-cli: npm install -g ${LARK_CLI_NPM_PACKAGE}@${LARK_CLI_VERSION}`);
+  execSync(`npm install -g ${LARK_CLI_NPM_PACKAGE}@${LARK_CLI_VERSION}`, { stdio: 'inherit' });
   if (!commandExists('lark-cli')) {
-    throw new Error(`lark-cli still not found in PATH after \`npm install -g ${LARK_CLI_NPM_PACKAGE}\``);
+    throw new Error(`lark-cli still not found in PATH after \`npm install -g ${LARK_CLI_NPM_PACKAGE}@${LARK_CLI_VERSION}\``);
   }
 }
 
@@ -114,7 +117,7 @@ export function installLarkCliSkills(skillDir) {
     `${LOG_PREFIX} ${missing.length}/${EXPECTED_SUB_SKILLS.length} sub-skill(s) missing (${missing.join(', ')}), repairing into ${bundlesDir}`
   );
   execSync(
-    `npx xc-skills@latest add ${XC_SKILLS_SOURCE} --out "${bundlesDir}" -y`,
+    `npx xc-skills@latest add ${XC_SKILLS_SOURCE}#v${LARK_CLI_VERSION} --out "${bundlesDir}" -y`,
     { stdio: 'inherit' }
   );
 
