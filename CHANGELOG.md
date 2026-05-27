@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - 2026-05-18
+## [0.3.0] - 2026-05-27
 
 ### Compatibility
 
@@ -16,20 +16,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `zylos upgrade --self` first, then `zylos upgrade lark` (#78).
 
 ### Added
-- **Bundled lark-cli integration**: `npm install -g @larksuite/cli` runs
-  automatically during install/upgrade. The 25 lark-cli sub-skills
+- **Bundled lark-cli integration**: `npm install -g @larksuite/cli@1.0.41`
+  runs automatically during install/upgrade. The 25 lark-cli sub-skills
   (lark-im, lark-contact, lark-doc, lark-sheets, lark-slides,
   lark-markdown, lark-drive, lark-wiki, lark-whiteboard, lark-base,
   lark-calendar, lark-task, lark-mail, lark-approval, lark-attendance,
   lark-okr, lark-vc, lark-vc-agent, lark-minutes,
   lark-workflow-meeting-summary, lark-workflow-standup-report,
   lark-event, lark-openapi-explorer, lark-skill-maker, lark-shared) are
-  installed under `references/` via `npx xc-skills add larksuite/cli`,
-  and LARK_APP_ID / LARK_APP_SECRET are pushed into lark-cli's keychain
-  via `lark-cli config init`. All three steps are idempotent (#78).
-- `src/lib/lark-cli-bridge.js` with test coverage — runtime helper that
-  surfaces `lark-cli` auth errors and can DM the owner with the login
-  command (#78).
+  installed under `references/` via
+  `npx xc-skills add github:larksuite/cli#v1.0.41`, and LARK_APP_ID /
+  LARK_APP_SECRET are pushed into lark-cli's keychain via
+  `lark-cli config init`. All three steps are idempotent (#78).
+- `src/lib/lark-cli-bridge.js` with test coverage — helper library
+  exposing `runLarkCli()` and `notifyOwnerAuthRequired()` for Node code
+  that needs to invoke lark-cli programmatically. **Not on the default
+  call path**: agents invoke lark-cli via shell and handle auth errors
+  themselves; the bridge is provided for future Node-side integrations
+  (#78).
+
+### Changed
+- **Message envelope format**: the `<sender> said:` label has moved
+  from the outer envelope into `<current-message>`. The outer line now
+  contains only the channel marker (e.g. `[Lark GROUP:xxx]`), and the
+  current message body becomes
+  `<current-message>\n<sender> said: <text>\n</current-message>`. This
+  removes the ambiguity where `said:` appeared to label the whole
+  envelope including `<group-context>`. Affects both DM and group
+  messages; `<thread-context>`, `<replying-to>`, and `<smart-mode>`
+  blocks unchanged.
+- **`SENDER_NAME_TTL` extended from 10 minutes to 1 hour.** Reduces
+  frequency of cache misses that hit `contact.user.get` — that endpoint
+  often fails with `41050 no user authority error` on cross-tenant or
+  out-of-visibility users, which configuring per-scope visibility in
+  the Lark console does not always resolve. Longer TTL reduces both
+  background API load and visible-ID fallback windows.
+- **lark-cli upstream pinned to `v1.0.41`**: both `npm install -g
+  @larksuite/cli` and `npx xc-skills add github:larksuite/cli` now
+  include explicit version selectors. A single `LARK_CLI_VERSION`
+  constant in `hooks/post-install-shared.js` drives both; bumping the
+  upstream version is a one-line change. `xc-skills` tool itself
+  remains `@latest`.
 
 ### Fixed
 - Post-upgrade hook now backs up `config.json` to
@@ -41,6 +68,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (aborted prior run, manually removed folders) is repaired instead of
   silently skipped, and a post-install verification ensures the repair
   succeeded (#78).
+- **User name resolution under cache expiry**: previously, after
+  `SENDER_NAME_TTL` expired and `getUserInfo` returned a non-throw
+  failure (e.g. code 41050), `resolveUserName` fell back to the raw
+  `user_id` / `open_id` and `<group-context>` rendered an opaque ID
+  like `[662g9179]`. The stale-cache fallback that already existed in
+  the `throw` path is now applied to all failure paths, so the cached
+  name is preferred over the raw ID; the ID is used only when no cache
+  history exists for the user.
+- **`_preloadedGroups` lifetime**: replaced the permanent `Set` marker
+  with a `Map<chatId, lastPreloadAt>` and a `PRELOAD_TTL` of 1 hour.
+  Previously, once a group had been preloaded it could never be
+  re-preloaded, so expired user cache entries had no recovery path
+  even though the `im.chat.members` endpoint (which does not need
+  contact visibility) was available. Each group now re-preloads at
+  most once per hour.
+- **Preload skipped expired entries**: `preloadGroupMembers` used
+  `!userCacheMemory.has(memberId)` to decide whether to update the
+  cache. `Map.has()` returns true for expired entries (entries are
+  never physically deleted), so the loop body was a no-op after the
+  first run. The condition is now `!existing || existing.expireAt <= now`
+  so preload genuinely reseeds the cache after entries expire.
+- **Preload ordering**: `preloadGroupMembers` now runs before
+  `logMessage` in the `@mention` / smart group branch. The first
+  message in a fresh group previously logged as `[user_id]` because
+  the cache was empty when `resolveUserName` first ran; now the cache
+  is warm before `resolveUserName` is invoked. No change to the
+  no-`@mention` pass-through branch.
 
 ### Removed
 - Reverted in-config `_legacy_*` field injection introduced in 7cd2090
