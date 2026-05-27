@@ -276,7 +276,7 @@ function handlePermissionError(permErr) {
 // ============================================================
 // User name cache with TTL (in-memory primary, file for cold start)
 // ============================================================
-const SENDER_NAME_TTL = 10 * 60 * 1000; // 10 minutes
+const SENDER_NAME_TTL = 60 * 60 * 1000; // 1 hour
 
 const userCacheMemory = new Map();
 
@@ -410,11 +410,14 @@ function pinRootMessage(context, rootId, threadId) {
  * Pre-populate user name cache from group member list.
  * Uses im.chat.members API which returns names for ALL members including cross-tenant.
  */
-const _preloadedGroups = new Set();
+const _preloadedGroups = new Map(); // chatId → lastPreloadAt (ms)
+const PRELOAD_TTL = 60 * 60 * 1000; // 1 hour — re-preload after this window
 
 async function preloadGroupMembers(chatId) {
   const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
-  if (!normalizedChatId || _preloadedGroups.has(normalizedChatId)) return;
+  if (!normalizedChatId) return;
+  const lastPreloadAt = _preloadedGroups.get(normalizedChatId);
+  if (lastPreloadAt && Date.now() - lastPreloadAt < PRELOAD_TTL) return;
   try {
     const result = await listChatMembers(normalizedChatId, 'user_id');
     if (result.success && result.members) {
@@ -428,7 +431,7 @@ async function preloadGroupMembers(chatId) {
           count++;
         }
       }
-      _preloadedGroups.add(normalizedChatId);
+      _preloadedGroups.set(normalizedChatId, Date.now());
       console.log(`[lark] Preloaded ${count} member names for group ${normalizedChatId}`);
     }
   } catch (err) {
@@ -533,8 +536,9 @@ async function resolveUserName(userId) {
     } else {
       console.log(`[lark] Failed to lookup user ${normalizedUserId}: ${err.message}`);
     }
-    if (cached) return cached.name;
   }
+  // API didn't yield a fresh name. Prefer stale cache over raw ID; fall back to ID only as last resort.
+  if (cached) return cached.name;
   return normalizedUserId;
 }
 
