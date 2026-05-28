@@ -653,7 +653,7 @@ function isSmartGroup(chatId) {
   return (config.smart_groups || []).some(g => String(g.chat_id) === normalizedChatId);
 }
 
-function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) {
+function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId, senderAppId) {
   const groupConfig = resolveGroupConfig(chatId);
   if (!groupConfig?.allowFrom || groupConfig.allowFrom.length === 0) {
     return true;
@@ -661,9 +661,11 @@ function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) {
   const allowed = groupConfig.allowFrom.map(s => String(s).toLowerCase());
   const normalizedSenderUserId = senderUserId === undefined || senderUserId === null ? '' : String(senderUserId).toLowerCase();
   const normalizedSenderOpenId = senderOpenId === undefined || senderOpenId === null ? '' : String(senderOpenId).toLowerCase();
+  const normalizedSenderAppId = senderAppId === undefined || senderAppId === null ? '' : String(senderAppId).toLowerCase();
   if (allowed.includes('*')) return true;
   if (normalizedSenderUserId && allowed.includes(normalizedSenderUserId)) return true;
   if (normalizedSenderOpenId && allowed.includes(normalizedSenderOpenId)) return true;
+  if (normalizedSenderAppId && allowed.includes(normalizedSenderAppId)) return true;
   return false;
 }
 
@@ -682,13 +684,17 @@ function getGroupName(chatId) {
   return String(chatId || 'unknown');
 }
 
-// Check if bot is mentioned
-function isBotMentioned(mentions, botId) {
+// Check if bot is mentioned. Lark may identify bot mentions by open_id or app_id.
+function isBotMentioned(mentions, botOpenId, botAppId = '') {
   if (!mentions || !Array.isArray(mentions)) return false;
-  const normalizedBotId = botId === undefined || botId === null ? '' : String(botId);
+  const normalizedBotOpenId = botOpenId === undefined || botOpenId === null ? '' : String(botOpenId);
+  const normalizedBotAppId = botAppId === undefined || botAppId === null ? '' : String(botAppId);
   return mentions.some(m => {
     const mentionId = m.id?.open_id || m.id?.user_id || m.id?.app_id || '';
-    return (normalizedBotId && String(mentionId) === normalizedBotId) || m.key === '@_all';
+    const normalizedMentionId = String(mentionId);
+    return (normalizedBotOpenId && normalizedMentionId === normalizedBotOpenId) ||
+      (normalizedBotAppId && normalizedMentionId === normalizedBotAppId) ||
+      m.key === '@_all';
   });
 }
 
@@ -1237,6 +1243,7 @@ async function handleMessageEvent(event) {
 
   const senderUserId = sender.sender_id?.user_id;
   const senderOpenId = sender.sender_id?.open_id;
+  const senderAppId = sender.sender_id?.app_id;
   const chatId = message.chat_id;
   const messageId = message.message_id;
   const chatType = message.chat_type;
@@ -1252,7 +1259,8 @@ async function handleMessageEvent(event) {
     text = await fetchMergeForwardContent(messageId);
   }
 
-  console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
+  const senderLogId = senderUserId || senderOpenId || senderAppId || 'unknown';
+  console.log(`[lark] ${chatType} message from ${senderLogId}: ${(text || '').substring(0, 50) || '[media]'}...`);
 
   // Build log text with file/image metadata
   let logText = text;
@@ -1402,14 +1410,19 @@ async function handleMessageEvent(event) {
 
   // Group chat handling
   if (chatType === 'group') {
-    const mentioned = isBotMentioned(mentions, botOpenId);
+    const mentioned = isBotMentioned(mentions, botOpenId, botAppId);
     const senderIsOwner = isOwner(senderUserId, senderOpenId);
+    const senderIsSelfApp = senderAppId && botAppId && String(senderAppId) === String(botAppId);
+    if (senderIsSelfApp) {
+      console.log(`[lark] Ignoring own app message ${messageId} from ${senderAppId}`);
+      return;
+    }
     const groupPolicy = config.groupPolicy || 'allowlist';
     if (groupPolicy === 'disabled') {
       if (mentioned) {
         replyToMessage(messageId, "Sorry, group chat is currently disabled.").catch(() => {});
       }
-      console.log(`[lark] Group policy disabled, ignoring group message from ${senderUserId}`);
+      console.log(`[lark] Group policy disabled, ignoring group message from ${senderLogId}`);
       return;
     }
     const allowedGroup = isGroupAllowed(chatId);
@@ -1425,12 +1438,12 @@ async function handleMessageEvent(event) {
       return;
     }
 
-    if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) && !senderIsOwner) {
+    if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId, senderAppId) && !senderIsOwner) {
       if (mentioned) {
-        console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, rejecting`);
+        console.log(`[lark] Sender ${senderLogId} not in group ${chatId} allowFrom, rejecting`);
         replyToMessage(messageId, "Sorry, you don't have permission to interact with me in this group.").catch(() => {});
       } else {
-        console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
+        console.log(`[lark] Sender ${senderLogId} not in group ${chatId} allowFrom, ignoring`);
       }
       return;
     }

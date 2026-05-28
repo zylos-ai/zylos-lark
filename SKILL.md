@@ -396,7 +396,7 @@ Groups are stored in a map keyed by `chat_id`:
 ```
 
 - `mode`: `"mention"` (respond to @mentions only) or `"smart"` (receive all messages)
-- `allowFrom`: Optional list of user_id/open_id. Empty = all group members allowed. `"*"` = wildcard.
+- `allowFrom`: Optional list of user_id/open_id/app_id. Empty = all group members allowed. `"*"` = wildcard. App IDs (`cli_xxx`) allow trusted bot-to-bot @mentions; the bot always ignores its own app_id to prevent loops.
 - `historyLimit`: Optional per-group context message limit (overrides `message.context_messages`)
 
 ### Markdown Card
