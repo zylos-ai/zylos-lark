@@ -1410,13 +1410,13 @@ async function handleMessageEvent(event) {
 
   // Group chat handling
   if (chatType === 'group') {
-    const mentioned = isBotMentioned(mentions, botOpenId, botAppId);
-    const senderIsOwner = isOwner(senderUserId, senderOpenId);
     const senderIsSelfApp = senderAppId && botAppId && String(senderAppId) === String(botAppId);
     if (senderIsSelfApp) {
       console.log(`[lark] Ignoring own app message ${messageId} from ${senderAppId}`);
       return;
     }
+    const mentioned = isBotMentioned(mentions, botOpenId, botAppId);
+    const senderIsOwner = isOwner(senderUserId, senderOpenId);
     const groupPolicy = config.groupPolicy || 'allowlist';
     if (groupPolicy === 'disabled') {
       if (mentioned) {
