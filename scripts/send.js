@@ -20,6 +20,7 @@ dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 import { getConfig, DATA_DIR } from '../src/lib/config.js';
 import { hasMarkdownContent } from '../src/lib/markdown.js';
 import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
+import { resolveOutgoingMentions } from '../src/lib/mention.js';
 
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
 const MENTION_REGISTRY_PATH = path.join(DATA_DIR, 'mention-registry.json');
@@ -36,29 +37,6 @@ function loadMentionRegistry() {
   } catch {
     return {};
   }
-}
-
-/**
- * Resolve @username mentions in text to Lark <at> tags for text messages.
- * Only matches @username at word boundaries (not inside URLs or email addresses).
- * Returns { resolved: string, hasMentions: boolean }
- */
-function resolveMentions(text) {
-  const registry = loadMentionRegistry();
-  const names = Object.keys(registry).sort((a, b) => b.length - a.length);
-  if (names.length === 0) return { resolved: text, hasMentions: false };
-
-  let resolved = text;
-  let hasMentions = false;
-  for (const name of names) {
-    const pattern = new RegExp(`@${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|$|[，。！？,.:;)]|\\n)`, 'g');
-    if (pattern.test(resolved)) {
-      hasMentions = true;
-      const entry = registry[name];
-      resolved = resolved.replace(pattern, `<at user_id="${entry.open_id}">${name}</at>`);
-    }
-  }
-  return { resolved, hasMentions };
 }
 
 // Parse arguments
@@ -237,7 +215,7 @@ async function sendCardChunk(chunk, isFirstChunk) {
  * Reply failures fall back to sendMessage (DM) or sendToGroup (group).
  */
 async function sendText(endpoint, text) {
-  const { resolved, hasMentions } = resolveMentions(text);
+  const { resolved, hasMentions } = resolveOutgoingMentions(text, loadMentionRegistry());
   // Cards don't support <at> tags — force text mode when mentions are present
   const useCard = !hasMentions && config.message?.useMarkdownCard && hasMarkdownContent(text);
   const maxLen = useCard ? CARD_MAX_LENGTH : MAX_LENGTH;
