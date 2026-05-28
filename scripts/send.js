@@ -22,8 +22,44 @@ import { hasMarkdownContent } from '../src/lib/markdown.js';
 import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
 
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
+const MENTION_REGISTRY_PATH = path.join(DATA_DIR, 'mention-registry.json');
 
 const MAX_LENGTH = 2000;  // Lark message max length
+
+/**
+ * Load mention registry: maps display names to Lark open_ids.
+ * Registry is auto-populated from incoming webhook events and can be manually edited.
+ */
+function loadMentionRegistry() {
+  try {
+    return JSON.parse(fs.readFileSync(MENTION_REGISTRY_PATH, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Resolve @username mentions in text to Lark <at> tags for text messages.
+ * Only matches @username at word boundaries (not inside URLs or email addresses).
+ * Returns { resolved: string, hasMentions: boolean }
+ */
+function resolveMentions(text) {
+  const registry = loadMentionRegistry();
+  const names = Object.keys(registry).sort((a, b) => b.length - a.length);
+  if (names.length === 0) return { resolved: text, hasMentions: false };
+
+  let resolved = text;
+  let hasMentions = false;
+  for (const name of names) {
+    const pattern = new RegExp(`@${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|$|[，。！？,.:;)]|\\n)`, 'g');
+    if (pattern.test(resolved)) {
+      hasMentions = true;
+      const entry = registry[name];
+      resolved = resolved.replace(pattern, `<at user_id="${entry.open_id}">${name}</at>`);
+    }
+  }
+  return { resolved, hasMentions };
+}
 
 // Parse arguments
 const args = process.argv.slice(2);
@@ -201,9 +237,11 @@ async function sendCardChunk(chunk, isFirstChunk) {
  * Reply failures fall back to sendMessage (DM) or sendToGroup (group).
  */
 async function sendText(endpoint, text) {
-  const useCard = config.message?.useMarkdownCard && hasMarkdownContent(text);
+  const { resolved, hasMentions } = resolveMentions(text);
+  // Cards don't support <at> tags — force text mode when mentions are present
+  const useCard = !hasMentions && config.message?.useMarkdownCard && hasMarkdownContent(text);
   const maxLen = useCard ? CARD_MAX_LENGTH : MAX_LENGTH;
-  const chunks = splitMessage(text, maxLen);
+  const chunks = splitMessage(useCard ? text : resolved, maxLen);
   const { chatId, root, parent, msg, type } = parsedEndpoint;
   const isDM = type === 'p2p';
   const isGroup = type === 'group';

@@ -693,6 +693,28 @@ function isBotMentioned(mentions, botId) {
 }
 
 /**
+ * Auto-populate mention registry from incoming webhook mention data.
+ * Maps display names to Lark open_ids for outgoing @mention support.
+ */
+function updateMentionRegistry(mentions) {
+  if (!mentions || !Array.isArray(mentions) || mentions.length === 0) return;
+  const registryPath = path.join(DATA_DIR, 'mention-registry.json');
+  let registry = {};
+  try { registry = JSON.parse(fs.readFileSync(registryPath, 'utf8')); } catch {}
+  let changed = false;
+  for (const m of mentions) {
+    if (!m.name || !m.id?.open_id) continue;
+    if (!registry[m.name] || registry[m.name].open_id !== m.id.open_id) {
+      registry[m.name] = { open_id: m.id.open_id, type: m.mentioned_type || 'user' };
+      changed = true;
+    }
+  }
+  if (changed) {
+    try { fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2) + '\n'); } catch {}
+  }
+}
+
+/**
  * Resolve @_user_N placeholders in message text to real names.
  */
 function resolveMentions(text, mentions, { stripBot = false, botOpenId: botId } = {}) {
@@ -808,6 +830,7 @@ async function fetchQuotedMessage(messageId) {
     const client = getClient();
     const res = await client.im.message.get({
       path: { message_id: messageId },
+      params: { card_msg_content_type: 'user_card_content' },
     });
     if (res.code === 0 && res.data?.items?.[0]) {
       const msg = res.data.items[0];
@@ -833,6 +856,77 @@ async function fetchQuotedMessage(messageId) {
     console.log(`[lark] Failed to fetch quoted message ${messageId}: ${err.message}`);
   }
   return null;
+}
+
+/**
+ * Fetch sub-messages from a merge_forward message via im.message.get.
+ * The response items[] contains 1 parent (merge_forward) + N sub-messages.
+ * Sub-messages have upper_message_id pointing to the parent.
+ * Note: resource files (images/files) in sub-messages cannot be downloaded per Lark API limitation.
+ */
+async function fetchMergeForwardContent(messageId) {
+  try {
+    const { getClient } = await import('./lib/client.js');
+    const client = getClient();
+    const res = await client.im.message.get({
+      path: { message_id: messageId },
+    });
+    if (res.code !== 0 || !res.data?.items || res.data.items.length <= 1) {
+      return '[合并转发消息，子消息获取失败]';
+    }
+
+    // Build a name map from mentions across all sub-messages
+    const mentionNames = new Map();
+    for (const msg of res.data.items) {
+      for (const m of (msg.mentions || [])) {
+        if (m.id && m.name) mentionNames.set(m.id, m.name);
+      }
+    }
+
+    const lines = [];
+    for (const msg of res.data.items) {
+      if (msg.msg_type === 'merge_forward') continue;
+
+      const senderId = msg.sender?.id;
+      const senderName = mentionNames.get(senderId) || await resolveUserName(senderId);
+      let content;
+      try {
+        content = JSON.parse(msg.body?.content || '{}');
+      } catch {
+        content = {};
+      }
+
+      let text;
+      if (msg.msg_type === 'text') {
+        text = content.text || '';
+      } else if (msg.msg_type === 'post') {
+        ({ text } = extractPostText(content.content || [], msg.message_id));
+      } else if (msg.msg_type === 'interactive') {
+        text = extractInteractiveText(content);
+      } else if (msg.msg_type === 'image') {
+        text = '[图片]';
+      } else if (msg.msg_type === 'file') {
+        text = `[文件: ${content.file_name || 'unknown'}]`;
+      } else if (msg.msg_type === 'audio') {
+        text = '[语音]';
+      } else {
+        text = `[${msg.msg_type}]`;
+      }
+
+      if (msg.mentions && msg.mentions.length > 0) {
+        text = resolveMentions(text, msg.mentions);
+      }
+
+      const ts = msg.create_time ? new Date(parseInt(msg.create_time)).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '') : '';
+      lines.push(`${senderName} (${ts}): ${text}`);
+    }
+
+    if (lines.length === 0) return '[合并转发消息，无可读内容]';
+    return `[合并转发消息，共 ${lines.length} 条]:\n${lines.join('\n')}`;
+  } catch (err) {
+    console.error(`[lark] Failed to fetch merge_forward content for ${messageId}: ${err.message}`);
+    return '[合并转发消息，子消息获取失败]';
+  }
 }
 
 /**
@@ -1028,6 +1122,11 @@ function extractInteractiveText(content) {
 // Returns imageKeys as array (all images from post messages, or single image)
 function extractMessageContent(message) {
   const msgType = message.message_type;
+
+  if (msgType === 'merge_forward') {
+    return { text: '', imageKeys: [], fileKey: null, fileName: null, audioKey: null, isMergeForward: true };
+  }
+
   let content;
   try {
     content = JSON.parse(message.content || '{}');
@@ -1132,7 +1231,9 @@ async function handleMessageEvent(event) {
   }
   const message = event.event.message;
   const sender = event.event.sender;
+
   const mentions = message.mentions;
+  updateMentionRegistry(mentions);
 
   const senderUserId = sender.sender_id?.user_id;
   const senderOpenId = sender.sender_id?.open_id;
@@ -1145,7 +1246,12 @@ async function handleMessageEvent(event) {
 
   // Dedup is already checked in the webhook handler (line ~1013)
 
-  const { text, imageKeys, fileKey, fileName, audioKey } = extractMessageContent(message);
+  let { text, imageKeys, fileKey, fileName, audioKey, isMergeForward } = extractMessageContent(message);
+
+  if (isMergeForward) {
+    text = await fetchMergeForwardContent(messageId);
+  }
+
   console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
 
   // Build log text with file/image metadata

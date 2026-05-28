@@ -148,6 +148,7 @@ export async function listMessages(chatId, limit = 20, sortType = 'desc', startT
       page_size: Math.min(limit, 50),
       sort_type: sortType === 'asc' ? 'ByCreateTimeAsc' : 'ByCreateTimeDesc',
       user_id_type: 'open_id',
+      card_msg_content_type: 'user_card_content',
     };
 
     if (startTime) params.start_time = String(startTime);
@@ -339,7 +340,7 @@ export async function uploadFile(filePath, fileType = 'stream') {
   const client = getClient();
 
   try {
-    const fileData = fs.readFileSync(filePath);
+    const fileData = Buffer.from(fs.readFileSync(filePath));
     const fileName = path.basename(filePath);
 
     const res = await client.im.file.create({
@@ -350,10 +351,11 @@ export async function uploadFile(filePath, fileType = 'stream') {
       },
     });
 
-    if (res.code === 0) {
-      return { success: true, fileKey: res.data.file_key, message: 'File uploaded successfully' };
+    const fileKey = res?.file_key ?? res?.data?.file_key;
+    if (fileKey) {
+      return { success: true, fileKey, message: 'File uploaded successfully' };
     } else {
-      return { success: false, message: `Failed to upload file: ${res.msg}`, code: res.code };
+      return { success: false, message: `Failed to upload file: ${res?.msg}`, code: res?.code };
     }
   } catch (err) {
     return { success: false, message: err.message };
