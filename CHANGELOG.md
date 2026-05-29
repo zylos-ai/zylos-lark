@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Feishu (China) configs no longer fall through to Lark International.**
+  `lark.Domain.Feishu === 0` is a falsy enum value, so the previous
+  `DOMAIN_MAP[domain] || lark.Domain.Lark` fallback silently resolved a
+  `"domain": "feishu"` config to the Lark International endpoint. This
+  pointed Feishu credentials at `larksuite.com`, which the WebSocket long
+  connection rejects with `code: 1000040351, system busy`, and routed REST
+  API calls to the wrong region. Domain resolution is now centralized in
+  `src/lib/domain.js` (`resolveDomain`) using an explicit key-presence check,
+  so a known-but-falsy value is honored. Affects both the WebSocket transport
+  and the REST client.
+
 ## [0.3.1] - 2026-05-27
 
 ### Security
