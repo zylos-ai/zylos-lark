@@ -9,11 +9,7 @@
 
 import * as lark from '@larksuiteoapi/node-sdk';
 import { getCredentials, getConfig } from './config.js';
-
-const DOMAIN_MAP = {
-  feishu: lark.Domain.Feishu,
-  lark: lark.Domain.Lark,
-};
+import { resolveDomain } from './domain.js';
 
 let clientInstance = null;
 
@@ -41,7 +37,7 @@ export function getClient() {
     appId: creds.app_id,
     appSecret: creds.app_secret,
     appType: lark.AppType.SelfBuild,
-    domain: DOMAIN_MAP[cfg.domain] || lark.Domain.Lark,
+    domain: resolveDomain(cfg.domain),
   });
 
   return clientInstance;

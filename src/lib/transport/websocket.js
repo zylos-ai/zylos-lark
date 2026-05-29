@@ -10,11 +10,7 @@
  */
 
 import * as lark from '@larksuiteoapi/node-sdk';
-
-const DOMAIN_MAP = {
-  feishu: lark.Domain.Feishu,
-  lark: lark.Domain.Lark,
-};
+import { resolveDomain } from '../domain.js';
 
 let wsClient = null;
 let connectionState = {
@@ -30,7 +26,7 @@ let connectionState = {
  * @param {function} isDuplicate - dedup check function from index.js
  */
 export async function startWebSocket(config, credentials, handleMessageEvent, isDuplicate) {
-  const domain = DOMAIN_MAP[config.domain] || lark.Domain.Lark;
+  const domain = resolveDomain(config.domain);
 
   const eventDispatcher = new lark.EventDispatcher({}).register({
     'im.message.receive_v1': async (data) => {
