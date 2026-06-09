@@ -653,7 +653,7 @@ function isSmartGroup(chatId) {
   return (config.smart_groups || []).some(g => String(g.chat_id) === normalizedChatId);
 }
 
-function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) {
+function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId, senderAppId) {
   const groupConfig = resolveGroupConfig(chatId);
   if (!groupConfig?.allowFrom || groupConfig.allowFrom.length === 0) {
     return true;
@@ -661,9 +661,11 @@ function isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) {
   const allowed = groupConfig.allowFrom.map(s => String(s).toLowerCase());
   const normalizedSenderUserId = senderUserId === undefined || senderUserId === null ? '' : String(senderUserId).toLowerCase();
   const normalizedSenderOpenId = senderOpenId === undefined || senderOpenId === null ? '' : String(senderOpenId).toLowerCase();
+  const normalizedSenderAppId = senderAppId === undefined || senderAppId === null ? '' : String(senderAppId).toLowerCase();
   if (allowed.includes('*')) return true;
   if (normalizedSenderUserId && allowed.includes(normalizedSenderUserId)) return true;
   if (normalizedSenderOpenId && allowed.includes(normalizedSenderOpenId)) return true;
+  if (normalizedSenderAppId && allowed.includes(normalizedSenderAppId)) return true;
   return false;
 }
 
@@ -682,14 +684,40 @@ function getGroupName(chatId) {
   return String(chatId || 'unknown');
 }
 
-// Check if bot is mentioned
-function isBotMentioned(mentions, botId) {
+// Check if bot is mentioned. Lark may identify bot mentions by open_id or app_id.
+function isBotMentioned(mentions, botOpenId, botAppId = '') {
   if (!mentions || !Array.isArray(mentions)) return false;
-  const normalizedBotId = botId === undefined || botId === null ? '' : String(botId);
+  const normalizedBotOpenId = botOpenId === undefined || botOpenId === null ? '' : String(botOpenId);
+  const normalizedBotAppId = botAppId === undefined || botAppId === null ? '' : String(botAppId);
   return mentions.some(m => {
     const mentionId = m.id?.open_id || m.id?.user_id || m.id?.app_id || '';
-    return (normalizedBotId && String(mentionId) === normalizedBotId) || m.key === '@_all';
+    const normalizedMentionId = String(mentionId);
+    return (normalizedBotOpenId && normalizedMentionId === normalizedBotOpenId) ||
+      (normalizedBotAppId && normalizedMentionId === normalizedBotAppId) ||
+      m.key === '@_all';
   });
+}
+
+/**
+ * Auto-populate mention registry from incoming webhook mention data.
+ * Maps display names to Lark open_ids for outgoing @mention support.
+ */
+function updateMentionRegistry(mentions) {
+  if (!mentions || !Array.isArray(mentions) || mentions.length === 0) return;
+  const registryPath = path.join(DATA_DIR, 'mention-registry.json');
+  let registry = {};
+  try { registry = JSON.parse(fs.readFileSync(registryPath, 'utf8')); } catch {}
+  let changed = false;
+  for (const m of mentions) {
+    if (!m.name || !m.id?.open_id) continue;
+    if (!registry[m.name] || registry[m.name].open_id !== m.id.open_id) {
+      registry[m.name] = { open_id: m.id.open_id, type: m.mentioned_type || 'user' };
+      changed = true;
+    }
+  }
+  if (changed) {
+    try { fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2) + '\n'); } catch {}
+  }
 }
 
 /**
@@ -808,6 +836,7 @@ async function fetchQuotedMessage(messageId) {
     const client = getClient();
     const res = await client.im.message.get({
       path: { message_id: messageId },
+      params: { card_msg_content_type: 'user_card_content' },
     });
     if (res.code === 0 && res.data?.items?.[0]) {
       const msg = res.data.items[0];
@@ -833,6 +862,78 @@ async function fetchQuotedMessage(messageId) {
     console.log(`[lark] Failed to fetch quoted message ${messageId}: ${err.message}`);
   }
   return null;
+}
+
+/**
+ * Fetch sub-messages from a merge_forward message via im.message.get.
+ * The response items[] contains 1 parent (merge_forward) + N sub-messages.
+ * Sub-messages have upper_message_id pointing to the parent.
+ * Note: resource files (images/files) in sub-messages cannot be downloaded per Lark API limitation.
+ */
+async function fetchMergeForwardContent(messageId) {
+  try {
+    const { getClient } = await import('./lib/client.js');
+    const client = getClient();
+    const res = await client.im.message.get({
+      path: { message_id: messageId },
+      params: { card_msg_content_type: 'user_card_content' },
+    });
+    if (res.code !== 0 || !res.data?.items || res.data.items.length <= 1) {
+      return '[合并转发消息，子消息获取失败]';
+    }
+
+    // Build a name map from mentions across all sub-messages
+    const mentionNames = new Map();
+    for (const msg of res.data.items) {
+      for (const m of (msg.mentions || [])) {
+        if (m.id && m.name) mentionNames.set(m.id, m.name);
+      }
+    }
+
+    const lines = [];
+    for (const msg of res.data.items) {
+      if (msg.msg_type === 'merge_forward') continue;
+
+      const senderId = msg.sender?.id;
+      const senderName = mentionNames.get(senderId) || await resolveUserName(senderId);
+      let content;
+      try {
+        content = JSON.parse(msg.body?.content || '{}');
+      } catch {
+        content = {};
+      }
+
+      let text;
+      if (msg.msg_type === 'text') {
+        text = content.text || '';
+      } else if (msg.msg_type === 'post') {
+        ({ text } = extractPostText(content.content || [], msg.message_id));
+      } else if (msg.msg_type === 'interactive') {
+        text = extractInteractiveText(content);
+      } else if (msg.msg_type === 'image') {
+        text = '[图片]';
+      } else if (msg.msg_type === 'file') {
+        text = `[文件: ${content.file_name || 'unknown'}]`;
+      } else if (msg.msg_type === 'audio') {
+        text = '[语音]';
+      } else {
+        text = `[${msg.msg_type}]`;
+      }
+
+      if (msg.mentions && msg.mentions.length > 0) {
+        text = resolveMentions(text, msg.mentions);
+      }
+
+      const ts = msg.create_time ? new Date(parseInt(msg.create_time)).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '') : '';
+      lines.push(`${senderName} (${ts}): ${text}`);
+    }
+
+    if (lines.length === 0) return '[合并转发消息，无可读内容]';
+    return `[合并转发消息，共 ${lines.length} 条]:\n${lines.join('\n')}`;
+  } catch (err) {
+    console.error(`[lark] Failed to fetch merge_forward content for ${messageId}: ${err.message}`);
+    return '[合并转发消息，子消息获取失败]';
+  }
 }
 
 /**
@@ -968,29 +1069,59 @@ function extractInteractiveText(content) {
   try {
     const parts = [];
 
-    // Schema 2.0 cards (original, before API transformation): body.elements[]
-    const bodyElements = content?.body?.elements || [];
-    for (const el of bodyElements) {
-      if (el.tag === 'markdown' && el.content) {
-        parts.push(el.content);
-      } else if (el.tag === 'div' && el.text?.content) {
-        parts.push(el.text.content);
-      } else if (el.tag === 'plain_text' && el.content) {
-        parts.push(el.content);
-      }
-      // Nested columns (column_set → columns → elements)
-      if (el.tag === 'column_set' && el.columns) {
-        for (const col of el.columns) {
-          for (const nested of (col.elements || [])) {
-            if (nested.tag === 'markdown' && nested.content) {
-              parts.push(nested.content);
-            } else if (nested.tag === 'div' && nested.text?.content) {
-              parts.push(nested.text.content);
+    // Walk a Schema 2.0 `elements[]` array, pushing text content into `parts`.
+    // Handles markdown / div / plain_text, plus column_set → columns → elements.
+    const walkSchema2Elements = (elements) => {
+      for (const el of (elements || [])) {
+        if (el.tag === 'markdown' && el.content) {
+          parts.push(el.content);
+        } else if (el.tag === 'div' && el.text?.content) {
+          parts.push(el.text.content);
+        } else if (el.tag === 'plain_text' && el.content) {
+          parts.push(el.content);
+        }
+        // Nested columns (column_set → columns → elements)
+        if (el.tag === 'column_set' && el.columns) {
+          for (const col of el.columns) {
+            for (const nested of (col.elements || [])) {
+              if (nested.tag === 'markdown' && nested.content) {
+                parts.push(nested.content);
+              } else if (nested.tag === 'div' && nested.text?.content) {
+                parts.push(nested.text.content);
+              } else if (nested.tag === 'plain_text' && nested.content) {
+                parts.push(nested.content);
+              }
             }
           }
         }
       }
+    };
+
+    // Inbound push read-back: when Lark pushes a card via webhook it transforms
+    // it and drops the markdown body from the top-level fields — only the
+    // RENDERED form survives in `elements[]` (often just an image), which is why
+    // a real markdown card otherwise falls through to `[interactive message]`.
+    // The ORIGINAL card (with the markdown content) is preserved under
+    // `user_dsl`: a JSON string of `{ body: { elements: [...] }, schema }`.
+    // Prefer it when present so inbound markdown cards read correctly — this is
+    // the only path that has no API call to attach `card_msg_content_type` to.
+    if (content?.user_dsl) {
+      try {
+        const dsl = typeof content.user_dsl === 'string'
+          ? JSON.parse(content.user_dsl)
+          : content.user_dsl;
+        walkSchema2Elements(dsl?.body?.elements);
+        const dslMeaningful = parts.map(p => p.trim()).filter(Boolean);
+        if (dslMeaningful.length > 0) return dslMeaningful.join('\n');
+        parts.length = 0; // nothing usable in user_dsl — reset and try other strategies
+      } catch {
+        // Malformed user_dsl — fall through to the other strategies below.
+      }
     }
+
+    // Schema 2.0 cards (original, or API-fetched with card_msg_content_type=
+    // user_card_content): body.elements[]
+    walkSchema2Elements(content?.body?.elements);
     if (parts.length > 0) return parts.join('\n');
 
     // Legacy / API-transformed format: elements[] at top level (2D array)
@@ -1018,9 +1149,18 @@ function extractInteractiveText(content) {
     // original cards have header.title.content
     const title = content?.title || content?.header?.title?.content;
     if (title) return `[card] ${title}`;
-  } catch {
-    // Fall through
+  } catch (err) {
+    // Log a truncated preview so a parse-throwing card schema can be diagnosed.
+    try {
+      console.log(`[lark] extractInteractiveText threw (${err.message}); content preview: ${JSON.stringify(content).slice(0, 2000)}`);
+    } catch { /* unable to stringify */ }
+    return '[interactive message]';
   }
+  // No strategy matched — log a preview so the unhandled card schema can be
+  // identified and supported in a follow-up (mirrors the intent of PR #76).
+  try {
+    console.log(`[lark] extractInteractiveText: unrecognized card schema, content preview: ${JSON.stringify(content).slice(0, 2000)}`);
+  } catch { /* unable to stringify */ }
   return '[interactive message]';
 }
 
@@ -1028,6 +1168,11 @@ function extractInteractiveText(content) {
 // Returns imageKeys as array (all images from post messages, or single image)
 function extractMessageContent(message) {
   const msgType = message.message_type;
+
+  if (msgType === 'merge_forward') {
+    return { text: '', imageKeys: [], fileKey: null, fileName: null, audioKey: null, isMergeForward: true };
+  }
+
   let content;
   try {
     content = JSON.parse(message.content || '{}');
@@ -1132,10 +1277,13 @@ async function handleMessageEvent(event) {
   }
   const message = event.event.message;
   const sender = event.event.sender;
+
   const mentions = message.mentions;
+  updateMentionRegistry(mentions);
 
   const senderUserId = sender.sender_id?.user_id;
   const senderOpenId = sender.sender_id?.open_id;
+  const senderAppId = sender.sender_id?.app_id;
   const chatId = message.chat_id;
   const messageId = message.message_id;
   const chatType = message.chat_type;
@@ -1145,8 +1293,14 @@ async function handleMessageEvent(event) {
 
   // Dedup is already checked in the webhook handler (line ~1013)
 
-  const { text, imageKeys, fileKey, fileName, audioKey } = extractMessageContent(message);
-  console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
+  let { text, imageKeys, fileKey, fileName, audioKey, isMergeForward } = extractMessageContent(message);
+
+  if (isMergeForward) {
+    text = await fetchMergeForwardContent(messageId);
+  }
+
+  const senderLogId = senderUserId || senderOpenId || senderAppId || 'unknown';
+  console.log(`[lark] ${chatType} message from ${senderLogId}: ${(text || '').substring(0, 50) || '[media]'}...`);
 
   // Build log text with file/image metadata
   let logText = text;
@@ -1296,14 +1450,19 @@ async function handleMessageEvent(event) {
 
   // Group chat handling
   if (chatType === 'group') {
-    const mentioned = isBotMentioned(mentions, botOpenId);
+    const senderIsSelfApp = senderAppId && botAppId && String(senderAppId) === String(botAppId);
+    if (senderIsSelfApp) {
+      console.log(`[lark] Ignoring own app message ${messageId} from ${senderAppId}`);
+      return;
+    }
+    const mentioned = isBotMentioned(mentions, botOpenId, botAppId);
     const senderIsOwner = isOwner(senderUserId, senderOpenId);
     const groupPolicy = config.groupPolicy || 'allowlist';
     if (groupPolicy === 'disabled') {
       if (mentioned) {
         replyToMessage(messageId, "Sorry, group chat is currently disabled.").catch(() => {});
       }
-      console.log(`[lark] Group policy disabled, ignoring group message from ${senderUserId}`);
+      console.log(`[lark] Group policy disabled, ignoring group message from ${senderLogId}`);
       return;
     }
     const allowedGroup = isGroupAllowed(chatId);
@@ -1319,12 +1478,12 @@ async function handleMessageEvent(event) {
       return;
     }
 
-    if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId) && !senderIsOwner) {
+    if (!isSenderAllowedInGroup(chatId, senderUserId, senderOpenId, senderAppId) && !senderIsOwner) {
       if (mentioned) {
-        console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, rejecting`);
+        console.log(`[lark] Sender ${senderLogId} not in group ${chatId} allowFrom, rejecting`);
         replyToMessage(messageId, "Sorry, you don't have permission to interact with me in this group.").catch(() => {});
       } else {
-        console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
+        console.log(`[lark] Sender ${senderLogId} not in group ${chatId} allowFrom, ignoring`);
       }
       return;
     }

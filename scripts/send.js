@@ -20,10 +20,24 @@ dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 import { getConfig, DATA_DIR } from '../src/lib/config.js';
 import { hasMarkdownContent } from '../src/lib/markdown.js';
 import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
+import { resolveOutgoingMentions } from '../src/lib/mention.js';
 
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
+const MENTION_REGISTRY_PATH = path.join(DATA_DIR, 'mention-registry.json');
 
 const MAX_LENGTH = 2000;  // Lark message max length
+
+/**
+ * Load mention registry: maps display names to Lark open_ids.
+ * Registry is auto-populated from incoming webhook events and can be manually edited.
+ */
+function loadMentionRegistry() {
+  try {
+    return JSON.parse(fs.readFileSync(MENTION_REGISTRY_PATH, 'utf8'));
+  } catch {
+    return {};
+  }
+}
 
 // Parse arguments
 const args = process.argv.slice(2);
@@ -201,9 +215,11 @@ async function sendCardChunk(chunk, isFirstChunk) {
  * Reply failures fall back to sendMessage (DM) or sendToGroup (group).
  */
 async function sendText(endpoint, text) {
-  const useCard = config.message?.useMarkdownCard && hasMarkdownContent(text);
+  const { resolved, hasMentions } = resolveOutgoingMentions(text, loadMentionRegistry());
+  // Cards don't support <at> tags — force text mode when mentions are present
+  const useCard = !hasMentions && config.message?.useMarkdownCard && hasMarkdownContent(text);
   const maxLen = useCard ? CARD_MAX_LENGTH : MAX_LENGTH;
-  const chunks = splitMessage(text, maxLen);
+  const chunks = splitMessage(useCard ? text : resolved, maxLen);
   const { chatId, root, parent, msg, type } = parsedEndpoint;
   const isDM = type === 'p2p';
   const isGroup = type === 'group';
