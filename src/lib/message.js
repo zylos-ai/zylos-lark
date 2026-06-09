@@ -148,9 +148,11 @@ export async function listMessages(chatId, limit = 20, sortType = 'desc', startT
       page_size: Math.min(limit, 50),
       sort_type: sortType === 'asc' ? 'ByCreateTimeAsc' : 'ByCreateTimeDesc',
       user_id_type: 'open_id',
-      // Ask the API to return interactive cards as resolved user-facing content
-      // (body.elements[...]) so extractInteractiveText reads them without
-      // parsing raw card DSL. Mirrors the fix on the inbound/quoted paths.
+      // Request the ORIGINAL card JSON for interactive cards (Schema 2.0 card
+      // as sent, with `body.elements[...]`) instead of the transformed/rendered
+      // form, whose top-level `elements[]` drops the markdown body. The API does
+      // NOT resolve cards to plain text — it returns the original card JSON,
+      // which carries body.elements that extractInteractiveText then reads.
       card_msg_content_type: 'user_card_content',
     };
 

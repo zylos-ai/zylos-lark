@@ -808,8 +808,12 @@ async function fetchQuotedMessage(messageId) {
     const client = getClient();
     const res = await client.im.message.get({
       path: { message_id: messageId },
-      // Resolve interactive cards to user-facing content (body.elements[...])
-      // so extractInteractiveText reads quoted cards without parsing card DSL.
+      // Request the ORIGINAL card JSON for interactive cards (the Schema 2.0
+      // card as sent, with `body.elements[...]`). Without this param the API
+      // returns the transformed/rendered form whose top-level `elements[]` has
+      // dropped the markdown body; with it, extractInteractiveText can read
+      // body.elements directly. (The API does NOT resolve cards to plain text —
+      // it returns the original card JSON, which happens to carry body.elements.)
       params: { card_msg_content_type: 'user_card_content' },
     });
     if (res.code === 0 && res.data?.items?.[0]) {

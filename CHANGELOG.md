@@ -22,9 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`card_msg_content_type: 'user_card_content'` on the history
-  (`listMessages`) and quoted (`fetchQuotedMessage`) fetch paths.** The
-  API then returns cards as resolved `body.elements[...]`, which the same
-  `extractInteractiveText` reads without parsing raw card DSL. Combined
+  (`listMessages`) and quoted (`fetchQuotedMessage`) fetch paths.** This asks
+  the API to return the **original card JSON** (the Schema 2.0 card as sent,
+  with `body.elements[...]`) rather than the transformed/rendered form, whose
+  top-level `elements[]` drops the markdown body. The API does not resolve the
+  card to plain text — it returns the original card JSON, which carries
+  `body.elements` that the same `extractInteractiveText` then reads. Combined
   with the inbound `user_dsl` fix, all three card paths — inbound push,
   history context, and quoted reply — now extract content correctly (#87).
 
