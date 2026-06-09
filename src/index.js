@@ -808,6 +808,9 @@ async function fetchQuotedMessage(messageId) {
     const client = getClient();
     const res = await client.im.message.get({
       path: { message_id: messageId },
+      // Resolve interactive cards to user-facing content (body.elements[...])
+      // so extractInteractiveText reads quoted cards without parsing card DSL.
+      params: { card_msg_content_type: 'user_card_content' },
     });
     if (res.code === 0 && res.data?.items?.[0]) {
       const msg = res.data.items[0];

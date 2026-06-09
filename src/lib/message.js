@@ -148,6 +148,10 @@ export async function listMessages(chatId, limit = 20, sortType = 'desc', startT
       page_size: Math.min(limit, 50),
       sort_type: sortType === 'asc' ? 'ByCreateTimeAsc' : 'ByCreateTimeDesc',
       user_id_type: 'open_id',
+      // Ask the API to return interactive cards as resolved user-facing content
+      // (body.elements[...]) so extractInteractiveText reads them without
+      // parsing raw card DSL. Mirrors the fix on the inbound/quoted paths.
+      card_msg_content_type: 'user_card_content',
     };
 
     if (startTime) params.start_time = String(startTime);
