@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-06-09
+
+### Fixed
+- **Interactive (markdown) cards now resolve their content on all three
+  message paths** instead of coming through as `[interactive message]`.
+  When Lark pushes or returns a card it transforms it and drops the
+  markdown body from the top-level fields — the rendered form left in
+  `elements[]` is often just an image. `extractInteractiveText` now also
+  reads the original card preserved under `user_dsl` (a JSON string of
+  `{ body: { elements: [...] }, schema }`), which is the only source
+  available on the inbound webhook push (it has no API call to attach a
+  parameter to). The element-walking logic is factored into a shared
+  `walkSchema2Elements` helper, and diagnostic logging is restored for
+  unrecognized card schemas (#87).
+
+### Added
+- **`card_msg_content_type: 'user_card_content'` on the history
+  (`listMessages`) and quoted (`fetchQuotedMessage`) fetch paths.** The
+  API then returns cards as resolved `body.elements[...]`, which the same
+  `extractInteractiveText` reads without parsing raw card DSL. Combined
+  with the inbound `user_dsl` fix, all three card paths — inbound push,
+  history context, and quoted reply — now extract content correctly (#87).
+
 ## [0.3.1] - 2026-05-27
 
 ### Security
