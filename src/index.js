@@ -968,29 +968,57 @@ function extractInteractiveText(content) {
   try {
     const parts = [];
 
-    // Schema 2.0 cards (original, before API transformation): body.elements[]
-    const bodyElements = content?.body?.elements || [];
-    for (const el of bodyElements) {
-      if (el.tag === 'markdown' && el.content) {
-        parts.push(el.content);
-      } else if (el.tag === 'div' && el.text?.content) {
-        parts.push(el.text.content);
-      } else if (el.tag === 'plain_text' && el.content) {
-        parts.push(el.content);
-      }
-      // Nested columns (column_set → columns → elements)
-      if (el.tag === 'column_set' && el.columns) {
-        for (const col of el.columns) {
-          for (const nested of (col.elements || [])) {
-            if (nested.tag === 'markdown' && nested.content) {
-              parts.push(nested.content);
-            } else if (nested.tag === 'div' && nested.text?.content) {
-              parts.push(nested.text.content);
+    // Walk a Schema 2.0 `elements[]` array, pushing text content into `parts`.
+    // Handles markdown / div / plain_text, plus column_set → columns → elements.
+    const walkSchema2Elements = (elements) => {
+      for (const el of (elements || [])) {
+        if (el.tag === 'markdown' && el.content) {
+          parts.push(el.content);
+        } else if (el.tag === 'div' && el.text?.content) {
+          parts.push(el.text.content);
+        } else if (el.tag === 'plain_text' && el.content) {
+          parts.push(el.content);
+        }
+        // Nested columns (column_set → columns → elements)
+        if (el.tag === 'column_set' && el.columns) {
+          for (const col of el.columns) {
+            for (const nested of (col.elements || [])) {
+              if (nested.tag === 'markdown' && nested.content) {
+                parts.push(nested.content);
+              } else if (nested.tag === 'div' && nested.text?.content) {
+                parts.push(nested.text.content);
+              } else if (nested.tag === 'plain_text' && nested.content) {
+                parts.push(nested.content);
+              }
             }
           }
         }
       }
+    };
+
+    // Schema 2.0 read-back: when Lark reads/pushes a card back, it transforms it
+    // and drops the markdown body from the top-level fields — only the RENDERED
+    // form survives in `elements[]` (often just an image), which is why a real
+    // markdown card otherwise falls through to the `[interactive message]`
+    // placeholder. The ORIGINAL card (with the markdown content) is preserved
+    // under `user_dsl`: a JSON string of `{ body: { elements: [...] }, schema }`.
+    // Prefer it when present so inbound markdown cards read correctly.
+    if (content?.user_dsl) {
+      try {
+        const dsl = typeof content.user_dsl === 'string'
+          ? JSON.parse(content.user_dsl)
+          : content.user_dsl;
+        walkSchema2Elements(dsl?.body?.elements);
+        const dslMeaningful = parts.map(p => p.trim()).filter(Boolean);
+        if (dslMeaningful.length > 0) return dslMeaningful.join('\n');
+        parts.length = 0; // nothing usable in user_dsl — reset and try other strategies
+      } catch {
+        // Malformed user_dsl — fall through to the other strategies below.
+      }
     }
+
+    // Schema 2.0 cards (original, before API transformation): body.elements[]
+    walkSchema2Elements(content?.body?.elements);
     if (parts.length > 0) return parts.join('\n');
 
     // Legacy / API-transformed format: elements[] at top level (2D array)
@@ -1018,9 +1046,18 @@ function extractInteractiveText(content) {
     // original cards have header.title.content
     const title = content?.title || content?.header?.title?.content;
     if (title) return `[card] ${title}`;
-  } catch {
-    // Fall through
+  } catch (err) {
+    // Log a truncated preview so a parse-throwing card schema can be diagnosed.
+    try {
+      console.log(`[lark] extractInteractiveText threw (${err.message}); content preview: ${JSON.stringify(content).slice(0, 2000)}`);
+    } catch { /* unable to stringify */ }
+    return '[interactive message]';
   }
+  // No strategy matched — log a preview so the unhandled card schema can be
+  // identified and supported in a follow-up (mirrors the intent of PR #76).
+  try {
+    console.log(`[lark] extractInteractiveText: unrecognized card schema, content preview: ${JSON.stringify(content).slice(0, 2000)}`);
+  } catch { /* unable to stringify */ }
   return '[interactive message]';
 }
 
