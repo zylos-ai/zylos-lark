@@ -3,12 +3,14 @@
  * Shared helpers for post-install and post-upgrade hooks.
  *
  * Three idempotent steps that integrate lark-cli into zylos-lark:
- *   1. installLarkCliBinary()           - probe + `npm install -g @larksuite/cli`
- *   2. installLarkCliSkills(skillDir)   - probe + `npx xc-skills add larksuite/cli`
- *                                          (populates skillDir/references/)
+ *   1. installLarkCliBinary()           - probe + version check + install/upgrade
+ *   2. installLarkCliSkills(skillDir)   - probe + version check + install/upgrade
  *   3. syncCredentialsToLarkCli(opts)   - read ~/zylos/.env, delegate to
  *                                          `lark-cli config init --app-secret-stdin`
- *                                          (writes lark-cli config + keychain)
+ *
+ * The target lark-cli version is read from package.json `larkCli.version`,
+ * falling back to a hardcoded minimum for backward compatibility with
+ * package.json files that predate the `larkCli` field.
  *
  * Each function throws on failure; the caller decides whether to abort.
  * See docs/INTEGRATE-LARK-CLI.md (§4.2, §4.6.1) for the design rationale.
@@ -18,15 +20,14 @@ import fs from 'fs';
 import path from 'path';
 import { execSync, execFileSync } from 'child_process';
 import { parse as parseDotenv } from 'dotenv';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const LARK_CLI_NPM_PACKAGE = '@larksuite/cli';
-// Single source-of-truth for the lark-cli upstream release. Used for both
-// the npm package version (no prefix) and the git tag ref (prefixed 'v').
-const LARK_CLI_VERSION = '1.0.41';
+const FALLBACK_VERSION = '1.0.41';
 const XC_SKILLS_SOURCE = 'https://github.com/larksuite/cli';
-// Canonical list of bundled lark-cli sub-skills declared in SKILL.md.
-// Checked exhaustively on every run to catch partial-install / manual
-// deletion scenarios where a single-probe check would have skipped.
 const EXPECTED_SUB_SKILLS = Object.freeze([
   'lark-approval',
   'lark-attendance',
@@ -58,6 +59,22 @@ const LARK_BRAND = 'lark';
 const DEFAULT_LARK_LANG = 'zh';
 const DEFAULT_ENV_FILE = path.join(process.env.HOME || '', 'zylos/.env');
 const LOG_PREFIX = '[zylos-lark]';
+const SKILLS_VERSION_FILE = '.lark-cli-version';
+
+/**
+ * Read the target lark-cli version from package.json `larkCli.version`.
+ * Falls back to FALLBACK_VERSION for old package.json without the field.
+ */
+function getTargetVersion() {
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf-8')
+    );
+    return pkg.larkCli?.version || FALLBACK_VERSION;
+  } catch {
+    return FALLBACK_VERSION;
+  }
+}
 
 function commandExists(cmd) {
   try {
@@ -69,55 +86,119 @@ function commandExists(cmd) {
 }
 
 /**
- * Ensure the `lark-cli` binary is on PATH. Installs `@larksuite/cli`
- * globally if missing. Idempotent.
+ * Get the installed lark-cli version string, or null if not installed.
+ * Parses output like "lark-cli version 1.0.41" → "1.0.41".
  */
-export function installLarkCliBinary() {
-  if (commandExists('lark-cli')) {
-    console.log(`${LOG_PREFIX} lark-cli already on PATH, skipping binary install`);
-    return;
-  }
-  console.log(`${LOG_PREFIX} installing lark-cli: npm install -g ${LARK_CLI_NPM_PACKAGE}@${LARK_CLI_VERSION}`);
-  execSync(`npm install -g ${LARK_CLI_NPM_PACKAGE}@${LARK_CLI_VERSION}`, { stdio: 'inherit' });
-  if (!commandExists('lark-cli')) {
-    throw new Error(`lark-cli still not found in PATH after \`npm install -g ${LARK_CLI_NPM_PACKAGE}@${LARK_CLI_VERSION}\``);
+function getInstalledVersion() {
+  try {
+    const out = execSync('lark-cli --version', {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const match = out.match(/(\d+\.\d+\.\d+)/);
+    return match ? match[1] : null;
+  } catch {
+    return null;
   }
 }
 
 /**
- * Install lark-cli's bundled Agent Skills into `<skillDir>/references/`.
- * Each sub-skill lands as its own folder (lark-im/, lark-doc/, ...).
+ * Compare two semver strings. Returns:
+ *   -1 if a < b, 0 if a == b, 1 if a > b.
+ */
+function semverCompare(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) < (pb[i] || 0)) return -1;
+    if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+  }
+  return 0;
+}
+
+/**
+ * Ensure the `lark-cli` binary is on PATH at the target version.
+ * - Not installed → fresh install
+ * - Installed but older than target → upgrade
+ * - Installed at or above target → skip
+ */
+export function installLarkCliBinary() {
+  const target = getTargetVersion();
+  const installed = getInstalledVersion();
+
+  if (installed) {
+    if (semverCompare(installed, target) >= 0) {
+      console.log(`${LOG_PREFIX} lark-cli ${installed} >= target ${target}, skipping`);
+      return;
+    }
+    console.log(`${LOG_PREFIX} lark-cli ${installed} < target ${target}, upgrading`);
+  } else {
+    console.log(`${LOG_PREFIX} lark-cli not found, installing ${target}`);
+  }
+
+  execSync(`npm install -g ${LARK_CLI_NPM_PACKAGE}@${target}`, { stdio: 'inherit' });
+
+  if (!commandExists('lark-cli')) {
+    throw new Error(
+      `lark-cli not found in PATH after npm install -g ${LARK_CLI_NPM_PACKAGE}@${target}`
+    );
+  }
+
+  const newVersion = getInstalledVersion();
+  console.log(`${LOG_PREFIX} lark-cli now at ${newVersion}`);
+}
+
+/**
+ * Install or upgrade lark-cli's bundled Agent Skills into `<skillDir>/references/`.
  *
- * Audits every module in EXPECTED_SUB_SKILLS — rerunning the install
- * whenever any are missing — so partial-install state (an aborted prior
- * run, or manually removed folders) gets repaired instead of silently
- * skipped on the basis of a single probe file.
+ * Triggers a (re-)install when:
+ *   - Any sub-skill directory is missing (partial install / manual deletion)
+ *   - The version marker file is absent (legacy install) or below target
  */
 export function installLarkCliSkills(skillDir) {
   if (!skillDir) {
     throw new Error('installLarkCliSkills: skillDir is required');
   }
+  const target = getTargetVersion();
   const bundlesDir = path.join(skillDir, 'references');
   fs.mkdirSync(bundlesDir, { recursive: true });
+
+  const versionFile = path.join(bundlesDir, SKILLS_VERSION_FILE);
 
   const findMissing = () =>
     EXPECTED_SUB_SKILLS.filter(
       (name) => !fs.existsSync(path.join(bundlesDir, name, 'SKILL.md'))
     );
 
+  let installedSkillsVersion = null;
+  try {
+    installedSkillsVersion = fs.readFileSync(versionFile, 'utf-8').trim();
+  } catch { /* missing = needs install */ }
+
   const missing = findMissing();
-  if (missing.length === 0) {
+  const needsVersionUpgrade =
+    !installedSkillsVersion || semverCompare(installedSkillsVersion, target) < 0;
+
+  if (missing.length === 0 && !needsVersionUpgrade) {
     console.log(
-      `${LOG_PREFIX} all ${EXPECTED_SUB_SKILLS.length} lark-cli sub-skills present, skipping`
+      `${LOG_PREFIX} all ${EXPECTED_SUB_SKILLS.length} sub-skills present at ${installedSkillsVersion}, skipping`
     );
     return;
   }
 
-  console.log(
-    `${LOG_PREFIX} ${missing.length}/${EXPECTED_SUB_SKILLS.length} sub-skill(s) missing (${missing.join(', ')}), repairing into ${bundlesDir}`
-  );
+  if (needsVersionUpgrade) {
+    console.log(
+      `${LOG_PREFIX} sub-skills version ${installedSkillsVersion || '(none)'} → ${target}, upgrading`
+    );
+  }
+  if (missing.length > 0) {
+    console.log(
+      `${LOG_PREFIX} ${missing.length}/${EXPECTED_SUB_SKILLS.length} sub-skill(s) missing, repairing`
+    );
+  }
+
   execSync(
-    `npx xc-skills@latest add ${XC_SKILLS_SOURCE}#v${LARK_CLI_VERSION} --out "${bundlesDir}" -y`,
+    `npx xc-skills@latest add ${XC_SKILLS_SOURCE}#v${target} --out "${bundlesDir}" -y`,
     { stdio: 'inherit' }
   );
 
@@ -127,6 +208,9 @@ export function installLarkCliSkills(skillDir) {
       `installLarkCliSkills: still missing after install: ${stillMissing.join(', ')}`
     );
   }
+
+  fs.writeFileSync(versionFile, target + '\n');
+  console.log(`${LOG_PREFIX} sub-skills updated to ${target}`);
 }
 
 /**
@@ -173,12 +257,6 @@ export function syncCredentialsToLarkCli(opts = {}) {
   lang = lang || process.env.LARK_LANG || DEFAULT_LARK_LANG;
 
   if (!appId || !appSecret) {
-    // Soft-fail: log and skip credential sync without aborting the hook.
-    // Rationale: a missing credential at install/upgrade time is not always
-    // fatal — the user may add them to .env later and re-trigger sync. The
-    // hook should not block the rest of the install (subdir creation,
-    // sub-skill setup, etc.). Any sub-skill needing lark-cli will surface
-    // its own credential error at call time.
     console.warn(
       `${LOG_PREFIX} LARK_APP_ID / LARK_APP_SECRET not found in ${envFile} ` +
       `or process.env; skipping lark-cli keychain sync. ` +
