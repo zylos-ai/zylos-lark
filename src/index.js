@@ -562,8 +562,12 @@ function decrypt(encrypt, encryptKey) {
 async function logMessage(chatType, chatId, userId, openId, text, messageId, timestamp, mentions, threadId = null) {
   const userName = await resolveUserName(userId);
   const resolvedText = resolveMentions(text, mentions);
+  let normalizedTs = timestamp || new Date().toISOString();
+  if (/^\d+$/.test(normalizedTs)) {
+    normalizedTs = new Date(parseInt(normalizedTs, 10)).toISOString();
+  }
   const logEntry = {
-    timestamp: timestamp || new Date().toISOString(),
+    timestamp: normalizedTs,
     message_id: messageId,
     user_id: userId,
     open_id: openId,
@@ -828,6 +832,12 @@ async function fetchQuotedMessage(messageId) {
         ({ text } = extractPostText(JSON.parse(msg.body?.content || '{}').content || [], messageId));
       } else if (msg.msg_type === 'interactive') {
         text = extractInteractiveText(content);
+      } else if (msg.msg_type === 'file') {
+        text = `[file: ${content.file_name || 'unknown'}, file_key: ${content.file_key}, msg_id: ${messageId}]`;
+      } else if (msg.msg_type === 'image') {
+        text = `[image, image_key: ${content.image_key}, msg_id: ${messageId}]`;
+      } else if (msg.msg_type === 'audio') {
+        text = `[audio, file_key: ${content.file_key}, msg_id: ${messageId}]`;
       } else {
         text = `[${msg.msg_type} message]`;
       }
