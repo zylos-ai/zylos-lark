@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-06-28
+
+### Changed
+- **Version-aware lark-cli upgrade**: install and upgrade hooks now compare
+  the installed `lark-cli` version against the target declared in
+  `package.json` (`larkCli.version`) and only upgrade when behind, instead
+  of skipping whenever any version is already present. Sub-skills installed
+  via `xc-skills` are tracked with a `.lark-cli-version` marker file and
+  re-fetched when the target advances. Future lark-cli bumps require only a
+  one-field change in `package.json`.
+- **lark-cli target bumped `1.0.41` → `1.0.59`** (27 sub-skills, adds
+  `lark-note`).
+
 ## [0.3.2] - 2026-06-09
 
 ### Fixed
