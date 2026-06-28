@@ -1,13 +1,13 @@
 ---
 name: lark
-version: 0.3.3
+version: 0.3.4
 description: >-
   Lark (international) and Feishu (飞书, China) communication channel.
   Use when: (1) replying to Lark/Feishu messages (DM or group @mentions),
   (2) sending proactive messages or media (images, files) to Lark/Feishu users or groups,
   (3) managing DM access control (dmPolicy: open/allowlist/owner, dmAllowFrom list),
   (4) managing group access control (groupPolicy, per-group allowFrom, smart/mention modes),
-  (5) operating Feishu/Lark productivity surfaces via the bundled lark-cli — documents, sheets, slides, multidim Base, calendar, tasks, mail, drive, wiki/whiteboard, OKR, approval, attendance, video conferencing, minutes, native OpenAPI explorer (see "Bundled Capability Modules" section in SKILL.md body — full module index under references/),
+  (5) operating Feishu/Lark productivity surfaces via the bundled lark-cli — documents, sheets, slides, multidim Base, calendar, tasks, mail, drive, wiki/whiteboard, OKR, approval, attendance, video conferencing, minutes, meeting notes (纪要), Miaoda/Spark apps, native OpenAPI explorer (see "Bundled Capability Modules" section in SKILL.md body — full module index under references/),
   (6) configuring the bot (admin CLI, markdown card settings, verification token, encrypt key),
   (7) troubleshooting Lark webhook or service issues.
   Config at ~/zylos/components/lark/config.json. Service: pm2 zylos-lark.
@@ -62,13 +62,13 @@ Depends on: comm-bridge (C4 message routing).
 
 ## Bundled Capability Modules (lark-cli)
 
-This skill bundles **25 capability modules** under `references/`, each operating against Feishu/Lark via the `lark-cli` binary. **They are not auto-loaded as top-level skills** — Claude Code's skill discovery only scans top-level directories, and these sub-modules live inside this skill. The parent `SKILL.md` (this file) is the entry point.
+This skill bundles **27 capability modules** under `references/`, each operating against Feishu/Lark via the `lark-cli` binary. **They are not auto-loaded as top-level skills** — Claude Code's skill discovery only scans top-level directories, and these sub-modules live inside this skill. The parent `SKILL.md` (this file) is the entry point.
 
 **How to use a module**: when a user's request maps to one of the modules below, `Read` that module's `SKILL.md` first to learn its exact commands/flags, then invoke `lark-cli <module> ...`.
 
 **Prerequisites** (installed automatically by `zylos add lark` / `zylos upgrade lark` — see `hooks/post-install-shared.js`):
 - `lark-cli` binary on PATH (`npm install -g @larksuite/cli`).
-- 25 sub-skill folders under `references/lark-*/` (`npx xc-skills add larksuite/cli`).
+- 27 sub-skill folders under `references/lark-*/` (`npx xc-skills add larksuite/cli`).
 - App credentials in lark-cli's keychain (`~/.lark-cli/config.json` + AES-256-GCM encrypted file under `~/.local/share/lark-cli/`); pushed from `~/zylos/.env` automatically.
 
 **Identity (`--as bot` vs `--as user`)**:
@@ -117,6 +117,12 @@ Path prefix for all entries: `references/`
 | `lark-vc/SKILL.md` | Video conferencing history, meeting summaries (notes/todos/chapters/transcripts), participant snapshots |
 | `lark-vc-agent/SKILL.md` | Have the bot join/leave a live meeting on the user's behalf; consume real-time events |
 | `lark-minutes/SKILL.md` | Minutes: list, basic info, transcripts, AI summaries |
+| `lark-note/SKILL.md` | Meeting notes (纪要): query note detail by note_id, get note_doc_token / verbatim_doc_token, read unified transcripts |
+
+#### Apps & low-code
+| Module | Use when… |
+|---|---|
+| `lark-apps/SKILL.md` | Miaoda/Spark apps: create, publish HTML sites, local full-stack dev, cloud-based generation, DB ops, release management |
 
 #### Workflows & platform
 | Module | Use when… |
