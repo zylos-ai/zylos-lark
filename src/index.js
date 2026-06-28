@@ -838,6 +838,10 @@ async function fetchQuotedMessage(messageId) {
         text = `[image, image_key: ${content.image_key}, msg_id: ${messageId}]`;
       } else if (msg.msg_type === 'audio') {
         text = `[audio, file_key: ${content.file_key}, msg_id: ${messageId}]`;
+      } else if (msg.msg_type === 'media') {
+        text = `[media: ${content.file_name || 'video'}, file_key: ${content.file_key}, msg_id: ${messageId}]`;
+      } else if (msg.msg_type === 'sticker') {
+        text = `[sticker, file_key: ${content.file_key || 'unknown'}]`;
       } else {
         text = `[${msg.msg_type} message]`;
       }
@@ -1107,6 +1111,10 @@ function extractMessageContent(message) {
       return { text: '', imageKeys: [], fileKey: content.file_key, fileName: content.file_name || 'unknown', audioKey: null };
     case 'audio':
       return { text: '', imageKeys: [], fileKey: null, fileName: null, audioKey: content.file_key || null };
+    case 'media':
+      return { text: `[media: ${content.file_name || 'video'}, file_key: ${content.file_key || 'unknown'}, msg_id: ${message.message_id}]`, imageKeys: [], fileKey: null, fileName: null, audioKey: null };
+    case 'sticker':
+      return { text: `[sticker, file_key: ${content.file_key || 'unknown'}]`, imageKeys: [], fileKey: null, fileName: null, audioKey: null };
     case 'interactive':
       return { text: extractInteractiveText(content), imageKeys: [], fileKey: null, fileName: null, audioKey: null };
     default:
