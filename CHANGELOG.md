@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-06-29
+
+### Fixed
+- **Group context chronological sort**: `logMessage` now normalizes bare
+  epoch-millis timestamps (from `event.header.create_time`) to ISO 8601
+  before storing. Previously `Date.parse("1782657780678")` returned `NaN`,
+  causing all real-time inbound messages to collapse to sort key `0` and
+  get trimmed by `slice(-count)`, leaving the context window dominated by
+  bot replies and stale lazy-loaded entries (#89).
+- **Quoted message file/image/audio metadata**: `fetchQuotedMessage` now
+  handles `file`, `image`, and `audio` message types with full metadata
+  (`file_key`, `file_name`, `image_key`, `msg_id`) instead of falling
+  through to `[file message]` / `[image message]` / `[audio message]` (#89).
+
+### Added
+- **Media (video) and sticker support**: both `extractMessageContent`
+  (inbound path) and `fetchQuotedMessage` (quoted message path) now handle
+  `media` and `sticker` message types, outputting structured metadata
+  instead of generic `[media message]` / `[sticker message]`.
+- **SKILL.md module index**: added `lark-note` (meeting notes / 纪要) and
+  `lark-apps` (Miaoda/Spark app development) to the module index table.
+  Updated module count from 25 to 27 to match `EXPECTED_SUB_SKILLS`.
+
 ## [0.3.3] - 2026-06-28
 
 ### Changed
