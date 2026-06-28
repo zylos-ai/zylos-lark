@@ -62,6 +62,41 @@ describe('post-install-shared version logic', () => {
     );
   });
 
+  it('EXPECTED_SUB_SKILLS includes lark-apps and lark-note (added in v1.0.59)', async () => {
+    const src = fs.readFileSync(
+      path.join(HOOKS_DIR, 'post-install-shared.js'),
+      'utf-8'
+    );
+    assert.ok(src.includes("'lark-apps'"), 'should include lark-apps');
+    assert.ok(src.includes("'lark-note'"), 'should include lark-note');
+    const match = src.match(/EXPECTED_SUB_SKILLS = Object\.freeze\(\[([\s\S]*?)\]\)/);
+    assert.ok(match, 'should find EXPECTED_SUB_SKILLS array');
+    const entries = match[1].match(/'lark-[a-z-]+'/g);
+    assert.equal(entries.length, 27, 'should have 27 expected sub-skills for v1.0.59');
+  });
+
+  it('installLarkCliSkills triggers repair when marker exists but sub-skill is missing', async () => {
+    const src = fs.readFileSync(
+      path.join(HOOKS_DIR, 'post-install-shared.js'),
+      'utf-8'
+    );
+    // The function checks missing.length independently of needsVersionUpgrade,
+    // so even when the marker matches the target, missing dirs trigger a repair.
+    assert.ok(
+      src.includes('missing.length === 0 && !needsVersionUpgrade'),
+      'skip condition should require BOTH no missing sub-skills AND no version upgrade'
+    );
+    assert.ok(
+      src.includes("missing.length > 0"),
+      'should check for missing sub-skills and log repair'
+    );
+    // After install, verification must use findMissing() again
+    assert.ok(
+      src.includes('stillMissing = findMissing()'),
+      'should re-check for missing sub-skills after install'
+    );
+  });
+
   it('installLarkCliSkills writes version marker after successful install', async () => {
     const src = fs.readFileSync(
       path.join(HOOKS_DIR, 'post-install-shared.js'),

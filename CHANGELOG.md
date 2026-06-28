@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   via `xc-skills` are tracked with a `.lark-cli-version` marker file and
   re-fetched when the target advances. Future lark-cli bumps require only a
   one-field change in `package.json`.
-- **lark-cli target bumped `1.0.41` → `1.0.59`** (27 sub-skills, adds
-  `lark-note`).
+- **lark-cli target bumped `1.0.41` → `1.0.59`**: `EXPECTED_SUB_SKILLS`
+  updated from 25 → 27 entries (adds `lark-apps`, `lark-note`) to match
+  the upstream v1.0.59 bundle set.
 
 ## [0.3.2] - 2026-06-09
 

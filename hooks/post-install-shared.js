@@ -29,6 +29,7 @@ const LARK_CLI_NPM_PACKAGE = '@larksuite/cli';
 const FALLBACK_VERSION = '1.0.41';
 const XC_SKILLS_SOURCE = 'https://github.com/larksuite/cli';
 const EXPECTED_SUB_SKILLS = Object.freeze([
+  'lark-apps',
   'lark-approval',
   'lark-attendance',
   'lark-base',
@@ -41,6 +42,7 @@ const EXPECTED_SUB_SKILLS = Object.freeze([
   'lark-mail',
   'lark-markdown',
   'lark-minutes',
+  'lark-note',
   'lark-okr',
   'lark-openapi-explorer',
   'lark-shared',
