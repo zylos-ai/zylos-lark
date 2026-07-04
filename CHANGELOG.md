@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-07-04
+
+### Fixed
+- **File upload**: `uploadFile()` now uses `createReadStream` instead of
+  `readFileSync` — the SDK's form-data needs a stream for proper
+  filename/content-type. Fixes `"Failed to upload file: undefined"` for
+  .docx, .pptx, and other file types.
+- **File type inference**: `inferFileType()` maps extensions (`.pptx`→`ppt`,
+  `.docx`→`doc`, `.xlsx`→`xls`, etc.) instead of hardcoding `'stream'`.
+- **SDK response parsing**: handle both `{file_key}` and `{data: {file_key}}`
+  shapes for compatibility with newer SDK versions.
+
+### Changed
+- SKILL.md description trimmed under 1024 chars (1000→941)
+- Added `[MEDIA:...]` must-be-only-content constraint to SKILL.md
+
 ## [0.3.4] - 2026-06-29
 
 ### Fixed
