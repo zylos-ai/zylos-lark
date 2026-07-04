@@ -7,8 +7,11 @@ description: >-
   (2) sending proactive messages or media (images, files) to Lark/Feishu users or groups,
   (3) managing DM access control (dmPolicy: open/allowlist/owner, dmAllowFrom list),
   (4) managing group access control (groupPolicy, per-group allowFrom, smart/mention modes),
-  (5) operating Feishu/Lark productivity surfaces via the bundled lark-cli — documents, sheets, slides, multidim Base, calendar, tasks, mail, drive, wiki/whiteboard, OKR, approval, attendance, video conferencing, minutes, meeting notes (纪要), Miaoda/Spark apps, native OpenAPI explorer (see "Bundled Capability Modules" section in SKILL.md body — full module index under references/),
-  (6) configuring the bot (admin CLI, markdown card settings, verification token, encrypt key),
+  (5) operating Lark productivity surfaces via the bundled lark-cli — documents, sheets, slides,
+  multidim Base, calendar, tasks, mail, drive, wiki, OKR, approval, attendance,
+  video conferencing, minutes, Miaoda/Spark apps, native OpenAPI explorer
+  (see "Bundled Capability Modules" in SKILL.md body — full module index under references/),
+  (6) configuring the bot (admin CLI, markdown card settings, verification token),
   (7) troubleshooting Lark webhook or service issues.
   Config at ~/zylos/components/lark/config.json. Service: pm2 zylos-lark.
 type: communication
@@ -162,6 +165,8 @@ cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" 
 [MEDIA:file]/path/to/file.pdf
 EOF
 ```
+
+> ⚠️ `[MEDIA:...]` must be the only content in the message. Send text and media as separate calls.
 
 Direct send (bypasses C4 logging, for testing only):
 ```bash
