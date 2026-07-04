@@ -338,28 +338,38 @@ export async function downloadAudio(messageId, fileKey, savePath) {
   }
 }
 
+function inferFileType(ext) {
+  const map = {
+    '.opus': 'opus', '.mp4': 'mp4', '.pdf': 'pdf',
+    '.doc': 'doc', '.docx': 'doc',
+    '.xls': 'xls', '.xlsx': 'xls',
+    '.ppt': 'ppt', '.pptx': 'ppt',
+  };
+  return map[(ext || '').toLowerCase()] || 'stream';
+}
+
 /**
  * Upload file to Lark
  */
-export async function uploadFile(filePath, fileType = 'stream') {
+export async function uploadFile(filePath, fileType) {
   const client = getClient();
 
   try {
-    const fileData = fs.readFileSync(filePath);
-    const fileName = path.basename(filePath);
+    if (!fileType) fileType = inferFileType(path.extname(filePath));
 
     const res = await client.im.file.create({
       data: {
         file_type: fileType,
-        file_name: fileName,
-        file: fileData,
+        file_name: path.basename(filePath),
+        file: fs.createReadStream(filePath),
       },
     });
 
-    if (res.code === 0) {
-      return { success: true, fileKey: res.data.file_key, message: 'File uploaded successfully' };
+    const fileKey = res.file_key ?? res.data?.file_key;
+    if (fileKey) {
+      return { success: true, fileKey, message: 'File uploaded successfully' };
     } else {
-      return { success: false, message: `Failed to upload file: ${res.msg}`, code: res.code };
+      return { success: false, message: `Failed to upload file: ${res.msg ?? JSON.stringify(res)}`, code: res.code };
     }
   } catch (err) {
     return { success: false, message: err.message };
