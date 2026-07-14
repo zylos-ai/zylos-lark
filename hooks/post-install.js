@@ -130,12 +130,11 @@ try {
 } catch (e) {}
 
 console.log('\n========================================');
-console.log('  Feishu/Lark Setup — Remaining Steps');
+console.log('  Lark Setup — Remaining Steps');
 console.log('========================================');
 console.log('');
 console.log('After the service starts, go to the developer console:');
-console.log('  - Feishu: open.feishu.cn/app');
-console.log('  - Lark:   open.larksuite.com/app');
+console.log('  open.larksuite.com/app');
 console.log('');
 console.log('1. Enable "Bot" capability');
 console.log('2. Subscribe to event: im.message.receive_v1');

@@ -13,11 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are untouched; machines below it (or without lark-cli) are brought to
   1.0.69, and sub-skill docs are re-fetched to the matching v1.0.69 tag
   via the version marker.
-- **SKILL.md — Lark international only**: removed Feishu (飞书) dual-branding;
-  this component describes the Lark international channel only. Feishu
-  (China) is served by the separate `feishu` component — a single
-  disambiguation pointer is kept in the frontmatter description. Setup docs
-  now reference only open.larksuite.com.
+- **Lark international only across all surfaces**: SKILL.md, README
+  (English and Chinese), npm package metadata (description/keywords),
+  post-install console output, CLI help text, and DESIGN.md now describe
+  the Lark international channel only — Feishu (飞书) dual-branding
+  removed. Feishu (China) is served by the separate `feishu` component;
+  a single disambiguation pointer is kept in the SKILL.md frontmatter
+  description and the Chinese README. Setup docs and console output now
+  reference only open.larksuite.com.
 - **SKILL.md — prefer user identity for lark-cli content ops**: added a
   prominent note in the lark-cli identity section: default to `--as user`
   (OAuth-authorized, 7-day rolling refresh token) for content operations

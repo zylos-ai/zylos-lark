@@ -1,7 +1,7 @@
 {
   "name": "zylos-lark",
   "version": "0.3.6",
-  "description": "Lark and Feishu communication channel",
+  "description": "Lark (international) communication channel",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
@@ -20,7 +20,6 @@
   "keywords": [
     "zylos",
     "lark",
-    "feishu",
     "agent"
   ],
   "author": "Zylos AI",

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Lark CLI - Command line interface for Lark/Feishu API
+ * Lark CLI - Command line interface for the Lark API
  */
 
 import dotenv from 'dotenv';
@@ -19,7 +19,7 @@ const command = args[0];
 
 function printUsage() {
   console.log(`
-Lark CLI - Interact with Lark/Feishu workspace
+Lark CLI - Interact with your Lark workspace
 
 Usage: lark-cli <command> [options]
 

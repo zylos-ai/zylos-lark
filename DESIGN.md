@@ -12,7 +12,7 @@
 
 ### 1.1 Component Overview
 
-zylos-lark is a Zylos communication component that enables bidirectional messaging between users and the Claude Agent via the Lark/Feishu Webhook API.
+zylos-lark is a Zylos communication component that enables bidirectional messaging between users and the Claude Agent via the Lark (international) Webhook API.
 
 | Property | Value |
 |----------|-------|
@@ -471,7 +471,7 @@ zylos uninstall lark [--purge]
 
 ### B. References
 
-- [Lark Open Platform Documentation](https://open.feishu.cn/document/)
+- [Lark Open Platform Documentation](https://open.larksuite.com/document/)
 - [Lark Node SDK](https://github.com/larksuite/node-sdk)
 - [zylos-telegram DESIGN.md](../zylos-telegram/DESIGN.md)
 
