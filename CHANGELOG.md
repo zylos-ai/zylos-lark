@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-07-14
+
+### Changed
+- **Bundled lark-cli install target**: `larkCli.version` bumped 1.0.59 → 1.0.69.
+  Minimum-version semantics unchanged: machines already at or above the pin
+  are untouched; machines below it (or without lark-cli) are brought to
+  1.0.69, and sub-skill docs are re-fetched to the matching v1.0.69 tag
+  via the version marker.
+- **SKILL.md — Lark international only**: removed Feishu (飞书) dual-branding;
+  this component describes the Lark international channel only. Feishu
+  (China) is served by the separate `feishu` component — a single
+  disambiguation pointer is kept in the frontmatter description. Setup docs
+  now reference only open.larksuite.com.
+- **SKILL.md — prefer user identity for lark-cli content ops**: added a
+  prominent note in the lark-cli identity section: default to `--as user`
+  (OAuth-authorized, 7-day rolling refresh token) for content operations
+  (docs, wiki, drive, sheets, Base) — bot identity is not in any knowledge
+  space and lacks drive scopes, so bot-identity queries silently find
+  nothing. Bot identity remains appropriate for IM messaging operations.
+
 ## [0.3.5] - 2026-07-04
 
 ### Fixed
