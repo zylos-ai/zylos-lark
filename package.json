@@ -39,6 +39,6 @@
     "axios": "^1.16.0"
   },
   "larkCli": {
-    "version": "1.0.59"
+    "version": "1.0.69"
   }
 }
