@@ -1,10 +1,11 @@
 ---
 name: lark
-version: 0.3.5
+version: 0.3.6
 description: >-
-  Lark (international) and Feishu (飞书, China) communication channel.
-  Use when: (1) replying to Lark/Feishu messages (DM or group @mentions),
-  (2) sending proactive messages or media (images, files) to Lark/Feishu users or groups,
+  Lark (international) communication channel.
+  For Feishu (飞书, China) use the separate feishu component instead.
+  Use when: (1) replying to Lark messages (DM or group @mentions),
+  (2) sending proactive messages or media (images, files) to Lark users or groups,
   (3) managing DM access control (dmPolicy: open/allowlist/owner, dmAllowFrom list),
   (4) managing group access control (groupPolicy, per-group allowFrom, smart/mention modes),
   (5) operating Lark productivity surfaces via the bundled lark-cli — documents, sheets, slides,
@@ -39,12 +40,12 @@ upgrade:
 config:
   required:
     - name: LARK_APP_ID
-      description: "App ID (Feishu: open.feishu.cn/app or Lark: open.larksuite.com/app -> Credentials)"
+      description: "App ID (open.larksuite.com/app -> Credentials)"
     - name: LARK_APP_SECRET
       description: "App Secret (same page as App ID)"
       sensitive: true
 
-next-steps: "BEFORE starting the service: 1) Ask user for their Verification Token (REQUIRED — from developer console Event Subscriptions page). Write to config.bot.verification_token in ~/zylos/components/lark/config.json. The service will refuse to start without it. 2) Optionally ask for Encrypt Key — if provided, write to config.bot.encrypt_key. 3) Read domain from ~/zylos/.zylos/config.json and tell user to configure webhook URL in the developer console — Feishu: open.feishu.cn/app, Lark: open.larksuite.com/app (Event Subscriptions → Request URL → https://{domain}/lark/webhook). 4) Start the service (pm2 restart zylos-lark)."
+next-steps: "BEFORE starting the service: 1) Ask user for their Verification Token (REQUIRED — from developer console Event Subscriptions page). Write to config.bot.verification_token in ~/zylos/components/lark/config.json. The service will refuse to start without it. 2) Optionally ask for Encrypt Key — if provided, write to config.bot.encrypt_key. 3) Read domain from ~/zylos/.zylos/config.json and tell user to configure webhook URL in the developer console — open.larksuite.com/app (Event Subscriptions → Request URL → https://{domain}/lark/webhook). 4) Start the service (pm2 restart zylos-lark)."
 
 http_routes:
   - path: /lark/webhook
@@ -59,13 +60,13 @@ dependencies:
 
 # Lark
 
-Lark/Feishu communication channel for zylos.
+Lark (international) communication channel for zylos.
 
 Depends on: comm-bridge (C4 message routing).
 
 ## Bundled Capability Modules (lark-cli)
 
-This skill bundles **27 capability modules** under `references/`, each operating against Feishu/Lark via the `lark-cli` binary. **They are not auto-loaded as top-level skills** — Claude Code's skill discovery only scans top-level directories, and these sub-modules live inside this skill. The parent `SKILL.md` (this file) is the entry point.
+This skill bundles **27 capability modules** under `references/`, each operating against Lark via the `lark-cli` binary. **They are not auto-loaded as top-level skills** — Claude Code's skill discovery only scans top-level directories, and these sub-modules live inside this skill. The parent `SKILL.md` (this file) is the entry point.
 
 **How to use a module**: when a user's request maps to one of the modules below, `Read` that module's `SKILL.md` first to learn its exact commands/flags, then invoke `lark-cli <module> ...`.
 
@@ -75,8 +76,11 @@ This skill bundles **27 capability modules** under `references/`, each operating
 - App credentials in lark-cli's keychain (`~/.lark-cli/config.json` + AES-256-GCM encrypted file under `~/.local/share/lark-cli/`); pushed from `~/zylos/.env` automatically.
 
 **Identity (`--as bot` vs `--as user`)**:
-- `--as bot` works out of the box for surfaces that operate on app/tenant-level resources (IM messaging, contacts, app-level docs, events). No extra login needed.
-- `--as user` is required for surfaces tied to a real user's data (calendar, mail-write, tasks, attendance, OKR, minutes, VC-agent). The user runs `lark-cli auth login --domain <name>` once. On auth failure lark-cli exits with a `<domain>_user_login_required` error envelope; the agent should detect this and notify the owner of the login command.
+
+> ⚠️ **Prefer user identity for content operations.** When querying or editing documents, wiki / knowledge bases, drive files, sheets, or Base via lark-cli, default to `--as user` (OAuth-authorized; 7-day rolling refresh token). The bot identity is not a member of any knowledge space and lacks drive scopes, so bot-identity content queries silently find nothing. Bot identity is appropriate for IM messaging operations.
+
+- `--as bot` works out of the box for app/tenant-level operations (IM messaging, contacts, events). No extra login needed.
+- `--as user` is the default for content operations (docs, wiki, drive, sheets, Base — see note above) and is required for surfaces tied to a real user's data (calendar, mail-write, tasks, attendance, OKR, minutes, VC-agent). The user runs `lark-cli auth login --domain <name>` once. On auth failure lark-cli exits with a `<domain>_user_login_required` error envelope; the agent should detect this and notify the owner of the login command.
 
 ### Module Index
 
@@ -258,7 +262,7 @@ Output: local file path on success, error message on failure.
 - Logs: `~/zylos/components/lark/logs/`
 - Media: `~/zylos/components/lark/media/`
 
-## Feishu/Lark Setup
+## Lark Setup
 
 ### 1. Credentials
 
@@ -269,15 +273,11 @@ LARK_APP_ID=your_app_id
 LARK_APP_SECRET=your_app_secret
 ```
 
-Get App ID and App Secret from your app's Credentials page:
-- Feishu: [open.feishu.cn/app](https://open.feishu.cn/app)
-- Lark: [open.larksuite.com/app](https://open.larksuite.com/app)
+Get App ID and App Secret from your app's Credentials page: [open.larksuite.com/app](https://open.larksuite.com/app)
 
 ### 2. Console Configuration
 
-In the Feishu/Lark developer console:
-- Feishu: [open.feishu.cn/app](https://open.feishu.cn/app)
-- Lark: [open.larksuite.com/app](https://open.larksuite.com/app)
+In the Lark developer console ([open.larksuite.com/app](https://open.larksuite.com/app)):
 
 1. **Enable Bot capability**: Add capabilities → Bot (添加应用能力 → 机器人)
 2. **Subscribe to events**: Event subscriptions → Add `im.message.receive_v1`
@@ -285,16 +285,16 @@ In the Feishu/Lark developer console:
 
 ### 3. Event Security
 
-Feishu/Lark provides two security mechanisms for webhook events.
+Lark provides two security mechanisms for webhook events.
 
-**Verification Token** (REQUIRED) — validates that requests come from Feishu/Lark. The service will refuse to start without it.
+**Verification Token** (REQUIRED) — validates that requests come from Lark. The service will refuse to start without it.
 
 In the console: Event subscriptions → Verification Token. Add to config:
 
 ```json
 {
   "bot": {
-    "verification_token": "your_verification_token_from_feishu"
+    "verification_token": "your_verification_token_from_lark"
   }
 }
 ```
@@ -306,7 +306,7 @@ In the console: Event subscriptions → Encrypt Key. Add to config:
 ```json
 {
   "bot": {
-    "encrypt_key": "your_encrypt_key_from_feishu"
+    "encrypt_key": "your_encrypt_key_from_lark"
   }
 }
 ```
