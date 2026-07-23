@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] - 2026-07-23
+
+### Fixed
+- **Interactive `div` / field-layout cards now read as text instead of just
+  `[card] <title>`**. A card whose text lives in the `div` CONTENT component's
+  `fields[]` (each field carrying its own `{tag: lark_md|plain_text, content}`),
+  e.g. an approval / application card, was surfaced to the agent as only its
+  title. `extractInteractiveText` walked `markdown` and `div.text` but never
+  `div.fields[].text.content`, so all field text was dropped. The walker is now
+  recursive and reads `div.fields[]`, `column_set → columns → elements`, `note`
+  containers and `action → button` text, across the Schema 2.0 (`body.elements`),
+  original `user_dsl`, and legacy/Schema 1.0 top-level `elements[]` shapes. The
+  message read paths already request `card_msg_content_type: user_card_content`,
+  so the full card JSON was already being fetched — only the extraction was
+  incomplete. Note: values a user *submits* into interactive input widgets
+  (`form_value`) are not carried in the message body and are unaffected by this
+  change (they arrive via the card-action callback to the card's owning app).
+  Extracted into a pure, unit-tested `src/lib/card-text.js`. Official div/text
+  component reference: <https://open.larksuite.com/document/common-capabilities/message-card/message-cards-content/embedded-non-interactive-elements/text>.
+
 ## [0.3.7] - 2026-07-23
 
 ### Fixed
