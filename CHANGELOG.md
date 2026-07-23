@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-07-23
+
+### Fixed
+- **p2p DM silent message drop**: outbound replies in a 1:1 DM were reported
+  as sent but never appeared for the recipient. The send routing in
+  `scripts/send.js` called the reply APIs (`replyToMessage` /
+  `replyMarkdownCard`, backed by Lark `im.message.reply`) whenever the
+  reply-via endpoint carried a `root:`/`parent:` — which also happens in p2p
+  DMs. Lark returned `code:0` (success), but a threaded/quoted reply is not
+  surfaced in the 1:1 main DM view, so the message was invisible. Because the
+  API reported success, the existing `sendMessage` fallback (which only fires
+  on failure) never triggered → a silent drop. Reply-to (threaded/quoted)
+  sends are only meaningful in **groups**; p2p DMs now ALWAYS use the base
+  `sendMessage` / `sendImage` / `sendFile` to the chat id. Applied
+  consistently across all four send paths (text, card, image, file). Group
+  reply-to behavior (@mention / thread continuation) is unchanged. The
+  reply-target decision is now a pure helper (`src/lib/reply-target.js`) with
+  unit tests.
+
 ## [0.3.6] - 2026-07-14
 
 ### Changed
