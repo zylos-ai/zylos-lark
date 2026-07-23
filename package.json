@@ -1,6 +1,6 @@
 {
   "name": "zylos-lark",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Lark (international) communication channel",
   "type": "module",
   "main": "src/index.js",
