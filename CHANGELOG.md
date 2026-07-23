@@ -22,7 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   incomplete. Note: values a user *submits* into interactive input widgets
   (`form_value`) are not carried in the message body and are unaffected by this
   change (they arrive via the card-action callback to the card's owning app).
-  Extracted into a pure, unit-tested `src/lib/card-text.js`. Official div/text
+  The walk is depth- and node-bounded (`MAX_CARD_WALK_DEPTH`/`MAX_CARD_WALK_NODES`)
+  so a pathologically deep or huge card can neither overflow the call stack nor
+  spin — it stops, logs once, and returns the text gathered so far (parsed card
+  JSON is acyclic and size-capped, so this is belt-and-suspenders on top of the
+  existing try/catch). Extracted into a pure, unit-tested `src/lib/card-text.js`. Official div/text
   component reference: <https://open.larksuite.com/document/common-capabilities/message-card/message-cards-content/embedded-non-interactive-elements/text>.
 
 ## [0.3.7] - 2026-07-23

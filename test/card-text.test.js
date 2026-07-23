@@ -85,3 +85,29 @@ test('unrecognized/empty card returns the placeholder', () => {
   assert.equal(extractInteractiveText({}), '[interactive message]');
   assert.equal(extractInteractiveText(null), '[interactive message]');
 });
+
+test('pathologically deep nesting is safely truncated (no stack overflow / no hang)', () => {
+  // Build a column_set nested ~5000 levels deep — far past the depth cap. The
+  // walk must terminate quickly and return whatever it gathered, never throw a
+  // RangeError or spin.
+  let node = { tag: 'markdown', content: 'DEEPEST' };
+  for (let i = 0; i < 5000; i++) {
+    node = { tag: 'column_set', columns: [{ tag: 'column', elements: [node] }] };
+  }
+  const card = { schema: '2.0', body: { elements: [node] } };
+  let out;
+  assert.doesNotThrow(() => { out = extractInteractiveText(card); });
+  // It stops at the cap before reaching 'DEEPEST', so it falls through to the
+  // placeholder — the point is it returns safely rather than overflowing.
+  assert.equal(typeof out, 'string');
+});
+
+test('a wide card with thousands of siblings is bounded by the node cap', () => {
+  const elements = [];
+  for (let i = 0; i < 20000; i++) elements.push({ tag: 'markdown', content: 'x' + i });
+  const card = { schema: '2.0', body: { elements } };
+  let out;
+  assert.doesNotThrow(() => { out = extractInteractiveText(card); });
+  assert.equal(typeof out, 'string');
+  assert.ok(out.length > 0, 'gathered the first (capped) batch of text');
+});

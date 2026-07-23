@@ -1,3 +1,12 @@
+// Hard safety bounds for the card walk. The input is parsed JSON — an acyclic,
+// size-bounded tree (Lark caps card JSON at ~28KB), so a cycle/infinite loop is
+// not actually possible and real cards nest only a few levels deep. These caps
+// are belt-and-suspenders: even a pathologically deep or huge card can neither
+// overflow the call stack nor spin — the walk stops and logs once, degrading to
+// whatever text was gathered so far (never a crash or hang).
+const MAX_CARD_WALK_DEPTH = 100;   // real cards nest < ~10; 100 is unreachable normally
+const MAX_CARD_WALK_NODES = 5000;  // total element nodes visited per card
+
 /**
  * Extract readable text from a Lark interactive (card) message.
  *
@@ -42,9 +51,30 @@ export function extractInteractiveText(content) {
     //     the title (the "[card] <title>"-only bug this fixes).
     //   • `column_set` → `columns[]` → nested `elements[]` containers
     //   • `note` containers and `action` → `button` text
-    const walkElement = (el) => {
-      if (!el) return;
-      if (Array.isArray(el)) { el.forEach(walkElement); return; }
+    let nodesVisited = 0;
+    let walkTruncated = false;
+    const overCap = (depth) => {
+      if (depth > MAX_CARD_WALK_DEPTH || ++nodesVisited > MAX_CARD_WALK_NODES) {
+        if (!walkTruncated) {
+          walkTruncated = true;
+          try {
+            console.log(`[lark] extractInteractiveText: card walk hit ${depth > MAX_CARD_WALK_DEPTH ? 'depth' : 'node'} cap — truncating (text may be incomplete)`);
+          } catch { /* ignore */ }
+        }
+        return true;
+      }
+      return false;
+    };
+
+    // Depth-bounded, node-bounded tree walk. `depth` guards the call stack and
+    // `nodesVisited` (via overCap) guards total work; arrays don't add depth
+    // (they're sibling containers, not nesting). Parsed JSON is acyclic so this
+    // always terminates; the caps just make a pathological card safe too.
+    // NOTE: iterate arrays explicitly (NOT `el.forEach(walkElement)`), so the
+    // forEach index isn't passed as `depth`.
+    const walkElement = (el, depth) => {
+      if (!el || overCap(depth)) return;
+      if (Array.isArray(el)) { for (const x of el) walkElement(x, depth); return; }
       if (typeof el !== 'object') return;
       switch (el.tag) {
         case 'markdown':
@@ -62,27 +92,27 @@ export function extractInteractiveText(content) {
           for (const f of (el.fields || [])) pushText(f?.text?.content);
           break;
         case 'column_set':
-          for (const col of (el.columns || [])) walkElement(col.elements);
+          for (const col of (el.columns || [])) walkElement(col.elements, depth + 1);
           break;
         case 'note':
-          walkElement(el.elements);
+          walkElement(el.elements, depth + 1);
           break;
         case 'action':
-          walkElement(el.actions);
+          walkElement(el.actions, depth + 1);
           break;
         case 'button':
           pushText(el.text?.content);
           break;
         default:
           // Unknown/container element: pick up a directly-attached text object
-          // and recurse defensively into nested shapes.
+          // and descend defensively into nested shapes.
           pushText(el.text?.content);
-          if (el.elements) walkElement(el.elements);
-          if (el.columns) for (const col of el.columns) walkElement(col.elements);
+          if (el.elements) walkElement(el.elements, depth + 1);
+          if (el.columns) for (const col of el.columns) walkElement(col.elements, depth + 1);
       }
     };
     // Back-compat alias for the two Schema-2.0 call sites below.
-    const walkSchema2Elements = (elements) => walkElement(elements || []);
+    const walkSchema2Elements = (elements) => walkElement(elements || [], 0);
 
     // Schema 2.0 read-back: when Lark reads/pushes a card back, it transforms it
     // and drops the markdown body from the top-level fields — only the RENDERED
@@ -114,7 +144,7 @@ export function extractInteractiveText(content) {
     // 2D array of text runs. Route both through the same recursive walker so
     // `div.fields[]`, buttons and nested containers are extracted here too
     // (this is the branch a read-back field-layout card lands in).
-    walkElement(content?.elements || []);
+    walkElement(content?.elements || [], 0);
 
     // Filter out whitespace-only parts
     const meaningful = parts.map(p => p.trim()).filter(Boolean);
