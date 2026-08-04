@@ -888,11 +888,15 @@ async function fetchMergeForwardContent(messageId) {
     const client = getClient();
     const res = await client.im.message.get({
       path: { message_id: messageId },
-      // Match the sender-id namespace used everywhere else (webhook events'
-      // sender_id.user_id, and the group-member preload cache keyed by
-      // user_id) — without this the API defaults to open_id, which never
-      // hits that cache even for senders whose name is already known.
-      params: { user_id_type: 'user_id' },
+      // user_id_type: match the sender-id namespace used everywhere else
+      // (webhook events' sender_id.user_id, and the group-member preload
+      // cache keyed by user_id) — without this the API defaults to open_id,
+      // which never hits that cache even for senders whose name is known.
+      // card_msg_content_type: request the original Schema 2.0 card JSON
+      // (with body.elements) for any interactive/card child messages — same
+      // param fetchQuotedMessage already uses; without it a forwarded card
+      // degrades to the generic "[interactive message]" fallback.
+      params: { user_id_type: 'user_id', card_msg_content_type: 'user_card_content' },
     });
     const items = (res.data?.items || []).filter((item) => item.message_id !== messageId);
     if (items.length === 0) return '[merge_forward message, no child messages]';

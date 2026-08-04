@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to be JSON (observed as the literal string `"Merged and Forwarded Message"`
   from a cross-tenant source); the JSON parse is now wrapped so it falls back
   to `{}` instead of throwing.
+- **Interactive/card child messages inside a merge-forwarded conversation no
+  longer degrade to the generic `[interactive message]` placeholder** — the
+  merge-forward fetch now also requests `card_msg_content_type:
+  'user_card_content'`, the same param `fetchQuotedMessage` already used, so
+  `extractInteractiveText` gets the original Schema 2.0 card JSON (with
+  `body.elements`) instead of the transformed read-back form that drops it.
 
 ## [0.3.8] - 2026-07-23
 
