@@ -1067,13 +1067,25 @@ async function extractMessageContent(message) {
       return { text: `[sticker, file_key: ${content.file_key || 'unknown'}]`, imageKeys: [], fileKey: null, fileName: null, audioKey: null };
     case 'interactive':
       return { text: extractInteractiveText(content), imageKeys: [], fileKey: null, fileName: null, audioKey: null };
-    case 'merge_forward': {
-      const text = await fetchMergeForwardContent(message.message_id);
-      return { text, imageKeys: [], fileKey: null, fileName: null, audioKey: null };
-    }
+    case 'merge_forward':
+      // Deliberately no remote fetch here: this runs before any DM/group
+      // access gate in handleMessageEvent, and fetchMergeForwardContent is a
+      // live im.message.get call to Lark that would otherwise fire (and log
+      // its result) for a sender/chat that ends up rejected anyway. The
+      // caller resolves deferredMergeForwardId via resolveMergeForwardText()
+      // only after the relevant gate has passed.
+      return { text: null, imageKeys: [], fileKey: null, fileName: null, audioKey: null, deferredMergeForwardId: message.message_id };
     default:
       return { text: `[${msgType} message]`, imageKeys: [], fileKey: null, fileName: null, audioKey: null };
   }
+}
+
+// Resolves a merge_forward's deferred remote fetch. Call only after the
+// message has passed its DM/group access gate — see extractMessageContent's
+// 'merge_forward' case for why the fetch itself is deferred this far.
+async function resolveMergeForwardText(extracted) {
+  if (!extracted.deferredMergeForwardId) return extracted.text;
+  return fetchMergeForwardContent(extracted.deferredMergeForwardId);
 }
 
 // Bind owner (first private chat user)
@@ -1161,8 +1173,12 @@ async function handleMessageEvent(event) {
 
   // Dedup is already checked in the webhook handler (line ~1013)
 
-  const { text, imageKeys, fileKey, fileName, audioKey } = await extractMessageContent(message);
-  console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
+  const extracted = await extractMessageContent(message);
+  let { text, imageKeys, fileKey, fileName, audioKey } = extracted;
+  // A pending merge_forward has no text yet (deliberately not fetched until
+  // the DM/group access gate passes below) — log a fixed marker instead of
+  // real content from a sender/chat that may end up rejected anyway.
+  console.log(`[lark] ${chatType} message from ${senderUserId}: ${extracted.deferredMergeForwardId ? '[merge_forward, pending access check]' : ((text || '').substring(0, 50) || '[media]')}...`);
 
   // Build log text with file/image metadata
   let logText = text;
@@ -1196,6 +1212,11 @@ async function handleMessageEvent(event) {
       console.log(`[lark] Private message from non-allowed user ${senderUserId} (dmPolicy=${config.dmPolicy || 'owner'}), rejecting`);
       sendMessage(chatId, "Sorry, I'm not available for private messages. Please ask my owner to grant you access.").catch(() => {});
       return;
+    }
+
+    if (extracted.deferredMergeForwardId) {
+      text = await resolveMergeForwardText(extracted);
+      logText = text;
     }
 
     await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
@@ -1343,6 +1364,11 @@ async function handleMessageEvent(event) {
         console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
       }
       return;
+    }
+
+    if (extracted.deferredMergeForwardId) {
+      text = await resolveMergeForwardText(extracted);
+      logText = text;
     }
 
     if (!smart && !mentioned) {

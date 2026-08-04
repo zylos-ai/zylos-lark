@@ -37,6 +37,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   'user_card_content'`, the same param `fetchQuotedMessage` already used, so
   `extractInteractiveText` gets the original Schema 2.0 card JSON (with
   `body.elements`) instead of the transformed read-back form that drops it.
+- **Security: a merge-forwarded message no longer fetches its content before
+  the DM/group access gate runs** — `extractMessageContent`'s `merge_forward`
+  case previously awaited `fetchMergeForwardContent` (a live `im.message.get`
+  call) unconditionally at the very top of `handleMessageEvent`, before the
+  DM allowlist, group-disabled, group-allowlist, and sender-allowFrom checks.
+  A message from a rejected/ignored sender or chat still triggered that
+  outbound call, and its first 50 characters still reached the console log.
+  The fetch is now deferred (`extractMessageContent` returns a
+  `deferredMergeForwardId` marker with no network call) and only resolved via
+  the new `resolveMergeForwardText()` immediately after the relevant DM/group
+  gate passes, in both the p2p and group branches.
 
 ## [0.3.8] - 2026-07-23
 
