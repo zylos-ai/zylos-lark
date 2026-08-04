@@ -805,6 +805,41 @@ function buildEndpoint(chatId, { chatType, rootId, parentId, messageId, threadId
 }
 
 /**
+ * Parse the msg_type/body.content of a single Lark message item (as returned by
+ * `im.message.get`) into display text, resolving mentions if present.
+ */
+function parseMessageItemText(msg, fallbackMessageId) {
+  const messageId = msg.message_id || fallbackMessageId;
+  const content = JSON.parse(msg.body?.content || '{}');
+  let text;
+  if (msg.msg_type === 'text') {
+    text = content.text || '';
+  } else if (msg.msg_type === 'post') {
+    ({ text } = extractPostText(content.content || [], messageId));
+  } else if (msg.msg_type === 'interactive') {
+    text = extractInteractiveText(content);
+  } else if (msg.msg_type === 'file') {
+    text = `[file: ${content.file_name || 'unknown'}, file_key: ${content.file_key}, msg_id: ${messageId}]`;
+  } else if (msg.msg_type === 'image') {
+    text = `[image, image_key: ${content.image_key}, msg_id: ${messageId}]`;
+  } else if (msg.msg_type === 'audio') {
+    text = `[audio, file_key: ${content.file_key}, msg_id: ${messageId}]`;
+  } else if (msg.msg_type === 'media') {
+    text = `[media: ${content.file_name || 'video'}, file_key: ${content.file_key}, msg_id: ${messageId}]`;
+  } else if (msg.msg_type === 'sticker') {
+    text = `[sticker, file_key: ${content.file_key || 'unknown'}]`;
+  } else if (msg.msg_type === 'merge_forward') {
+    text = '[nested merge_forward message]';
+  } else {
+    text = `[${msg.msg_type} message]`;
+  }
+  if (msg.mentions && msg.mentions.length > 0) {
+    text = resolveMentions(text, msg.mentions);
+  }
+  return text;
+}
+
+/**
  * Fetch content of a quoted/replied message (best-effort).
  */
 async function fetchQuotedMessage(messageId) {
@@ -823,38 +858,40 @@ async function fetchQuotedMessage(messageId) {
     });
     if (res.code === 0 && res.data?.items?.[0]) {
       const msg = res.data.items[0];
-      const senderId = msg.sender?.id;
-      const senderName = await resolveUserName(senderId);
-      const content = JSON.parse(msg.body?.content || '{}');
-      let text;
-      if (msg.msg_type === 'text') {
-        text = content.text || '';
-      } else if (msg.msg_type === 'post') {
-        ({ text } = extractPostText(JSON.parse(msg.body?.content || '{}').content || [], messageId));
-      } else if (msg.msg_type === 'interactive') {
-        text = extractInteractiveText(content);
-      } else if (msg.msg_type === 'file') {
-        text = `[file: ${content.file_name || 'unknown'}, file_key: ${content.file_key}, msg_id: ${messageId}]`;
-      } else if (msg.msg_type === 'image') {
-        text = `[image, image_key: ${content.image_key}, msg_id: ${messageId}]`;
-      } else if (msg.msg_type === 'audio') {
-        text = `[audio, file_key: ${content.file_key}, msg_id: ${messageId}]`;
-      } else if (msg.msg_type === 'media') {
-        text = `[media: ${content.file_name || 'video'}, file_key: ${content.file_key}, msg_id: ${messageId}]`;
-      } else if (msg.msg_type === 'sticker') {
-        text = `[sticker, file_key: ${content.file_key || 'unknown'}]`;
-      } else {
-        text = `[${msg.msg_type} message]`;
-      }
-      if (msg.mentions && msg.mentions.length > 0) {
-        text = resolveMentions(text, msg.mentions);
-      }
+      const senderName = await resolveUserName(msg.sender?.id);
+      const text = parseMessageItemText(msg, messageId);
       return { sender: senderName, text };
     }
   } catch (err) {
     console.log(`[lark] Failed to fetch quoted message ${messageId}: ${err.message}`);
   }
   return null;
+}
+
+/**
+ * Fetch and flatten a merge_forward (合并转发) message's child messages.
+ * `im.message.get` on a merge_forward message_id returns the forward wrapper
+ * itself as one item plus every forwarded message (already flattened across
+ * forward levels) as the remaining items — no recursive fetch needed.
+ */
+async function fetchMergeForwardContent(messageId) {
+  try {
+    const { getClient } = await import('./lib/client.js');
+    const client = getClient();
+    const res = await client.im.message.get({ path: { message_id: messageId } });
+    const items = (res.data?.items || []).filter((item) => item.message_id !== messageId);
+    if (items.length === 0) return '[merge_forward message, no child messages]';
+
+    const lines = [];
+    for (const item of items) {
+      const senderName = await resolveUserName(item.sender?.id);
+      lines.push(`${senderName}: ${parseMessageItemText(item, item.message_id)}`);
+    }
+    return `[Forwarded conversation]\n${lines.join('\n')}`;
+  } catch (err) {
+    console.log(`[lark] Failed to fetch merge_forward content ${messageId}: ${err.message}`);
+    return '[merge_forward message, failed to fetch content]';
+  }
 }
 
 /**
@@ -978,7 +1015,7 @@ function extractPostText(paragraphs, messageId) {
 
 // Extract content from Lark message
 // Returns imageKeys as array (all images from post messages, or single image)
-function extractMessageContent(message) {
+async function extractMessageContent(message) {
   const msgType = message.message_type;
   let content;
   try {
@@ -1011,6 +1048,10 @@ function extractMessageContent(message) {
       return { text: `[sticker, file_key: ${content.file_key || 'unknown'}]`, imageKeys: [], fileKey: null, fileName: null, audioKey: null };
     case 'interactive':
       return { text: extractInteractiveText(content), imageKeys: [], fileKey: null, fileName: null, audioKey: null };
+    case 'merge_forward': {
+      const text = await fetchMergeForwardContent(message.message_id);
+      return { text, imageKeys: [], fileKey: null, fileName: null, audioKey: null };
+    }
     default:
       return { text: `[${msgType} message]`, imageKeys: [], fileKey: null, fileName: null, audioKey: null };
   }
@@ -1101,7 +1142,7 @@ async function handleMessageEvent(event) {
 
   // Dedup is already checked in the webhook handler (line ~1013)
 
-  const { text, imageKeys, fileKey, fileName, audioKey } = extractMessageContent(message);
+  const { text, imageKeys, fileKey, fileName, audioKey } = await extractMessageContent(message);
   console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
 
   // Build log text with file/image metadata

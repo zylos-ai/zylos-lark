@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.10] - 2026-08-04
+
+### Fixed
+- **Merge-forwarded (合并转发) messages now read as their actual content
+  instead of a bare `[merge_forward message]` placeholder**. Lark's
+  `im.message.receive_v1` event for a forwarded chat record carries no real
+  content in `message.content` — the child messages have to be fetched with a
+  separate `im.message.get` call on the same `message_id`, which returns the
+  forward wrapper plus every forwarded message already flattened across
+  forward levels. `extractMessageContent` now awaits this fetch for
+  `msg_type: merge_forward` and renders each child as `sender: text`, reusing
+  the same per-type text extraction as quoted-message fetching (factored out
+  into `parseMessageItemText`). `extractMessageContent` is now async; its one
+  call site already runs inside an async handler.
+
 ## [0.3.8] - 2026-07-23
 
 ### Fixed
