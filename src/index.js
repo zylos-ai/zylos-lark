@@ -805,6 +805,49 @@ function buildEndpoint(chatId, { chatType, rootId, parentId, messageId, threadId
 }
 
 /**
+ * Parse the msg_type/body.content of a single Lark message item (as returned by
+ * `im.message.get`) into display text, resolving mentions if present.
+ */
+function parseMessageItemText(msg, fallbackMessageId) {
+  const messageId = msg.message_id || fallbackMessageId;
+  // body.content is not guaranteed to be JSON for every msg_type — a nested
+  // forward-of-a-forward has come back from cross-tenant sources as a bare
+  // "Merged and Forwarded Message" string rather than a JSON payload.
+  let content;
+  try {
+    content = JSON.parse(msg.body?.content || '{}');
+  } catch {
+    content = {};
+  }
+  let text;
+  if (msg.msg_type === 'text') {
+    text = content.text || '';
+  } else if (msg.msg_type === 'post') {
+    ({ text } = extractPostText(content.content || [], messageId));
+  } else if (msg.msg_type === 'interactive') {
+    text = extractInteractiveText(content);
+  } else if (msg.msg_type === 'file') {
+    text = `[file: ${content.file_name || 'unknown'}, file_key: ${content.file_key}, msg_id: ${messageId}]`;
+  } else if (msg.msg_type === 'image') {
+    text = `[image, image_key: ${content.image_key}, msg_id: ${messageId}]`;
+  } else if (msg.msg_type === 'audio') {
+    text = `[audio, file_key: ${content.file_key}, msg_id: ${messageId}]`;
+  } else if (msg.msg_type === 'media') {
+    text = `[media: ${content.file_name || 'video'}, file_key: ${content.file_key}, msg_id: ${messageId}]`;
+  } else if (msg.msg_type === 'sticker') {
+    text = `[sticker, file_key: ${content.file_key || 'unknown'}]`;
+  } else if (msg.msg_type === 'merge_forward') {
+    text = '[nested merge_forward message]';
+  } else {
+    text = `[${msg.msg_type} message]`;
+  }
+  if (msg.mentions && msg.mentions.length > 0) {
+    text = resolveMentions(text, msg.mentions);
+  }
+  return text;
+}
+
+/**
  * Fetch content of a quoted/replied message (best-effort).
  */
 async function fetchQuotedMessage(messageId) {
@@ -819,42 +862,55 @@ async function fetchQuotedMessage(messageId) {
       // dropped the markdown body; with it, extractInteractiveText can read
       // body.elements directly. (The API does NOT resolve cards to plain text —
       // it returns the original card JSON, which happens to carry body.elements.)
-      params: { card_msg_content_type: 'user_card_content' },
+      params: { card_msg_content_type: 'user_card_content', user_id_type: 'user_id' },
     });
     if (res.code === 0 && res.data?.items?.[0]) {
       const msg = res.data.items[0];
-      const senderId = msg.sender?.id;
-      const senderName = await resolveUserName(senderId);
-      const content = JSON.parse(msg.body?.content || '{}');
-      let text;
-      if (msg.msg_type === 'text') {
-        text = content.text || '';
-      } else if (msg.msg_type === 'post') {
-        ({ text } = extractPostText(JSON.parse(msg.body?.content || '{}').content || [], messageId));
-      } else if (msg.msg_type === 'interactive') {
-        text = extractInteractiveText(content);
-      } else if (msg.msg_type === 'file') {
-        text = `[file: ${content.file_name || 'unknown'}, file_key: ${content.file_key}, msg_id: ${messageId}]`;
-      } else if (msg.msg_type === 'image') {
-        text = `[image, image_key: ${content.image_key}, msg_id: ${messageId}]`;
-      } else if (msg.msg_type === 'audio') {
-        text = `[audio, file_key: ${content.file_key}, msg_id: ${messageId}]`;
-      } else if (msg.msg_type === 'media') {
-        text = `[media: ${content.file_name || 'video'}, file_key: ${content.file_key}, msg_id: ${messageId}]`;
-      } else if (msg.msg_type === 'sticker') {
-        text = `[sticker, file_key: ${content.file_key || 'unknown'}]`;
-      } else {
-        text = `[${msg.msg_type} message]`;
-      }
-      if (msg.mentions && msg.mentions.length > 0) {
-        text = resolveMentions(text, msg.mentions);
-      }
+      const senderName = await resolveUserName(msg.sender?.id);
+      const text = parseMessageItemText(msg, messageId);
       return { sender: senderName, text };
     }
   } catch (err) {
     console.log(`[lark] Failed to fetch quoted message ${messageId}: ${err.message}`);
   }
   return null;
+}
+
+/**
+ * Fetch and flatten a merge_forward (合并转发) message's child messages.
+ * `im.message.get` on a merge_forward message_id returns the forward wrapper
+ * itself as one item plus every forwarded message (already flattened across
+ * forward levels) as the remaining items — no recursive fetch needed.
+ */
+async function fetchMergeForwardContent(messageId) {
+  try {
+    const { getClient } = await import('./lib/client.js');
+    const client = getClient();
+    const res = await client.im.message.get({
+      path: { message_id: messageId },
+      // user_id_type: match the sender-id namespace used everywhere else
+      // (webhook events' sender_id.user_id, and the group-member preload
+      // cache keyed by user_id) — without this the API defaults to open_id,
+      // which never hits that cache even for senders whose name is known.
+      // card_msg_content_type: request the original Schema 2.0 card JSON
+      // (with body.elements) for any interactive/card child messages — same
+      // param fetchQuotedMessage already uses; without it a forwarded card
+      // degrades to the generic "[interactive message]" fallback.
+      params: { user_id_type: 'user_id', card_msg_content_type: 'user_card_content' },
+    });
+    const items = (res.data?.items || []).filter((item) => item.message_id !== messageId);
+    if (items.length === 0) return '[merge_forward message, no child messages]';
+
+    const lines = [];
+    for (const item of items) {
+      const senderName = await resolveUserName(item.sender?.id);
+      lines.push(`${senderName}: ${parseMessageItemText(item, item.message_id)}`);
+    }
+    return `[Forwarded conversation]\n${lines.join('\n')}`;
+  } catch (err) {
+    console.log(`[lark] Failed to fetch merge_forward content ${messageId}: ${err.message}`);
+    return '[merge_forward message, failed to fetch content]';
+  }
 }
 
 /**
@@ -978,7 +1034,7 @@ function extractPostText(paragraphs, messageId) {
 
 // Extract content from Lark message
 // Returns imageKeys as array (all images from post messages, or single image)
-function extractMessageContent(message) {
+async function extractMessageContent(message) {
   const msgType = message.message_type;
   let content;
   try {
@@ -1011,9 +1067,25 @@ function extractMessageContent(message) {
       return { text: `[sticker, file_key: ${content.file_key || 'unknown'}]`, imageKeys: [], fileKey: null, fileName: null, audioKey: null };
     case 'interactive':
       return { text: extractInteractiveText(content), imageKeys: [], fileKey: null, fileName: null, audioKey: null };
+    case 'merge_forward':
+      // Deliberately no remote fetch here: this runs before any DM/group
+      // access gate in handleMessageEvent, and fetchMergeForwardContent is a
+      // live im.message.get call to Lark that would otherwise fire (and log
+      // its result) for a sender/chat that ends up rejected anyway. The
+      // caller resolves deferredMergeForwardId via resolveMergeForwardText()
+      // only after the relevant gate has passed.
+      return { text: null, imageKeys: [], fileKey: null, fileName: null, audioKey: null, deferredMergeForwardId: message.message_id };
     default:
       return { text: `[${msgType} message]`, imageKeys: [], fileKey: null, fileName: null, audioKey: null };
   }
+}
+
+// Resolves a merge_forward's deferred remote fetch. Call only after the
+// message has passed its DM/group access gate — see extractMessageContent's
+// 'merge_forward' case for why the fetch itself is deferred this far.
+async function resolveMergeForwardText(extracted) {
+  if (!extracted.deferredMergeForwardId) return extracted.text;
+  return fetchMergeForwardContent(extracted.deferredMergeForwardId);
 }
 
 // Bind owner (first private chat user)
@@ -1101,8 +1173,12 @@ async function handleMessageEvent(event) {
 
   // Dedup is already checked in the webhook handler (line ~1013)
 
-  const { text, imageKeys, fileKey, fileName, audioKey } = extractMessageContent(message);
-  console.log(`[lark] ${chatType} message from ${senderUserId}: ${(text || '').substring(0, 50) || '[media]'}...`);
+  const extracted = await extractMessageContent(message);
+  let { text, imageKeys, fileKey, fileName, audioKey } = extracted;
+  // A pending merge_forward has no text yet (deliberately not fetched until
+  // the DM/group access gate passes below) — log a fixed marker instead of
+  // real content from a sender/chat that may end up rejected anyway.
+  console.log(`[lark] ${chatType} message from ${senderUserId}: ${extracted.deferredMergeForwardId ? '[merge_forward, pending access check]' : ((text || '').substring(0, 50) || '[media]')}...`);
 
   // Build log text with file/image metadata
   let logText = text;
@@ -1136,6 +1212,11 @@ async function handleMessageEvent(event) {
       console.log(`[lark] Private message from non-allowed user ${senderUserId} (dmPolicy=${config.dmPolicy || 'owner'}), rejecting`);
       sendMessage(chatId, "Sorry, I'm not available for private messages. Please ask my owner to grant you access.").catch(() => {});
       return;
+    }
+
+    if (extracted.deferredMergeForwardId) {
+      text = await resolveMergeForwardText(extracted);
+      logText = text;
     }
 
     await logMessage(chatType, chatId, senderUserId, senderOpenId, logText, messageId, event.header.create_time, mentions, threadId);
@@ -1283,6 +1364,11 @@ async function handleMessageEvent(event) {
         console.log(`[lark] Sender ${senderUserId} not in group ${chatId} allowFrom, ignoring`);
       }
       return;
+    }
+
+    if (extracted.deferredMergeForwardId) {
+      text = await resolveMergeForwardText(extracted);
+      logText = text;
     }
 
     if (!smart && !mentioned) {

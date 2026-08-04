@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.10] - 2026-08-04
+
+### Fixed
+- **Merge-forwarded (合并转发) messages now read as their actual content
+  instead of a bare `[merge_forward message]` placeholder**. Lark's
+  `im.message.receive_v1` event for a forwarded chat record carries no real
+  content in `message.content` — the child messages have to be fetched with a
+  separate `im.message.get` call on the same `message_id`, which returns the
+  forward wrapper plus every forwarded message already flattened across
+  forward levels. `extractMessageContent` now awaits this fetch for
+  `msg_type: merge_forward` and renders each child as `sender: text`, reusing
+  the same per-type text extraction as quoted-message fetching (factored out
+  into `parseMessageItemText`). `extractMessageContent` is now async; its one
+  call site already runs inside an async handler.
+- **Sender names in merge-forwarded/quoted messages now resolve against the
+  same user-id namespace as the rest of the bot** — `im.message.get` now
+  requests `user_id_type: 'user_id'` for both the merge-forward fetch and the
+  quoted-message fetch. Previously it defaulted to `open_id`, which never
+  matched the name cache (keyed by `user_id`, populated from webhook events
+  and from `preloadGroupMembers`'s `im.chat.members` calls), so senders whose
+  name the bot had already learned still showed as a raw open_id.
+- **`parseMessageItemText` no longer crashes on a nested forward-of-a-forward**
+  — `body.content` for a `merge_forward`-typed child item is not guaranteed
+  to be JSON (observed as the literal string `"Merged and Forwarded Message"`
+  from a cross-tenant source); the JSON parse is now wrapped so it falls back
+  to `{}` instead of throwing.
+- **Interactive/card child messages inside a merge-forwarded conversation no
+  longer degrade to the generic `[interactive message]` placeholder** — the
+  merge-forward fetch now also requests `card_msg_content_type:
+  'user_card_content'`, the same param `fetchQuotedMessage` already used, so
+  `extractInteractiveText` gets the original Schema 2.0 card JSON (with
+  `body.elements`) instead of the transformed read-back form that drops it.
+- **Security: a merge-forwarded message no longer fetches its content before
+  the DM/group access gate runs** — `extractMessageContent`'s `merge_forward`
+  case previously awaited `fetchMergeForwardContent` (a live `im.message.get`
+  call) unconditionally at the very top of `handleMessageEvent`, before the
+  DM allowlist, group-disabled, group-allowlist, and sender-allowFrom checks.
+  A message from a rejected/ignored sender or chat still triggered that
+  outbound call, and its first 50 characters still reached the console log.
+  The fetch is now deferred (`extractMessageContent` returns a
+  `deferredMergeForwardId` marker with no network call) and only resolved via
+  the new `resolveMergeForwardText()` immediately after the relevant DM/group
+  gate passes, in both the p2p and group branches.
+
 ## [0.3.8] - 2026-07-23
 
 ### Fixed
