@@ -19,6 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same per-type text extraction as quoted-message fetching (factored out
   into `parseMessageItemText`). `extractMessageContent` is now async; its one
   call site already runs inside an async handler.
+- **Sender names in merge-forwarded/quoted messages now resolve against the
+  same user-id namespace as the rest of the bot** — `im.message.get` now
+  requests `user_id_type: 'user_id'` for both the merge-forward fetch and the
+  quoted-message fetch. Previously it defaulted to `open_id`, which never
+  matched the name cache (keyed by `user_id`, populated from webhook events
+  and from `preloadGroupMembers`'s `im.chat.members` calls), so senders whose
+  name the bot had already learned still showed as a raw open_id.
+- **`parseMessageItemText` no longer crashes on a nested forward-of-a-forward**
+  — `body.content` for a `merge_forward`-typed child item is not guaranteed
+  to be JSON (observed as the literal string `"Merged and Forwarded Message"`
+  from a cross-tenant source); the JSON parse is now wrapped so it falls back
+  to `{}` instead of throwing.
 
 ## [0.3.8] - 2026-07-23
 

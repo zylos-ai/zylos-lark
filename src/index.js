@@ -810,7 +810,15 @@ function buildEndpoint(chatId, { chatType, rootId, parentId, messageId, threadId
  */
 function parseMessageItemText(msg, fallbackMessageId) {
   const messageId = msg.message_id || fallbackMessageId;
-  const content = JSON.parse(msg.body?.content || '{}');
+  // body.content is not guaranteed to be JSON for every msg_type — a nested
+  // forward-of-a-forward has come back from cross-tenant sources as a bare
+  // "Merged and Forwarded Message" string rather than a JSON payload.
+  let content;
+  try {
+    content = JSON.parse(msg.body?.content || '{}');
+  } catch {
+    content = {};
+  }
   let text;
   if (msg.msg_type === 'text') {
     text = content.text || '';
@@ -854,7 +862,7 @@ async function fetchQuotedMessage(messageId) {
       // dropped the markdown body; with it, extractInteractiveText can read
       // body.elements directly. (The API does NOT resolve cards to plain text —
       // it returns the original card JSON, which happens to carry body.elements.)
-      params: { card_msg_content_type: 'user_card_content' },
+      params: { card_msg_content_type: 'user_card_content', user_id_type: 'user_id' },
     });
     if (res.code === 0 && res.data?.items?.[0]) {
       const msg = res.data.items[0];
@@ -878,7 +886,14 @@ async function fetchMergeForwardContent(messageId) {
   try {
     const { getClient } = await import('./lib/client.js');
     const client = getClient();
-    const res = await client.im.message.get({ path: { message_id: messageId } });
+    const res = await client.im.message.get({
+      path: { message_id: messageId },
+      // Match the sender-id namespace used everywhere else (webhook events'
+      // sender_id.user_id, and the group-member preload cache keyed by
+      // user_id) — without this the API defaults to open_id, which never
+      // hits that cache even for senders whose name is already known.
+      params: { user_id_type: 'user_id' },
+    });
     const items = (res.data?.items || []).filter((item) => item.message_id !== messageId);
     if (items.length === 0) return '[merge_forward message, no child messages]';
 
