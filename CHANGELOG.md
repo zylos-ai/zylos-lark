@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.11] - 2026-08-10
+
+### Fixed
+- **@-mentions in markdown messages now actually notify their target.** Lark
+  accepts two different @-mention syntaxes and which one is valid depends on the
+  message type: text messages take `<at user_id="ou_xxx">Display Name</at>`,
+  while interactive cards take `<at id=ou_xxx></at>` (bare id, no display name).
+  `sendText` routes any message containing markdown through the card path, but
+  `sendCardChunk` handed the chunk to the card builder verbatim, so a
+  text-format mention reached a builder that does not understand `user_id` and
+  rendered as literal text while notifying nobody. Messages without markdown
+  were unaffected, which is why this looked intermittent — the same mention
+  worked or silently failed depending on whether the body happened to contain
+  any formatting. `sendCardChunk` now converts text-format mentions to card
+  format first (new `src/lib/at-mention.js`).
+  - The conversion is deliberately broader than the double-quoted form: a
+    single-quoted or bare id, and additional attributes beside `user_id`, are
+    all handled, since matching only the narrow form leaves those mentions
+    silently broken in exactly the same way.
+  - Fenced and inline code spans are skipped, so a message documenting the
+    mention syntax does not get its own code sample rewritten.
+  - Already-card-format tags carry no `user_id` and are left untouched, making
+    the conversion idempotent; an empty `user_id` is left as-is rather than
+    emitting a broken `<at id=></at>`.
+  - Verified live against a real Lark client on both paths (no-markdown control
+    and markdown/card), in both a 1:1 DM and a group — groups take the
+    `chooseReplyTarget` reply-to branch that DMs skip.
+
 ## [0.3.10] - 2026-08-04
 
 ### Fixed
