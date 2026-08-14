@@ -21,7 +21,8 @@ import { getConfig, DATA_DIR } from '../src/lib/config.js';
 import { hasMarkdownContent } from '../src/lib/markdown.js';
 import { chooseReplyTarget } from '../src/lib/reply-target.js';
 import { convertAtMentionsForCard } from '../src/lib/at-mention.js';
-import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
+import { sendToGroup, sendMessage, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
+import { sendMediaThreadAware } from '../src/lib/media-send.js';
 
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
 
@@ -271,74 +272,22 @@ async function sendPlainTextChunk(endpoint, chunk, isFirstChunk) {
 
 /**
  * Send media (image or file).
- * Thread-aware: in topic threads, reply to parent||root to stay in topic.
+ *
+ * Prefers the system `lark-cli` for upload+send/reply, falling back to the
+ * direct Lark API (message.js) if lark-cli fails or is absent, so outbound
+ * media is never lost. Thread-aware: in topic threads, reply to parent||root
+ * to stay in topic. All routing lives in src/lib/media-send.js (testable);
+ * this wrapper just hands it the parsed endpoint.
  */
 async function sendMedia(type, filePath) {
   const trimmedPath = filePath.trim();
-  const { chatId, root, parent } = parsedEndpoint;
-  // p2p DMs never reply-to (invisible in the 1:1 view); only groups reply.
-  const replyTarget = chooseReplyTarget(parsedEndpoint);
-
-  if (type === 'image') {
-    const uploadResult = await uploadImage(trimmedPath);
-    if (!uploadResult.success) {
-      throw new Error(`Failed to upload image: ${uploadResult.message}`);
-    }
-    if (replyTarget) {
-      try {
-        const result = await replyToMessage(replyTarget, JSON.stringify({ image_key: uploadResult.imageKey }), 'image');
-        if (result.success) return;
-        console.log('[lark] Image reply failed, falling back to sendImage:', result.message);
-        if (parent && root && parent !== root) {
-          const rootReply = await replyToMessage(root, JSON.stringify({ image_key: uploadResult.imageKey }), 'image');
-          if (rootReply.success) return;
-          console.log('[lark] Image root reply fallback failed, falling back to sendImage:', rootReply.message);
-        }
-      } catch (err) {
-        console.log('[lark] Image reply threw, falling back:', err.message);
-        if (parent && root && parent !== root) {
-          try {
-            const rootReply = await replyToMessage(root, JSON.stringify({ image_key: uploadResult.imageKey }), 'image');
-            if (rootReply.success) return;
-          } catch {}
-        }
-      }
-    }
-    const sendResult = await sendImage(chatId, uploadResult.imageKey);
-    if (!sendResult.success) {
-      throw new Error(`Failed to send image: ${sendResult.message}`);
-    }
-  } else if (type === 'file') {
-    const uploadResult = await uploadFile(trimmedPath);
-    if (!uploadResult.success) {
-      throw new Error(`Failed to upload file: ${uploadResult.message}`);
-    }
-    if (replyTarget) {
-      try {
-        const result = await replyToMessage(replyTarget, JSON.stringify({ file_key: uploadResult.fileKey }), 'file');
-        if (result.success) return;
-        console.log('[lark] File reply failed, falling back to sendFile:', result.message);
-        if (parent && root && parent !== root) {
-          const rootReply = await replyToMessage(root, JSON.stringify({ file_key: uploadResult.fileKey }), 'file');
-          if (rootReply.success) return;
-          console.log('[lark] File root reply fallback failed, falling back to sendFile:', rootReply.message);
-        }
-      } catch (err) {
-        console.log('[lark] File reply threw, falling back:', err.message);
-        if (parent && root && parent !== root) {
-          try {
-            const rootReply = await replyToMessage(root, JSON.stringify({ file_key: uploadResult.fileKey }), 'file');
-            if (rootReply.success) return;
-          } catch {}
-        }
-      }
-    }
-    const sendResult = await sendFile(chatId, uploadResult.fileKey);
-    if (!sendResult.success) {
-      throw new Error(`Failed to send file: ${sendResult.message}`);
-    }
-  } else {
-    throw new Error(`Unsupported media type: ${type}`);
+  const result = await sendMediaThreadAware({
+    endpoint: parsedEndpoint,
+    type,
+    path: trimmedPath,
+  });
+  if (!result || !result.success) {
+    throw new Error(`Failed to send ${type}: ${result?.message || 'unknown error'}`);
   }
 }
 

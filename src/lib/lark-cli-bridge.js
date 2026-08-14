@@ -22,6 +22,7 @@
  */
 
 import { execFileSync } from 'child_process';
+import path from 'path';
 import { sendToUser } from './message.js';
 import { getConfig } from './config.js';
 
@@ -156,4 +157,167 @@ export async function notifyOwnerAuthRequired(err, opts = {}) {
 
   await sendToUser(ownerOpenId, msg, 'text');
   return true;
+}
+
+/* -------------------------------------------------------------------------
+ * Media (image/file) upload+send / reply / download via lark-cli.
+ *
+ * Design — "fallback A": each helper PREFERS lark-cli, but if the lark-cli
+ * invocation fails for ANY reason (binary missing, non-zero exit, or the
+ * should-never-happen auth error for a bot identity) it logs a warning and
+ * invokes the caller-provided `fallback` — the existing direct-API path in
+ * message.js — so outbound media is never lost.
+ *
+ * lark-cli's `--image` / `--file` / `--output` flags REJECT absolute paths and
+ * `..` traversal; they accept only a cwd-relative path. We therefore split the
+ * caller's (typically absolute) path into { dir, base } and run lark-cli with
+ * `cwd: dir`, passing only the basename. This keeps the public API absolute-
+ * path friendly while satisfying lark-cli's sandbox.
+ *
+ * NOTE: runLarkCli in zylos-lark invokes `lark-cli` with NO `--profile` (the
+ * default identity) — these helpers therefore add no `--profile` flag either;
+ * they only add `--as bot` for the media operations.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Best-effort extraction of a message_id from a lark-cli JSON stdout envelope.
+ * lark-cli emits `{ "ok": true, "data": { ... } }`; the message id may live at
+ * a few nesting depths depending on the endpoint. Returns null when absent.
+ *
+ * @param {string} stdout
+ * @returns {string|null}
+ */
+export function extractMessageId(stdout) {
+  if (!stdout || typeof stdout !== 'string') return null;
+  const start = stdout.indexOf('{');
+  if (start === -1) return null;
+  try {
+    const obj = JSON.parse(stdout.slice(start));
+    const d = obj?.data;
+    return (
+      d?.message_id ||
+      d?.data?.message_id ||
+      obj?.message_id ||
+      null
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Upload+send an image or file to a chat or user via lark-cli
+ * (`im +messages-send --as bot`). Falls back to `fallback()` on any failure.
+ *
+ * @param {object} target
+ * @param {string} [target.chatId]  chat id (oc_xxx); mutually exclusive with userId
+ * @param {string} [target.userId]  user open_id (ou_xxx); mutually exclusive with chatId
+ * @param {'image'|'file'} target.kind
+ * @param {string} target.path      local path to the media (absolute ok)
+ * @param {() => Promise<object>} fallback  direct-API path; resolves on success, throws on hard failure
+ * @param {object} [deps]
+ * @param {(args: string[], opts?: object) => string} [deps.run]  runLarkCli seam (for tests)
+ * @returns {Promise<{ success: boolean, via: string, messageId: (string|null), stdout?: string }>}
+ */
+export async function sendMedia({ chatId, userId, kind, path: mediaPath }, fallback, { run = runLarkCli } = {}) {
+  if (kind !== 'image' && kind !== 'file') {
+    throw new TypeError(`sendMedia: unsupported kind: ${kind}`);
+  }
+  if (!chatId && !userId) {
+    throw new TypeError('sendMedia: one of chatId or userId is required');
+  }
+  const dir = path.dirname(mediaPath);
+  const base = path.basename(mediaPath);
+  const args = ['im', '+messages-send', '--as', 'bot'];
+  if (chatId) args.push('--chat-id', chatId);
+  else args.push('--user-id', userId);
+  args.push(kind === 'image' ? '--image' : '--file', base);
+
+  try {
+    const stdout = run(args, { cwd: dir });
+    return { success: true, via: 'lark-cli', messageId: extractMessageId(stdout), stdout };
+  } catch (err) {
+    console.warn(`[lark-cli-bridge] sendMedia via lark-cli failed (${err?.message || err}); falling back to direct API`);
+    return fallback();
+  }
+}
+
+/**
+ * Reply to a message with an image or file via lark-cli
+ * (`im +messages-reply --as bot`). Preserves thread semantics via
+ * `--reply-in-thread`. Falls back to `fallback()` on any failure.
+ *
+ * @param {object} opts
+ * @param {string} opts.messageId  message to reply to (om_xxx)
+ * @param {'image'|'file'} opts.kind
+ * @param {string} opts.path       local path to the media (absolute ok)
+ * @param {boolean} [opts.replyInThread=false]  keep the reply inside the topic thread
+ * @param {() => Promise<object>} fallback  direct-API path; resolves on success, throws on hard failure
+ * @param {object} [deps]
+ * @param {(args: string[], opts?: object) => string} [deps.run]
+ * @returns {Promise<{ success: boolean, via: string, messageId: (string|null), stdout?: string }>}
+ */
+export async function replyMedia({ messageId, kind, path: mediaPath, replyInThread = false }, fallback, { run = runLarkCli } = {}) {
+  if (kind !== 'image' && kind !== 'file') {
+    throw new TypeError(`replyMedia: unsupported kind: ${kind}`);
+  }
+  if (!messageId) {
+    throw new TypeError('replyMedia: messageId is required');
+  }
+  const dir = path.dirname(mediaPath);
+  const base = path.basename(mediaPath);
+  const args = ['im', '+messages-reply', '--as', 'bot', '--message-id', messageId];
+  args.push(kind === 'image' ? '--image' : '--file', base);
+  if (replyInThread) args.push('--reply-in-thread');
+
+  try {
+    const stdout = run(args, { cwd: dir });
+    return { success: true, via: 'lark-cli', messageId: extractMessageId(stdout), stdout };
+  } catch (err) {
+    console.warn(`[lark-cli-bridge] replyMedia via lark-cli failed (${err?.message || err}); falling back to direct API`);
+    return fallback();
+  }
+}
+
+/**
+ * Download an image or file resource from a message via lark-cli
+ * (`im +messages-resources-download --as bot`). Falls back to `fallback()` on
+ * any failure. The output is written to `outPath` (absolute ok); lark-cli's
+ * relative-only `--output` is satisfied by running with `cwd` set to the
+ * target directory and passing the basename.
+ *
+ * @param {object} opts
+ * @param {string} opts.messageId  message id (om_xxx)
+ * @param {string} opts.fileKey    resource key (img_xxx or file_xxx)
+ * @param {'image'|'file'} opts.type
+ * @param {string} opts.outPath    local save path (absolute ok)
+ * @param {() => Promise<{ success: boolean, path?: string, message?: string }>} fallback
+ * @param {object} [deps]
+ * @param {(args: string[], opts?: object) => string} [deps.run]
+ * @returns {Promise<{ success: boolean, path?: string, via?: string, message?: string }>}
+ */
+export async function downloadResource({ messageId, fileKey, type, outPath }, fallback, { run = runLarkCli } = {}) {
+  if (type !== 'image' && type !== 'file') {
+    throw new TypeError(`downloadResource: unsupported type: ${type}`);
+  }
+  if (!messageId || !fileKey) {
+    throw new TypeError('downloadResource: messageId and fileKey are required');
+  }
+  const dir = path.dirname(outPath);
+  const base = path.basename(outPath);
+  const args = [
+    'im', '+messages-resources-download', '--as', 'bot',
+    '--message-id', messageId,
+    '--file-key', fileKey,
+    '--type', type,
+    '--output', base,
+  ];
+
+  try {
+    run(args, { cwd: dir });
+    return { success: true, via: 'lark-cli', path: outPath };
+  } catch (err) {
+    console.warn(`[lark-cli-bridge] downloadResource via lark-cli failed (${err?.message || err}); falling back to direct API`);
+    return fallback();
+  }
 }

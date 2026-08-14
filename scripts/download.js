@@ -18,6 +18,7 @@ import dotenv from 'dotenv';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
 import { downloadImage, downloadFile } from '../src/lib/message.js';
+import { downloadResource } from '../src/lib/lark-cli-bridge.js';
 import { DATA_DIR } from '../src/lib/config.js';
 
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
@@ -44,9 +45,14 @@ const filenameHint = args[3] || '';
 const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 const safeKey = resourceKey.replace(/[^a-zA-Z0-9_-]/g, '').slice(-8);
 
+// Prefer the system lark-cli for the download; fall back to the direct Lark
+// API (message.js) if lark-cli fails or is absent, so downloads are resilient.
 if (type === 'image') {
   const localPath = path.join(MEDIA_DIR, `lark-dl-${timestamp}-${safeKey}.png`);
-  const result = await downloadImage(messageId, resourceKey, localPath);
+  const result = await downloadResource(
+    { messageId, fileKey: resourceKey, type: 'image', outPath: localPath },
+    () => downloadImage(messageId, resourceKey, localPath),
+  );
   if (result.success) {
     console.log(result.path);
   } else {
@@ -58,7 +64,10 @@ if (type === 'image') {
     ? filenameHint.replace(/[^a-zA-Z0-9_.\-]/g, '_').slice(0, 128)
     : `lark-dl-${timestamp}-${safeKey}.bin`;
   const localPath = path.join(MEDIA_DIR, safeName);
-  const result = await downloadFile(messageId, resourceKey, localPath);
+  const result = await downloadResource(
+    { messageId, fileKey: resourceKey, type: 'file', outPath: localPath },
+    () => downloadFile(messageId, resourceKey, localPath),
+  );
   if (result.success) {
     console.log(result.path);
   } else {
