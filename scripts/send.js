@@ -20,7 +20,7 @@ dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 import { getConfig, DATA_DIR } from '../src/lib/config.js';
 import { hasMarkdownContent } from '../src/lib/markdown.js';
 import { chooseReplyTarget } from '../src/lib/reply-target.js';
-import { convertAtMentionsForCard } from '../src/lib/at-mention.js';
+import { convertAtMentionsForCard, assembleMentions } from '../src/lib/at-mention.js';
 import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
 
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
@@ -196,6 +196,12 @@ async function sendCardChunk(chunk, isFirstChunk) {
  * Reply failures fall back to sendMessage (DM) or sendToGroup (group).
  */
 async function sendText(endpoint, text) {
+  // Assemble plain-text `@name` into real Lark <at> mentions BEFORE the
+  // text/card fork and BEFORE splitMessage — so both send paths behave
+  // identically, the produced <at> tags are never split across chunks, and the
+  // (possibly one) members lookup runs exactly once per message. Group chats
+  // only; p2p and anything unresolved pass through unchanged. See at-mention.js.
+  text = await assembleMentions(text, parsedEndpoint);
   const useCard = config.message?.useMarkdownCard && hasMarkdownContent(text);
   const maxLen = useCard ? CARD_MAX_LENGTH : MAX_LENGTH;
   const chunks = splitMessage(text, maxLen);
