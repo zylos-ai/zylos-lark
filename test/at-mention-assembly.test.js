@@ -131,8 +131,8 @@ test('trailing sentence punctuation is a boundary, not part of the name', async 
 
 // --- decision 1: no-permission -> pass-through + never re-query -------------
 
-test('no members permission -> pass-through, marker cached, no re-query', async () => {
-  const io = makeIO({ permission: false });
+test('a KNOWN permission code (99991672) -> permanent no_permission, no re-query', async () => {
+  const io = makeIO({ permission: false }); // fetchMembers returns code 99991672
   const out1 = await assembleMentions('@someone', GROUP, io);
   assert.equal(out1, '@someone');
   assert.equal(io._state.fetchCalls, 1, 'first attempt hits the API once');
@@ -141,6 +141,31 @@ test('no members permission -> pass-through, marker cached, no re-query', async 
   const out2 = await assembleMentions('@someone else', GROUP, io);
   assert.equal(out2, '@someone else');
   assert.equal(io._state.fetchCalls, 1, 'a chat that returned no-permission must never be queried again');
+});
+
+test('a RATE LIMIT (99991400) is transient: NOT cached, re-fetched on a later message', async () => {
+  const io = makeIO();
+  io.fetchMembers = async () => {
+    io._state.fetchCalls++;
+    return { success: false, code: 99991400, message: 'frequency limit' };
+  };
+  const out = await assembleMentions('@ghost', GROUP, io);
+  assert.equal(out, '@ghost', 'still non-blocking: unresolved passes through');
+  assert.equal(io._cache.get('oc_1'), undefined, 'a rate limit must not be persisted as no_permission');
+  await assembleMentions('@ghost again', GROUP, io);
+  assert.equal(io._state.fetchCalls, 2, 'rate-limited chat is retried on the next message');
+});
+
+test('an unrecognized error code is treated as transient, not permanent', async () => {
+  const io = makeIO();
+  io.fetchMembers = async () => {
+    io._state.fetchCalls++;
+    return { success: false, code: 130002, message: 'internal error' };
+  };
+  await assembleMentions('@ghost', GROUP, io);
+  await assembleMentions('@ghost', GROUP, io);
+  assert.equal(io._cache.get('oc_1'), undefined, 'unknown codes are not cached as no_permission');
+  assert.equal(io._state.fetchCalls, 2, 'unknown coded failures remain retryable');
 });
 
 test('a members timeout is transient: not cached, retried next time', async () => {
@@ -187,16 +212,25 @@ test('@allen is a name, not the @all sentinel', async () => {
 
 // --- decision 6: self-mention -> skipped ------------------------------------
 
-test('a mention resolving to the bot itself is left as plain text', async () => {
+// In production send.js now always passes botOpenId (persisted to config by
+// index.js at startup), so the self-suppression branch is live, not dormant.
+
+test('with botOpenId set (prod), the bot @-ing itself is left as plain text', async () => {
   const io = makeIO({ botOpenId: 'ou_bot_self' });
   const out = await assembleMentions('note @zylos0t here', GROUP, io);
   assert.equal(out, 'note @zylos0t here');
 });
 
-test('with no botOpenId supplied, a registered bot name resolves normally', async () => {
+test('suppression is self-only: with botOpenId set, other names still assemble', async () => {
+  const io = makeIO({ botOpenId: 'ou_bot_self' });
+  const out = await assembleMentions('@gavin.yang please', GROUP, io);
+  assert.equal(out, '<at user_id="ou_gavin">gavin.yang</at> please');
+});
+
+test('graceful fallback: with no botOpenId, assembly still runs (no self data to suppress)', async () => {
   const io = makeIO();
-  const out = await assembleMentions('@zylos0t', GROUP, io);
-  assert.equal(out, '<at user_id="ou_bot_self">zylos0t</at>');
+  const out = await assembleMentions('@gavin.yang', GROUP, io);
+  assert.equal(out, '<at user_id="ou_gavin">gavin.yang</at>');
 });
 
 // --- false-positive avoidance -----------------------------------------------
@@ -232,6 +266,26 @@ test('a literal @ou_... open_id is wrapped directly without a lookup', async () 
   const out = await assembleMentions('poke @ou_abc123 now', GROUP, io);
   assert.equal(out, 'poke <at user_id="ou_abc123"></at> now');
   assert.equal(io._state.fetchCalls, 0);
+});
+
+test('a clean @ou_ token ending on sentence punctuation is still wrapped', async () => {
+  const io = makeIO();
+  const out = await assembleMentions('poke @ou_abc123.', GROUP, io);
+  assert.equal(out, 'poke <at user_id="ou_abc123"></at>.');
+});
+
+test('a literal @ou_ token with a trailing hyphen is NOT wrapped (no truncation)', async () => {
+  // Without a boundary check this became <at user_id="ou_abc"></at>-foo,
+  // wrapping a truncated id and notifying the wrong object.
+  const io = makeIO();
+  const out = await assembleMentions('see @ou_abc-foo end', GROUP, io);
+  assert.equal(out, 'see @ou_abc-foo end');
+});
+
+test('a literal @ou_ token with a trailing underscore is NOT wrapped (no truncation)', async () => {
+  const io = makeIO();
+  const out = await assembleMentions('@ou_abc_123', GROUP, io);
+  assert.equal(out, '@ou_abc_123');
 });
 
 // --- decision 7: canonical output format per message type -------------------

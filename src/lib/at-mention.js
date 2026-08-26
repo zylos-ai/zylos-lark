@@ -116,6 +116,18 @@ const ROSTER_CACHE_DIR = path.join(DATA_DIR, 'roster-cache');
 const ROSTER_TTL_MS = 60 * 60 * 1000;
 const MEMBERS_API_TIMEOUT_MS = 5000;
 
+// Lark error codes that are a PERMANENT "this app/identity cannot read this
+// chat's members" verdict — safe to remember and never re-query (owner
+// decision 1). Verified against the lark skill refs (lark-im chat-members-list /
+// chat-list / chat-search and lark-contact):
+//   99991672 — bot (TAT) missing scope / permission denied (e.g. im:chat.members)
+//   99991679 — user (UAT) not authorized for the scope
+//   41050    — contact visibility-range / permission denied
+// Everything else stays retryable. In particular 99991400 (rate limit / 频控) is
+// TRANSIENT: caching it as no_permission would wrongly disable a chat forever, so
+// it — like timeouts, network errors, and any unrecognized code — is NOT cached.
+const PERMANENT_DENY_CODES = new Set([99991672, 99991679, 41050]);
+
 // Protected regions the compose step must never touch: code (fenced + inline)
 // and any already-formed <at> tag. Unlike mapOutsideCode (used by the card
 // translator, which *wants* to see <at> tags), assembly must leave existing tags
@@ -246,9 +258,12 @@ function rewriteSegment(segment, resolver, { botOpenId } = {}) {
       continue;
     }
 
-    // A literal `@ou_...` open_id: wrap directly, no lookup needed.
+    // A literal `@ou_...` open_id: wrap directly, no lookup needed — but only a
+    // COMPLETE, boundaried token. Without the boundary check, `@ou_abc-foo` or
+    // `@ou_abc_123` would wrap a truncated id (`ou_abc`) and notify the wrong
+    // object; a trailing name char means it is not a clean open_id, so leave it.
     const idMatch = rest.match(OPEN_ID_RUN);
-    if (idMatch) {
+    if (idMatch && !continuesName(rest, idMatch[0].length)) {
       out += `<at user_id="${idMatch[0]}"></at>`;
       i = at + 1 + idMatch[0].length;
       continue;
@@ -355,10 +370,10 @@ async function resolveChatMembers(chatId, needFetch, io) {
     return { entries };
   }
 
-  // A hard API rejection (any business error code) is treated as a persistent
-  // no-permission for this chat and remembered so we never query it again.
-  // Timeouts / network errors carry no code and are left uncached (retryable).
-  if (result && !result.success && result.code !== undefined && !result.timeout) {
+  // ONLY a known permanent permission-denied code is remembered so we never
+  // query this chat again. Rate limits (99991400), timeouts, network errors, and
+  // any unrecognized code are left uncached and remain retryable next message.
+  if (result && !result.success && PERMANENT_DENY_CODES.has(result.code)) {
     io.writeRosterCache(chatId, { status: 'no_permission', code: result.code, recordedAt: io.now() });
     return { entries: cachedEntries };
   }

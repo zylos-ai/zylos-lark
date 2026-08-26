@@ -200,8 +200,10 @@ async function sendText(endpoint, text) {
   // text/card fork and BEFORE splitMessage — so both send paths behave
   // identically, the produced <at> tags are never split across chunks, and the
   // (possibly one) members lookup runs exactly once per message. Group chats
-  // only; p2p and anything unresolved pass through unchanged. See at-mention.js.
-  text = await assembleMentions(text, parsedEndpoint);
+  // only; p2p and anything unresolved pass through unchanged. `botOpenId` (from
+  // config, persisted by index.js at startup) enforces self-mention suppression;
+  // if absent, assembly still runs and simply skips suppression. See at-mention.js.
+  text = await assembleMentions(text, parsedEndpoint, { botOpenId: config.bot?.open_id });
   const useCard = config.message?.useMarkdownCard && hasMarkdownContent(text);
   const maxLen = useCard ? CARD_MAX_LENGTH : MAX_LENGTH;
   const chunks = splitMessage(text, maxLen);
