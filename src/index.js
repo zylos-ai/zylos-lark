@@ -24,6 +24,13 @@ import { getBotInfo, setBotIdentity } from './lib/client.js';
 import { createMessageDeduper, MESSAGE_DEDUP_TTL_MS } from './lib/message-dedup.js';
 import { startWebSocket, stopWebSocket, getConnectionState } from './lib/transport/websocket.js';
 
+// Channel name used for C4 routing. Multiple instances of this component can
+// run side by side (one Lark app each); LARK_C4_CHANNEL lets every instance
+// declare which C4 channel its inbound messages belong to, so replies are
+// routed back through the same instance. Defaults to 'lark' — unchanged for
+// single-instance installs.
+const C4_CHANNEL = process.env.LARK_C4_CHANNEL || 'lark';
+
 // C4 receive interface path
 const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 const INTERNAL_TOKEN = crypto.randomBytes(24).toString('hex');
@@ -1260,10 +1267,10 @@ async function handleMessageEvent(event) {
       if (mediaPaths.length > 0) {
         const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
         const msg = formatMessage('p2p', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, [], mediaPaths[0], { quotedContent, threadContext, threadRootId });
-        sendToC4('lark', endpoint, msg, rejectReply);
+        sendToC4(C4_CHANNEL, endpoint, msg, rejectReply);
       } else {
         const msg = formatMessage('p2p', senderName, '[image download failed]', [], null, { quotedContent, threadContext, threadRootId });
-        sendToC4('lark', endpoint, msg, rejectReply);
+        sendToC4(C4_CHANNEL, endpoint, msg, rejectReply);
       }
       return;
     }
@@ -1271,7 +1278,7 @@ async function handleMessageEvent(event) {
     if (audioKey) {
       if (!VOICE_ENABLED) {
         const msg = formatMessage('p2p', senderName, '[语音转文字暂不支持，请发送文字]', [], null, { quotedContent, threadContext, threadRootId });
-        sendToC4('lark', endpoint, msg, rejectReply);
+        sendToC4(C4_CHANNEL, endpoint, msg, rejectReply);
         return;
       }
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1282,7 +1289,7 @@ async function handleMessageEvent(event) {
         console.error(`[lark] Audio download failed: ${dlResult.message}`);
         removeReaction(messageId, 'Loading').catch(() => {});
         const msg = formatMessage('p2p', senderName, '[语音消息下载失败，请发送文字]', [], null, { quotedContent, threadContext, threadRootId });
-        sendToC4('lark', endpoint, msg, rejectReply);
+        sendToC4(C4_CHANNEL, endpoint, msg, rejectReply);
         return;
       }
       let transcript;
@@ -1293,14 +1300,14 @@ async function handleMessageEvent(event) {
         removeReaction(messageId, 'Loading').catch(() => {});
         fs.unlink(localPath, () => {});
         const msg = formatMessage('p2p', senderName, '[语音转文字失败，请发送文字]', [], null, { quotedContent, threadContext, threadRootId });
-        sendToC4('lark', endpoint, msg, rejectReply);
+        sendToC4(C4_CHANNEL, endpoint, msg, rejectReply);
         return;
       }
       fs.unlink(localPath, () => {});
       removeReaction(messageId, 'Loading').catch(() => {});
       console.log(`[lark] Audio transcribed: "${transcript.substring(0, 60)}"`);
       const msg = formatMessage('p2p', senderName, `[Voice] ${transcript}`, [], null, { quotedContent, threadContext, threadRootId });
-      sendToC4('lark', endpoint, msg, rejectReply);
+      sendToC4(C4_CHANNEL, endpoint, msg, rejectReply);
       return;
     }
 
@@ -1312,22 +1319,22 @@ async function handleMessageEvent(event) {
       } catch (err) {
         console.warn(`[lark] Invalid file path from API filename "${fileName}": ${err.message}`);
         const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent, threadContext, threadRootId });
-        sendToC4('lark', endpoint, msg, rejectReply);
+        sendToC4(C4_CHANNEL, endpoint, msg, rejectReply);
         return;
       }
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
         const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath, { quotedContent, threadContext, threadRootId });
-        sendToC4('lark', endpoint, msg, rejectReply);
+        sendToC4(C4_CHANNEL, endpoint, msg, rejectReply);
       } else {
         const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent, threadContext, threadRootId });
-        sendToC4('lark', endpoint, msg, rejectReply);
+        sendToC4(C4_CHANNEL, endpoint, msg, rejectReply);
       }
       return;
     }
 
     const msg = formatMessage('p2p', senderName, cleanText, [], null, { quotedContent, threadContext, threadRootId });
-    sendToC4('lark', endpoint, msg, rejectReply);
+    sendToC4(C4_CHANNEL, endpoint, msg, rejectReply);
     return;
   }
 
@@ -1438,7 +1445,7 @@ async function handleMessageEvent(event) {
           groupName,
           smartHint: true
         });
-        sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
+        sendToC4(C4_CHANNEL, endpoint, msg, groupRejectReply, markCursorDelivered);
         return;
       }
 
@@ -1460,7 +1467,7 @@ async function handleMessageEvent(event) {
           groupName,
           smartHint: false
         });
-        sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
+        sendToC4(C4_CHANNEL, endpoint, msg, groupRejectReply, markCursorDelivered);
       } else {
         removeTypingIndicator(messageId);
       }
@@ -1507,7 +1514,7 @@ async function handleMessageEvent(event) {
         groupName,
         smartHint: false
       });
-      sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
+      sendToC4(C4_CHANNEL, endpoint, msg, groupRejectReply, markCursorDelivered);
       return;
     }
 
@@ -1522,7 +1529,7 @@ async function handleMessageEvent(event) {
           groupName,
           smartHint: true
         });
-        sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
+        sendToC4(C4_CHANNEL, endpoint, msg, groupRejectReply, markCursorDelivered);
         return;
       }
 
@@ -1544,7 +1551,7 @@ async function handleMessageEvent(event) {
           groupName,
           smartHint: false
         });
-        sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
+        sendToC4(C4_CHANNEL, endpoint, msg, groupRejectReply, markCursorDelivered);
       } else {
         removeTypingIndicator(messageId);
       }
@@ -1558,7 +1565,7 @@ async function handleMessageEvent(event) {
       groupName,
       smartHint: smartNoMention
     });
-    sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
+    sendToC4(C4_CHANNEL, endpoint, msg, groupRejectReply, markCursorDelivered);
   }
 }
 

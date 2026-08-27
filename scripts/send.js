@@ -17,11 +17,33 @@ import fs from 'fs';
 import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
-import { getConfig, DATA_DIR } from '../src/lib/config.js';
-import { hasMarkdownContent } from '../src/lib/markdown.js';
-import { chooseReplyTarget } from '../src/lib/reply-target.js';
-import { convertAtMentionsForCard, assembleMentions } from '../src/lib/at-mention.js';
-import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
+// c4-send.js dispatches to <channel>/scripts/send.js with C4_CHANNEL set. When
+// several instances of this component run side by side (one Lark app each),
+// that variable is the only signal telling us which instance we are sending
+// as, so resolve its component dir — and the app credentials inside it —
+// before config.js is imported and reads DATA_DIR. An explicit LARK_DATA_DIR
+// still wins, and the default 'lark' channel is left untouched, so
+// single-instance installs behave exactly as before. The imports below are
+// dynamic because this must run first.
+const c4Channel = process.env.C4_CHANNEL || 'lark';
+if (c4Channel !== 'lark' && !process.env.LARK_DATA_DIR) {
+  const componentDir = path.join(process.env.HOME, 'zylos/components', c4Channel);
+  const componentConfigPath = path.join(componentDir, 'config.json');
+  if (fs.existsSync(componentConfigPath)) {
+    const componentConfig = JSON.parse(fs.readFileSync(componentConfigPath, 'utf8'));
+    process.env.LARK_DATA_DIR = componentDir;
+    process.env.LARK_CONFIG_PATH = componentConfigPath;
+    if (componentConfig.appId) process.env.LARK_APP_ID = componentConfig.appId;
+    if (componentConfig.appSecret) process.env.LARK_APP_SECRET = componentConfig.appSecret;
+  }
+}
+
+const { getConfig, DATA_DIR } = await import('../src/lib/config.js');
+const { hasMarkdownContent } = await import('../src/lib/markdown.js');
+const { chooseReplyTarget } = await import('../src/lib/reply-target.js');
+const { resolveDmReceiveIdType } = await import('../src/lib/receive-id.js');
+const { convertAtMentionsForCard, assembleMentions } = await import('../src/lib/at-mention.js');
+const { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } = await import('../src/lib/message.js');
 
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
 
@@ -63,6 +85,8 @@ function parseEndpoint(endpoint) {
 
 const parsedEndpoint = parseEndpoint(rawEndpoint);
 const endpointId = parsedEndpoint.chatId;
+
+const dmReceiveIdType = resolveDmReceiveIdType(endpointId);
 
 if (message.trim() === '[SKIP]') {
   markTypingDone(parsedEndpoint.msg);
@@ -176,10 +200,10 @@ async function sendCardChunk(chunk, isFirstChunk) {
       result = { success: false };
     }
     if (!result.success) {
-      result = await sendMarkdownCard(chatId, cardChunk);
+      result = await sendMarkdownCard(chatId, cardChunk, dmReceiveIdType);
     }
   } else {
-    result = await sendMarkdownCard(chatId, cardChunk);
+    result = await sendMarkdownCard(chatId, cardChunk, dmReceiveIdType);
   }
 
   return result;
@@ -265,11 +289,11 @@ async function sendPlainTextChunk(endpoint, chunk, isFirstChunk) {
     if (!result.success) {
       console.log('[lark] Reply failed, falling back:', result.message);
       result = isDM
-        ? await sendMessage(chatId, chunk, 'chat_id', 'text')
+        ? await sendMessage(chatId, chunk, dmReceiveIdType, 'text')
         : await sendToGroup(endpoint, chunk);
     }
   } else if (isDM) {
-    result = await sendMessage(chatId, chunk, 'chat_id', 'text');
+    result = await sendMessage(chatId, chunk, dmReceiveIdType, 'text');
   } else {
     result = await sendToGroup(endpoint, chunk);
   }
