@@ -41,6 +41,7 @@ if (c4Channel !== 'lark' && !process.env.LARK_DATA_DIR) {
 const { getConfig, DATA_DIR } = await import('../src/lib/config.js');
 const { hasMarkdownContent } = await import('../src/lib/markdown.js');
 const { chooseReplyTarget } = await import('../src/lib/reply-target.js');
+const { resolveDmReceiveIdType } = await import('../src/lib/receive-id.js');
 const { convertAtMentionsForCard, assembleMentions } = await import('../src/lib/at-mention.js');
 const { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } = await import('../src/lib/message.js');
 
@@ -84,6 +85,8 @@ function parseEndpoint(endpoint) {
 
 const parsedEndpoint = parseEndpoint(rawEndpoint);
 const endpointId = parsedEndpoint.chatId;
+
+const dmReceiveIdType = resolveDmReceiveIdType(endpointId);
 
 if (message.trim() === '[SKIP]') {
   markTypingDone(parsedEndpoint.msg);
@@ -197,10 +200,10 @@ async function sendCardChunk(chunk, isFirstChunk) {
       result = { success: false };
     }
     if (!result.success) {
-      result = await sendMarkdownCard(chatId, cardChunk);
+      result = await sendMarkdownCard(chatId, cardChunk, dmReceiveIdType);
     }
   } else {
-    result = await sendMarkdownCard(chatId, cardChunk);
+    result = await sendMarkdownCard(chatId, cardChunk, dmReceiveIdType);
   }
 
   return result;
@@ -286,11 +289,11 @@ async function sendPlainTextChunk(endpoint, chunk, isFirstChunk) {
     if (!result.success) {
       console.log('[lark] Reply failed, falling back:', result.message);
       result = isDM
-        ? await sendMessage(chatId, chunk, 'chat_id', 'text')
+        ? await sendMessage(chatId, chunk, dmReceiveIdType, 'text')
         : await sendToGroup(endpoint, chunk);
     }
   } else if (isDM) {
-    result = await sendMessage(chatId, chunk, 'chat_id', 'text');
+    result = await sendMessage(chatId, chunk, dmReceiveIdType, 'text');
   } else {
     result = await sendToGroup(endpoint, chunk);
   }
