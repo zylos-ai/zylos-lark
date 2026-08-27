@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Multi-instance support via `LARK_C4_CHANNEL`.** Several instances of this
+  component can run side by side, one Lark app each. Each instance declares
+  the C4 channel its inbound messages belong to, instead of every instance
+  reporting the hardcoded `lark`, so C4 no longer hands a second instance's
+  DMs to the first one. Defaults to `lark`; single-instance installs are
+  unaffected.
+
+### Fixed
+- **Replies are sent with the sending instance's own app credentials.**
+  `scripts/send.js` always loaded config from the default component dir, so a
+  second instance answered using the first instance's app id and secret and
+  Feishu rejected the send with `99992361 open_id cross app`. The component
+  dir is now resolved from `C4_CHANNEL` (already set by `c4-send.js`) before
+  `config.js` reads `DATA_DIR`; an explicit `LARK_DATA_DIR` still wins. Only
+  the reply leg failed before, so the channel, queue and bot all looked
+  healthy while every answer was dropped.
+- **DM sends honor `ou_` open ids.** `receive_id_type` was hardcoded to
+  `chat_id`, so endpoints holding the peer's open id — addresses persisted by
+  earlier versions, scheduled tasks, stored address books — were rejected. The
+  type is now derived from the id prefix on both the plain-text and the
+  markdown-card path (`src/lib/receive-id.js`).
+
 ## [0.3.12] - 2026-08-27
 
 ### Added
