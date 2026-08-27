@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.12] - 2026-08-27
+
+### Added
+- **Plain-text `@name` mentions are now auto-assembled into real Lark mentions
+  on the outbound send path** (`assembleMentions` in `src/lib/at-mention.js`,
+  wired into `sendText` before the text/card fork). Previously only pre-formed
+  `<at user_id=...>` tags were converted; a bare `@显示名` the model wrote reached
+  Lark as literal text and notified nobody. Names resolve to
+  `<at user_id="ou_xxx">Name</at>` from two sources, registry-first:
+  - an inbound-derived name→open_id registry (`mention-registry.json`, zero-API,
+    cross-chat), and
+  - a per-chat group-member roster fetched on demand via `listChatMembers` and
+    cached (`roster-cache/<chatId>.json`) — so even someone who has never spoken
+    in the group can be @-mentioned (the gap the registry alone left).
+  - Scope is deliberately narrow (owner decisions): single-person **group**
+    mentions only — no `@all`/`@everyone`/`@所有人` broadcast (left as literal
+    text), no p2p DMs, no bot self-mention.
+  - Best-effort and never blocks a send: an unresolved name passes through as
+    plain text. A literal `@ou_...` open_id is wrapped directly. Matching is
+    exact, registry-first on name collision. Fenced/inline code and existing
+    `<at>` tags are protected spans. A no-permission roster result is cached
+    permanently to avoid repeat `listChatMembers` calls.
+
 ## [0.3.11] - 2026-08-10
 
 ### Fixed

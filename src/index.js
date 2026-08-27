@@ -1763,6 +1763,13 @@ async function startServerWithRetry(port, maxRetries = MAX_LISTEN_RETRIES) {
       botAppName = botInfo.app_name || 'bot';
       setBotIdentity({ openId: botInfo.open_id, appName: botAppName, appId: botAppId });
       console.log(`[lark] Bot identity: ${botAppName} (${botOpenId}, ${botAppId})`);
+      // Persist the bot's own open_id into config so the short-lived send.js
+      // process can suppress self-mentions (mention assembly, owner decision 6)
+      // without an API call. Written once; skipped when already current.
+      if (botInfo.open_id && config.bot?.open_id !== botInfo.open_id) {
+        config.bot = { ...config.bot, open_id: botInfo.open_id };
+        saveConfig(config);
+      }
     } else {
       console.error(`[lark] Warning: Could not fetch bot info: ${botInfo.message}`);
       console.error('[lark] @mention detection in groups will not work');
