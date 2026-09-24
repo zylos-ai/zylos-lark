@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.13] - 2026-09-25
+
+### Fixed
+- **Half-open WebSocket connections are now detected and recovered**
+  (`src/lib/transport/websocket.js`). The SDK `WSClient` pings every
+  server-provided interval (120s) but never times out on a missing pong, so a
+  socket that stayed OPEN without close/error while delivering no frames went
+  undetected until a manual restart. The transport now tracks pong receipt and,
+  when no pong arrives within `ws_pong_timeout_sec` (default 3 x ping interval),
+  closes the old client and starts a fresh one — single-flight, exponential
+  backoff 5s -> 60s, never via the SDK's `reConnect()` (node-sdk#177).
+  - Pong detection wraps the WSClient instance's `handleControlData`
+    (coupled to node-sdk 1.59.0 internals). A startup self-check WARNs if no
+    pong is ever observed and caps blind reconnects so an SDK change cannot
+    cause a reconnect loop.
+  - New logs: `ws pong late` (WARN), `ws half-open detected` (ERROR),
+    `ws reconnected in ...` / `ws reconnect failed ...`, and a 30-minute
+    `ws heartbeat ok` summary.
+  - `/health` adds `lastPongAt`, `lastPongAgeSec`, `pongCount`, `reconnects`,
+    `lastReconnectReason`, `lastReconnectAt`, `reconnecting`.
+
+### Added
+- Optional config `ws_pong_timeout_sec` (seconds; `0` disables watchdog
+  reconnects; minimum 30).
+
 ## [0.3.12] - 2026-08-27
 
 ### Added
