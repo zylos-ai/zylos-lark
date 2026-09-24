@@ -292,6 +292,36 @@ node send.js "oc_xxx" "[MEDIA:file]/path/to/document.pdf"
 | smart_groups | object[] | Groups where all messages are monitored |
 | proxy.enabled | boolean | Proxy enable/disable toggle |
 | message.context_messages | number | Number of group context messages to include |
+| transport | string | `websocket` (long connection, default) or `webhook` |
+| ws_pong_timeout_sec | number | Optional. WebSocket half-open watchdog: reconnect when no pong arrives for this many seconds. Default: 3 x server ping interval (360s today). `0` disables watchdog reconnects. Minimum 30. Read at startup. |
+
+### 5.2.1 WebSocket Transport and Half-Open Watchdog
+
+In `websocket` mode (`src/lib/transport/websocket.js`) events arrive over the
+SDK's `WSClient` long connection. The SDK pings every server-provided interval
+(currently 120s) but has no pong timeout, so a half-open socket (stays OPEN, no
+close/error, no inbound frames) would never trigger its `autoReconnect`.
+
+The transport therefore:
+
+- Detects pongs by wrapping the WSClient instance's `handleControlData` and
+  matching control frames with header `type=pong` (coupled to
+  `@larksuiteoapi/node-sdk` internals, verified on 1.59.0 — re-check on SDK
+  upgrades). Tracks `lastPongAt` and a pong count.
+- Runs an unref'd watchdog (10s tick). If no pong for `ws_pong_timeout_sec`
+  (default 3 x ping interval) it closes the old WSClient, neuters it, and
+  starts a fresh one (never the SDK's `reConnect()`, see node-sdk#177).
+  Reconnects are single-flight with exponential backoff (5s -> 60s cap). A new
+  client counts as connected only once its socket is OPEN (30s deadline).
+- Self-check: if no pong has ever been observed 2 intervals after connect, it
+  logs a WARN that pong detection may be broken and allows at most one
+  pong-timeout reconnect until a pong is seen (prevents a reconnect loop if an
+  SDK upgrade breaks detection).
+- Logs: `ws pong late` (WARN, once per episode), `ws half-open detected`
+  (ERROR), `ws reconnected in ...` / `ws reconnect failed ...`, and a 30-minute
+  `ws heartbeat ok` summary. The WS URL (contains credentials) is never logged.
+- `/health` includes `lastPongAt`, `lastPongAgeSec`, `pongCount`,
+  `reconnects`, `lastReconnectReason`, `lastReconnectAt`, `reconnecting`.
 
 ### 5.3 Environment Variables (~/zylos/.env)
 
