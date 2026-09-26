@@ -332,7 +332,11 @@ The transport:
   **3 restarts per 30 minutes**, recorded in
   `~/zylos/components/lark/ws-restart-state.json`
   (`{"version":1,"restarts":[{"at":<ms>,"reason":"pong-timeout","pid":<n>}]}`),
-  written atomically (same-dir temp file, fsync, rename). When the limit is
+  written atomically (same-dir temp file, fsync, rename). Lock and ledger
+  bodies are written completely (short writes are looped; zero progress or
+  an error fails closed: a short lock write keeps the partial lock and
+  refuses, a short ledger write removes only our own temp file, leaves the
+  ledger unchanged and refuses the restart). When the limit is
   reached the restart is suppressed with one ERROR per episode and the
   watchdog keeps monitoring until the oldest entry leaves the window.
   Fail-safe: a corrupt or unreadable state file counts as "limit reached" (the

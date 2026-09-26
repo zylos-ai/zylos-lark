@@ -23,6 +23,8 @@
  * - Entries with a timestamp in the future (clock stepped backwards) are
  *   counted as inside the window (conservative).
  * - Writes are atomic: temp file in the same directory, fsync, rename.
+ *   Lock and ledger bodies are written completely (writeAllSync loops over
+ *   short writes; zero progress or an error fails closed).
  *
  * Cross-process serialization: the whole acquisition transaction
  * (read -> decide -> persist) runs under an exclusive lock file
@@ -129,6 +131,25 @@ export function lockRecoveryHint(obs) {
   return `verify the holder first: ${pidCheck} and \`pm2 ls\` shows no second zylos-lark instance; only then remove ${obs.lockPath} manually to re-enable watchdog restarts`;
 }
 
+/**
+ * Write the whole buffer to fd, looping over short writes. A zero-progress
+ * write or any error throws, so callers fail closed.
+ */
+export function writeAllSync(fs, fd, data) {
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'utf8');
+  let off = 0;
+  while (off < buf.length) {
+    const n = fs.writeSync(fd, buf, off, buf.length - off);
+    if (!Number.isInteger(n) || n <= 0) {
+      const e = new Error(`short write: ${off}/${buf.length} bytes written, no progress`);
+      e.code = 'ESHORTWRITE';
+      throw e;
+    }
+    off += n;
+  }
+  return off;
+}
+
 const STATE_VERSION = 1;
 
 function isValidState(obj) {
@@ -213,16 +234,19 @@ export function createRestartGuard({
     const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.${++tmpSeq}.tmp`);
     const body = JSON.stringify({ version: STATE_VERSION, restarts }, null, 2) + '\n';
     let fd = null;
+    let created = false;
     try {
-      fd = fs.openSync(tmp, 'w', 0o600);
-      fs.writeSync(fd, body);
+      fd = fs.openSync(tmp, 'wx', 0o600); // unique name, and proof we created it
+      created = true;
+      writeAllSync(fs, fd, body);
       fs.fsyncSync(fd);
       fs.closeSync(fd);
       fd = null;
       fs.renameSync(tmp, file);
     } catch (err) {
       if (fd !== null) { try { fs.closeSync(fd); } catch { /* ignore */ } }
-      try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+      // Only our own temp file (never renamed into place on failure).
+      if (created) { try { fs.unlinkSync(tmp); } catch { /* ignore */ } }
       throw err;
     }
     cached = restarts;
@@ -287,7 +311,7 @@ export function createRestartGuard({
       }
       if (fd !== null) {
         try {
-          fs.writeSync(fd, body);
+          writeAllSync(fs, fd, body); // a truncated lock would be unreleasable
           fs.fsyncSync(fd);
           fs.closeSync(fd);
         } catch (err) {

@@ -21,7 +21,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { createRestartGuard, classifyLockOwner, lockRecoveryHint, RESTART_MAX_IN_WINDOW, LOCK_TIMEOUT_MS } from '../src/lib/transport/restart-guard.js';
+import { createRestartGuard, classifyLockOwner, lockRecoveryHint, writeAllSync, RESTART_MAX_IN_WINDOW, LOCK_TIMEOUT_MS } from '../src/lib/transport/restart-guard.js';
 
 const CONTENDER = fileURLToPath(new URL('./fixtures/guard-contender.mjs', import.meta.url));
 const CONTENDERS = 8;
@@ -298,4 +298,98 @@ test('release on every path, only our own lock', async () => {
     assert.match(v.detail, /EACCES/);
     assert.equal(fs.existsSync(file), false);
   }
+});
+
+/**
+ * fs seam that turns writes on the lock fd or the ledger temp fd into short
+ * writes. plan: array of per-call behaviours for that target:
+ *   'half' -> write half of the remaining bytes, return that count
+ *   'zero' -> write nothing, return 0
+ *   'rest' -> write everything remaining (normal)
+ */
+function shortWriteFs(target, plan) {
+  const fdPath = new Map();
+  let calls = 0;
+  return {
+    ...fs,
+    openSync: (p, ...a) => { const fd = fs.openSync(p, ...a); fdPath.set(fd, p); return fd; },
+    writeSync: (fd, buf, off = 0, len = buf.length - off, ...r) => {
+      const p = fdPath.get(fd) || '';
+      const hit = target === 'lock' ? p.endsWith('.lock') : p.endsWith('.tmp');
+      if (!hit) return fs.writeSync(fd, buf, off, len, ...r);
+      const step = plan[calls++] ?? 'rest';
+      if (step === 'zero') return 0;
+      if (step === 'half') return fs.writeSync(fd, buf, off, Math.max(1, Math.floor(len / 2)));
+      return fs.writeSync(fd, buf, off, len);
+    },
+  };
+}
+
+test('short write of the lock body -> refused, ledger untouched, partial lock kept', async () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'ws-restart-state.json');
+  seed(file, 1);
+  const before = fs.readFileSync(file, 'utf8');
+  const g = createRestartGuard({ file, fs: shortWriteFs('lock', ['half', 'zero']), lockTimeoutMs: 50 });
+  const v = await g.tryAcquire('pong-timeout');
+  assert.equal(v.allowed, false);
+  assert.equal(v.cause, 'lock-unavailable');
+  assert.match(v.detail, /ESHORTWRITE/);
+  assert.equal(fs.readFileSync(file, 'utf8'), before, 'ledger not read-modified-written');
+  assert.ok(fs.existsSync(`${file}.lock`), 'partial lock kept (ownership-safe)');
+  const obs = createRestartGuard({ file }).inspectLock();
+  assert.equal(obs.lockState, 'unknown-owner');
+  assert.equal(obs.lockError, 'unparseable');
+});
+
+test('short write of the ledger temp file -> refused, ledger unchanged and parseable, no temp, lock released', async () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'ws-restart-state.json');
+  seed(file, 1);
+  const before = fs.readFileSync(file, 'utf8');
+  const g = createRestartGuard({ file, fs: shortWriteFs('ledger', ['half', 'zero']) });
+  const v = await g.tryAcquire('pong-timeout');
+  assert.equal(v.allowed, false);
+  assert.equal(v.cause, 'write-failed');
+  assert.match(v.detail, /ESHORTWRITE/);
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.equal(readLedger(file).length, 1, 'still the previous, parseable state');
+  assert.deepEqual(leftovers(dir), [], 'no temp file, lock released');
+  assert.equal((await createRestartGuard({ file }).tryAcquire('pong-timeout')).allowed, true, 'next guard is not blocked');
+});
+
+test('short writes that complete on retry -> success with intact lock and ledger content', async () => {
+  for (const target of ['lock', 'ledger']) {
+    const dir = tmpDir();
+    const file = path.join(dir, 'ws-restart-state.json');
+    seed(file, 1);
+    let lockSeen = null;
+    const base = shortWriteFs(target, ['half', 'half', 'rest']);
+    const spy = { ...base, fsyncSync: (fd) => { try { lockSeen ??= JSON.parse(fs.readFileSync(`${file}.lock`, 'utf8')); } catch { /* not yet */ } return fs.fsyncSync(fd); } };
+    const v = await createRestartGuard({ file, fs: spy }).tryAcquire('pong-timeout');
+    assert.equal(v.allowed, true, target);
+    const ledger = readLedger(file);
+    assert.equal(ledger.length, 2, `${target}: ledger complete and parseable`);
+    assert.equal(ledger.at(-1).reason, 'pong-timeout');
+    assert.equal(ledger.at(-1).pid, process.pid);
+    assert.equal(lockSeen.pid, process.pid, `${target}: lock body was complete JSON`);
+    assert.equal(typeof lockSeen.token, 'string');
+    assert.deepEqual(leftovers(dir), [], `${target}: lock released (token parsed), no temp`);
+  }
+});
+
+test('writeAllSync: loops over partial writes, throws on zero progress', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'x');
+  const fd = fs.openSync(p, 'w');
+  const seq = [3, 0];
+  const fake = { writeSync: (f, buf, off, len) => fs.writeSync(f, buf, off, Math.min(len, seq.length ? seq.shift() || 0 : len)) };
+  assert.throws(() => writeAllSync(fake, fd, 'abcdefgh'), /short write: 3\/8/);
+  fs.closeSync(fd);
+  const fd2 = fs.openSync(p, 'w');
+  let k = 0;
+  const partial = { writeSync: (f, buf, off, len) => fs.writeSync(f, buf, off, Math.min(len, ++k)) };
+  assert.equal(writeAllSync(partial, fd2, 'abcdefgh'), 8);
+  fs.closeSync(fd2);
+  assert.equal(fs.readFileSync(p, 'utf8'), 'abcdefgh');
 });

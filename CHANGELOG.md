@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Exactly one `WSClient` exists per process.
   - Anti-loop safeguards: never restarts if no pong was ever observed in the
     process (one-time WARN instead); cross-process rate limit of at most 3
-    restarts per 30 minutes, persisted atomically in
+    restarts per 30 minutes, persisted atomically (complete writes; short writes fail closed) in
     `~/zylos/components/lark/ws-restart-state.json` and serialized by an
     exclusive lock file (`O_EXCL`, async acquisition with 2s timeout, no
     automatic stale-lock takeover); a corrupt/unreadable state file, an
