@@ -34,21 +34,21 @@
  *   sleeps (LOCK_RETRY_MIN_MS..LOCK_RETRY_MAX_MS) up to LOCK_TIMEOUT_MS, so the
  *   event loop is never blocked. The critical section is a few ms of local
  *   synchronous I/O. State is only read AFTER the lock is held.
- * - Stale takeover only if the lock is older than LOCK_STALE_MS (mtime) AND
- *   its holder is provably dead: parseable content with a pid for which
- *   process.kill(pid, 0) throws ESRCH. Live pid (incl. possible pid reuse),
- *   EPERM, or unparseable content = treated as alive -> no takeover
- *   (fail-closed). Takeover renames the lock to a unique tombstone (atomic:
- *   only one contender can move it); ENOENT or any rename failure -> go back
- *   to competing from scratch. If the moved inode is not the one judged
- *   stale, it is restored with link() and we back off. Only our own tombstone
- *   is unlinked.
  * - Release in `finally` on every path, and only if the lock file still
  *   carries our token — a newer holder's lock is never removed.
  * - Fail-closed: lock timeout or any lock error -> this restart attempt is
  *   refused with cause 'lock-unavailable' (distinct from 'corrupt'); the
  *   caller keeps monitoring and retries later. Nothing proceeds without the
  *   lock.
+ * - NO automatic stale-lock takeover. zylos-lark runs as a single PM2
+ *   instance, so real contention is essentially nil, and every auto-break
+ *   scheme (rename-then-verify, link restore) opened worse failure modes
+ *   (two holders in the critical section). A lock left behind by a crash
+ *   (empty file if the crash hit between create and write, or a dead /
+ *   reused pid) therefore blocks watchdog restarts until an operator removes
+ *   it. inspectLock() classifies the holder FOR REPORTING ONLY
+ *   (held-by-live-pid | held-by-dead-pid | unknown-owner) so logs and
+ *   /health can show the lock path, owner pid, age and a recovery hint.
  */
 
 import nodeFs from 'node:fs';
@@ -62,21 +62,34 @@ export const RESTART_WINDOW_MS = 30 * 60_000;
 export const CORRUPT_REASON = 'state-file-corrupt';
 /** Max time to wait for the cross-process lock before refusing (fail-closed). */
 export const LOCK_TIMEOUT_MS = 2_000;
-/** A lock older than this whose holder pid is dead may be taken over. */
-export const LOCK_STALE_MS = 10_000;
 export const LOCK_RETRY_MIN_MS = 5;
 export const LOCK_RETRY_MAX_MS = 25;
 /** After a lock-unavailable refusal, re-evaluate this much later. */
 export const LOCK_RETRY_AFTER_MS = 60_000;
 
-function pidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+/**
+ * Classify a lock owner pid. REPORTING ONLY — never used to break a lock.
+ * @returns {'held-by-live-pid'|'held-by-dead-pid'|'unknown-owner'}
+ */
+export function classifyLockOwner(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return 'unknown-owner';
   try {
     process.kill(pid, 0);
-    return true;
+    return 'held-by-live-pid';
   } catch (err) {
-    return err?.code !== 'ESRCH'; // EPERM / unknown = cannot prove dead -> alive
+    if (err?.code === 'EPERM') return 'held-by-live-pid';
+    if (err?.code === 'ESRCH') return 'held-by-dead-pid';
+    return 'unknown-owner';
   }
+}
+
+/**
+ * Ownership-safe manual recovery instruction (never an unconditional rm).
+ * Keep in sync with DESIGN.md §5.2.1.
+ */
+export function lockRecoveryHint(lockFile, ownerPid = null) {
+  const pidCheck = ownerPid ? `\`ps -p ${ownerPid}\` shows that pid is not a running zylos-lark process` : 'the lock names no valid owner pid';
+  return `verify the holder first: ${pidCheck} and \`pm2 ls\` shows no second zylos-lark instance; only then remove ${lockFile} manually to re-enable watchdog restarts`;
 }
 
 const STATE_VERSION = 1;
@@ -97,7 +110,6 @@ function isValidState(obj) {
  * @param {number} [opts.maxInWindow]
  * @param {number} [opts.windowMs]
  * @param {number} [opts.lockTimeoutMs]
- * @param {number} [opts.lockStaleMs]
  */
 export function createRestartGuard({
   file,
@@ -106,7 +118,6 @@ export function createRestartGuard({
   maxInWindow = RESTART_MAX_IN_WINDOW,
   windowMs = RESTART_WINDOW_MS,
   lockTimeoutMs = LOCK_TIMEOUT_MS,
-  lockStaleMs = LOCK_STALE_MS,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   // TEST-ONLY mutation hooks (never set in production):
   //   _lockMode: 'full' (default) | 'none' | 'write-only'
@@ -178,48 +189,39 @@ export function createRestartGuard({
     cached = restarts;
   }
 
-  function readLock() {
-    const st = fs.statSync(lockFile);
-    let raw = null;
-    let info = null;
-    try { raw = fs.readFileSync(lockFile, 'utf8'); info = JSON.parse(raw); } catch { /* empty / partial */ }
-    return { st, raw, info };
-  }
-
   /**
-   * Try to take over a stale lock. Returns true when the lock path was freed
-   * (by us or someone else) and the caller should re-compete immediately.
+   * Best-effort description of the current lock holder. REPORTING ONLY.
+   * @returns {{ lockPath: string, lockState: 'free'|'held-by-live-pid'|'held-by-dead-pid'|'unknown-owner', lockOwnerPid: number|null, lockAgeSec: number|null }}
    */
-  function breakStaleLock() {
-    let cur;
-    try { cur = readLock(); } catch (err) { return err?.code === 'ENOENT'; }
-    if (Date.now() - cur.st.mtimeMs <= lockStaleMs) return false;
-    if (!cur.info || pidAlive(cur.info.pid)) return false; // cannot prove dead
-    const tomb = `${lockFile}.stale.${process.pid}.${++lockSeq}.${Math.random().toString(36).slice(2)}`;
+  function inspectLock() {
+    const res = { lockPath: lockFile, lockState: 'free', lockOwnerPid: null, lockAgeSec: null, lockError: null };
+    let st;
     try {
-      fs.renameSync(lockFile, tomb); // atomic: only one contender moves it
+      st = fs.statSync(lockFile);
     } catch (err) {
-      return err?.code === 'ENOENT'; // gone already -> re-compete; else back off
+      if (err?.code !== 'ENOENT') { // absent = free; anything else = cannot tell
+        res.lockState = 'unknown-owner';
+        res.lockError = err?.code || 'stat-error';
+      }
+      return res;
     }
-    // Same file we judged stale? Inode numbers are reused immediately, so
-    // also compare mtime and the exact content (tokens are unique).
-    let same = false;
+    res.lockAgeSec = Math.max(0, Math.round((Date.now() - st.mtimeMs) / 1000));
+    let raw;
     try {
-      const moved = fs.statSync(tomb);
-      same = moved.ino === cur.st.ino && moved.mtimeMs === cur.st.mtimeMs
-        && fs.readFileSync(tomb, 'utf8') === cur.raw;
-    } catch { /* treat as not ours */ }
-    if (!same) {
-      // We moved a newer holder's lock (it replaced the stale one between our
-      // check and rename). Put it back; if that fails leave it untouched.
-      try {
-        fs.linkSync(tomb, lockFile);
-        fs.unlinkSync(tomb); // lock still reachable via lockFile
-      } catch { /* leave the newer holder's file alone */ }
-      return false;
+      raw = fs.readFileSync(lockFile, 'utf8');
+    } catch (err) {
+      if (err?.code === 'ENOENT') { // released between stat and read
+        return { ...res, lockAgeSec: null, lockError: 'ENOENT-during-read' };
+      }
+      return { ...res, lockState: 'unknown-owner', lockError: err?.code || 'read-error' };
     }
-    try { fs.unlinkSync(tomb); } catch { /* ignore */ } // our own tombstone
-    return true;
+    let info = null;
+    try { info = JSON.parse(raw); } catch { /* empty / partial */ }
+    const pid = info && typeof info === 'object' ? info.pid : undefined;
+    res.lockOwnerPid = Number.isInteger(pid) && pid > 0 ? pid : null;
+    res.lockState = classifyLockOwner(pid);
+    if (!info) res.lockError = raw.length ? 'unparseable' : 'empty';
+    return res;
   }
 
   /** Acquire the exclusive lock or throw (fail-closed). Resolves to our token. */
@@ -246,7 +248,6 @@ export function createRestartGuard({
         }
         return token;
       }
-      if (breakStaleLock()) continue;
       if (Date.now() >= deadline) {
         const e = new Error(`lock busy for ${lockTimeoutMs}ms`);
         e.code = 'ELOCKTIMEOUT';
@@ -275,13 +276,20 @@ export function createRestartGuard({
    *   | { allowed: false, cause: 'rate-limited'|'corrupt'|'write-failed', detail: string, retryAt: number, restartsInWindow: number|null }}
    */
   async function tryAcquire(reason) {
-    const lockUnavailable = (err) => ({
-      allowed: false,
-      cause: 'lock-unavailable',
-      detail: `cannot lock restart state: ${err?.code === 'ELOCKTIMEOUT' ? err.message : err?.code || err?.message || 'error'}`,
-      retryAt: now() + LOCK_RETRY_AFTER_MS,
-      restartsInWindow: null,
-    });
+    const lockUnavailable = (err) => {
+      const lock = inspectLock();
+      const owner = lock.lockState === 'free'
+        ? ''
+        : ` (${lock.lockState}, pid ${lock.lockOwnerPid ?? 'unknown'}, age ${lock.lockAgeSec ?? '?'}s)`;
+      return {
+        allowed: false,
+        cause: 'lock-unavailable',
+        detail: `cannot lock restart state: ${err?.code === 'ELOCKTIMEOUT' ? err.message : err?.code || err?.message || 'error'}${owner}`,
+        retryAt: now() + LOCK_RETRY_AFTER_MS,
+        restartsInWindow: null,
+        lock,
+      };
+    };
     let token = null;
     try {
       if (_lockMode === 'full') token = await acquireLock();
@@ -364,5 +372,5 @@ export function createRestartGuard({
     };
   }
 
-  return { load, tryAcquire, snapshot, file, lockFile, maxInWindow, windowMs };
+  return { load, tryAcquire, snapshot, inspectLock, file, lockFile, maxInWindow, windowMs };
 }

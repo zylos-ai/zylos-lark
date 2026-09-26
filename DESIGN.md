@@ -344,15 +344,47 @@ The transport:
   `{pid, acquiredAt, token}`). The whole read -> decide -> persist transaction
   runs inside the lock, so concurrent processes cannot all take the last slot.
   Acquisition is async (jittered 5-25ms `setTimeout` retries, 2s timeout; the
-  event loop is never blocked). A stale lock (older than 10s AND holder pid
-  provably dead via `kill(pid, 0)` = ESRCH) is taken over by renaming it to a
-  unique tombstone first (only one contender can win) and verifying it moved
-  the same file (inode + mtime + content), otherwise restoring it. A live pid,
-  EPERM or unparseable lock is treated as alive (no takeover). Release is in
-  `finally` and only removes the lock if it still carries our token. If the
-  lock cannot be taken, this attempt is refused as `lock-unavailable` (logged
-  as `process restart DEFERRED`, distinct from corruption); monitoring
-  continues and the watchdog retries 60s later.
+  event loop is never blocked). Release is in `finally` and only removes the
+  lock if it still carries our token. If the lock cannot be taken, this
+  attempt is refused as `lock-unavailable` (distinct from corruption);
+  monitoring continues and the watchdog retries every 60s.
+- **No automatic stale-lock takeover.** zylos-lark runs as a single PM2
+  instance, so genuine contention is essentially nil, while every auto-break
+  scheme we tried (rename-then-verify, link restore) opened worse failure
+  modes (a live holder losing its lock while a third process also enters the
+  critical section). The holder is therefore only *classified for reporting*:
+  `held-by-live-pid` (`kill(pid, 0)` succeeds or EPERM), `held-by-dead-pid`
+  (explicit ESRCH), `unknown-owner` (missing/invalid pid, empty or
+  unparseable file, read/stat error such as EACCES).
+- **Permanently blocked states** (restarts stay refused until an operator
+  acts): an empty lock left by a crash between create and write
+  (`unknown-owner`, `error=empty`); a lock whose owner died
+  (`held-by-dead-pid`); a lock whose dead owner's pid was reused by an
+  unrelated live process (`held-by-live-pid`); an unreadable lock path
+  (`unknown-owner`, `error=EACCES` etc.).
+- **Detection:** at startup (a restarted process re-detects a leftover lock
+  immediately), on a refused restart, and on every watchdog tick while
+  blocked. ERROR lines — `ws restart lock present at startup -> watchdog
+  restarts BLOCKED`, `ws half-open detected ... -> process restart DEFERRED
+  (lock-unavailable: ...)`, `ws watchdog restarts STILL BLOCKED for <n>m`,
+  `ws restart lock holder changed` — carry
+  `lock <path> state=<state> pid=<pid> age=<s>s [error=<code>]` and the
+  recovery hint. Cadence within one episode: immediately, then after 5, 30 and
+  60 minutes, then hourly; a changed holder/state logs at once and restarts
+  the cadence. When the lock disappears (or is acquired) exactly one
+  `ws restart lock released after <n>m ...; watchdog restarts re-enabled`
+  line is logged. `/health` reports the current observation: `lockPath`,
+  `lockState` (`free` | `held-by-live-pid` | `held-by-dead-pid` |
+  `unknown-owner`), `lockAgeSec`, `lockOwnerPid`, `lockError`
+  (`ENOENT-during-read`, `EACCES`, `empty`, ...), `restartBlockedSince`,
+  `recoveryHint`. Lock tokens are never logged or exposed.
+- **Manual recovery** (same wording as the log/health hint): *verify the
+  holder first: `ps -p <pid>` shows that pid is not a running zylos-lark
+  process (or the lock names no valid owner pid) and `pm2 ls` shows no second
+  zylos-lark instance; only then remove
+  `~/zylos/components/lark/ws-restart-state.json.lock` manually to re-enable
+  watchdog restarts.* No service restart is needed; the next watchdog tick
+  logs the release.
 - PM2: watchdog exits happen only after >= one full pong timeout of uptime, so
   they never count as unstable restarts (`min_uptime` default 1s) toward
   `max_restarts: 10`.
@@ -364,7 +396,8 @@ The transport:
   `restartPending`, `restartSuppressed`, `restartSuppressedReason`,
   `restartsInWindow`, `lastRestartAt`, `lastRestartReason`.
   `restartSuppressedReason` is one of `rate-limited`, `corrupt`,
-  `write-failed`, `lock-unavailable`, `guard-error`.
+  `write-failed`, `lock-unavailable`, `guard-error`; plus the lock fields
+  listed above.
 - Tests: `test/ws-pong-watchdog.test.js` (fake clock + fake client: decision
   logic, rate limit, state file), `test/ws-real-sdk.test.js` (real SDK
   in-process against a loopback fake Lark server, including the SDK
@@ -372,7 +405,8 @@ The transport:
   processes exit 75 and are restarted by a PM2 stand-in) and
   `test/restart-guard-lock.test.js` (8 real processes racing for the last
   slot, 5 rounds, exactly one wins; no-lock / write-only-lock mutants must
-  over-admit; stale takeover, fail-closed and release paths).
+  over-admit; dead/live/unknown-owner locks are never taken over and the
+  ledger is not touched; release paths).
 
 ### 5.3 Environment Variables (~/zylos/.env)
 

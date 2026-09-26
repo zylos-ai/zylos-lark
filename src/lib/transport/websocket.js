@@ -37,7 +37,9 @@
  *   by an exclusive lock file (async acquisition, never blocks the loop).
  *   When the limit is hit, or the state file is corrupt/unwritable, the
  *   restart is suppressed with one ERROR and the watchdog keeps monitoring;
- *   if the lock cannot be taken the attempt is deferred (distinct log line).
+ *   if the lock cannot be taken the attempt is deferred (distinct log line
+ *   with lock path, owner and recovery hint, repeated at 0/5/30/60 min then
+ *   hourly while blocked; no automatic stale-lock takeover).
  * - An exit only happens >= one full pong timeout (>= 30s, 360s by default)
  *   after the last pong, so PM2 never counts it as an unstable restart
  *   (min_uptime default 1s; max_restarts only applies to unstable restarts).
@@ -63,7 +65,7 @@
 import path from 'node:path';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { DATA_DIR } from '../config.js';
-import { createRestartGuard, RESTART_STATE_FILENAME, RESTART_MAX_IN_WINDOW, RESTART_WINDOW_MS } from './restart-guard.js';
+import { createRestartGuard, lockRecoveryHint, LOCK_RETRY_AFTER_MS, RESTART_STATE_FILENAME, RESTART_MAX_IN_WINDOW, RESTART_WINDOW_MS } from './restart-guard.js';
 
 export { RESTART_MAX_IN_WINDOW, RESTART_WINDOW_MS, RESTART_STATE_FILENAME };
 
@@ -87,6 +89,19 @@ export const MIN_PONG_TIMEOUT_SEC = 30;
 export const RESTART_DEADLINE_MS = 4_000;
 /** Exit code for a watchdog restart (EX_TEMPFAIL). Any non-zero code makes PM2 restart. */
 export const RESTART_EXIT_CODE = 75;
+/**
+ * While restarts stay blocked by an unavailable lock, the ERROR is repeated
+ * at these elapsed times since the block began (then every last step).
+ */
+export const LOCK_BLOCKED_LOG_SCHEDULE_MS = [0, 5 * 60_000, 30 * 60_000, 60 * 60_000];
+const LOCK_BLOCKED_LOG_REPEAT_MS = 60 * 60_000;
+
+/** Elapsed time at which the n-th (0-based) blocked-lock ERROR is due. */
+export function lockBlockedLogDueMs(n) {
+  const sch = LOCK_BLOCKED_LOG_SCHEDULE_MS;
+  if (n < sch.length) return sch[n];
+  return sch[sch.length - 1] + (n - sch.length + 1) * LOCK_BLOCKED_LOG_REPEAT_MS;
+}
 
 const WS_OPEN = 1;
 
@@ -123,6 +138,7 @@ export function parsePongTimeout(value, log = console) {
  * @param {string} [deps.stateFile] - restart rate-limit state file
  * @param {object} [deps.fs] - fs for the state file (tests)
  * @param {number} [deps.watchdogTickMs] - tick period (tests)
+ * @param {object} [deps.guardOptions] - extra restart-guard options (tests)
  */
 export function createWebSocketTransport(deps = {}) {
   const {
@@ -138,9 +154,10 @@ export function createWebSocketTransport(deps = {}) {
     stateFile = path.join(DATA_DIR, RESTART_STATE_FILENAME),
     fs,
     watchdogTickMs = WATCHDOG_TICK_MS,
+    guardOptions = {},
   } = deps;
 
-  const guard = createRestartGuard({ file: stateFile, fs, now });
+  const guard = createRestartGuard({ file: stateFile, fs, now, ...guardOptions });
 
   let wsClient = null;
   let clientCreated = false;
@@ -167,6 +184,8 @@ export function createWebSocketTransport(deps = {}) {
     suppression: null,
     restartPending: false,
     acquiring: false,
+    /** Restarts blocked by an unavailable lock: { since, logs } | null */
+    lockBlock: null,
     exited: false,
   };
 
@@ -285,6 +304,7 @@ export function createWebSocketTransport(deps = {}) {
 
   function tick() {
     if (stopped || state.restartPending || !wsClient || !state.clientStartedAt) return;
+    watchLock();
     const intervalMs = getPingIntervalMs();
     const timeoutMs = getTimeoutMs(intervalMs);
     const sinceStart = now() - state.clientStartedAt;
@@ -319,15 +339,80 @@ export function createWebSocketTransport(deps = {}) {
       .finally(() => { state.acquiring = false; });
   }
 
+  function describeLock(lock) {
+    const err = lock.lockError ? ` error=${lock.lockError}` : '';
+    return `lock ${lock.lockPath} state=${lock.lockState} pid=${lock.lockOwnerPid ?? 'unknown'} age=${lock.lockAgeSec ?? '?'}s${err}`;
+  }
+
+  const lockKey = (lock) => `${lock.lockState}:${lock.lockOwnerPid}:${lock.lockError}`;
+  const mins = (ms) => Math.round(ms / 60_000);
+
+  /**
+   * Record / report that restarts are blocked by a lock we do not own.
+   * Diagnose-only. First observation logs immediately; repeats follow
+   * LOCK_BLOCKED_LOG_SCHEDULE_MS; a changed holder/state logs at once and
+   * restarts the cadence. `head` is set when a restart attempt was refused.
+   */
+  function noteLockBlocked(lock, { head = null, detail = null, startup = false } = {}) {
+    const t = now();
+    const hint = `recovery: ${lockRecoveryHint(lock.lockPath, lock.lockOwnerPid)}`;
+    const lb = state.lockBlock;
+    if (!lb) {
+      state.lockBlock = { since: t, cadenceStart: t, logs: 1, key: lockKey(lock), deferredLogged: !!head };
+      if (head) {
+        log.error(`${head} -> process restart DEFERRED (lock-unavailable: ${detail}); ${describeLock(lock)}; monitoring continues, retrying every ${sec(LOCK_RETRY_AFTER_MS)}s; ${hint}`);
+      } else {
+        log.error(`[lark] ws restart lock ${startup ? 'present at startup' : 'held'} -> watchdog restarts BLOCKED; ${describeLock(lock)}; ${hint}`);
+      }
+      return;
+    }
+    if (lockKey(lock) !== lb.key) {
+      lb.key = lockKey(lock);
+      lb.cadenceStart = t;
+      lb.logs = 1;
+      log.error(`[lark] ws restart lock holder changed -> watchdog restarts still BLOCKED (for ${mins(t - lb.since)}m); ${describeLock(lock)}; ${hint}`);
+      return;
+    }
+    if (head && !lb.deferredLogged) {
+      lb.deferredLogged = true;
+      log.error(`${head} -> process restart DEFERRED (lock-unavailable: ${detail}); blocked for ${mins(t - lb.since)}m; ${describeLock(lock)}; ${hint}`);
+      return;
+    }
+    if (t - lb.cadenceStart >= lockBlockedLogDueMs(lb.logs)) {
+      lb.logs++;
+      log.error(`[lark] ws watchdog restarts STILL BLOCKED for ${mins(t - lb.since)}m; ${describeLock(lock)}; ${hint}`);
+    }
+  }
+
+  function clearLockBlock(how) {
+    if (!state.lockBlock) return;
+    log.log(`[lark] ws restart lock released after ${mins(now() - state.lockBlock.since)}m (${how}); watchdog restarts re-enabled`);
+    state.lockBlock = null;
+    if (state.suppression?.cause === 'lock-unavailable') state.suppression = null;
+  }
+
+  /** Called every tick while blocked: follow the CURRENT lock observation. */
+  function watchLock() {
+    if (!state.lockBlock) return;
+    const lock = guard.inspectLock();
+    if (lock.lockState === 'free') clearLockBlock(`lock ${lock.lockPath} gone`);
+    else noteLockBlocked(lock);
+  }
+
   function onVerdict(head, verdict) {
     if (stopped || state.restartPending) return;
+    if (verdict.cause === 'lock-unavailable') {
+      state.suppression = { cause: verdict.cause, detail: verdict.detail, retryAt: verdict.retryAt };
+      noteLockBlocked(verdict.lock || guard.inspectLock(), { head, detail: verdict.detail });
+      return;
+    }
+    // Any other verdict means the lock was acquired.
+    clearLockBlock(`lock ${guard.lockFile} acquired`);
     if (!verdict.allowed) {
       const first = !state.suppression || state.suppression.cause !== verdict.cause;
       state.suppression = { cause: verdict.cause, detail: verdict.detail, retryAt: verdict.retryAt };
       if (!first) return;
-      if (verdict.cause === 'lock-unavailable' || verdict.cause === 'guard-error') {
-        // Contention / lock failure is NOT state-file corruption: only this
-        // attempt is skipped; the watchdog keeps monitoring and retries.
+      if (verdict.cause === 'guard-error') {
         log.error(`${head} -> process restart DEFERRED (${verdict.cause}: ${verdict.detail}); this attempt skipped, monitoring continues, retry at ${new Date(verdict.retryAt).toISOString()}`);
       } else {
         log.error(`${head} -> process restart SUPPRESSED (${verdict.cause}: ${verdict.detail}; state file ${guard.file}); monitoring only, next check at ${new Date(verdict.retryAt).toISOString()}`);
@@ -355,6 +440,11 @@ export function createWebSocketTransport(deps = {}) {
   function startTimers() {
     if (!watchdogTimer) watchdogTimer = unref(setIntervalFn(tick, watchdogTickMs));
     if (!summaryTimer) summaryTimer = unref(setIntervalFn(summary, SUMMARY_INTERVAL_MS));
+  }
+
+  function checkLockAtStartup() {
+    const lock = guard.inspectLock();
+    if (lock.lockState !== 'free') noteLockBlocked(lock, { startup: true });
   }
 
   function logPreviousRestarts() {
@@ -386,6 +476,7 @@ export function createWebSocketTransport(deps = {}) {
     onShutdown = typeof hooks.onShutdown === 'function' ? hooks.onShutdown : null;
     pongTimeout = parsePongTimeout(config?.ws_pong_timeout_sec, log);
     logPreviousRestarts();
+    checkLockAtStartup();
 
     eventDispatcher = new EventDispatcher({}).register({
       'im.message.receive_v1': async (data) => {
@@ -440,6 +531,7 @@ export function createWebSocketTransport(deps = {}) {
   function getState() {
     const age = state.lastPongAt ? now() - state.lastPongAt : null;
     const snap = guard.snapshot();
+    const lock = guard.inspectLock();
     return {
       connected: state.connected,
       connectedSince: state.connectedSince,
@@ -447,11 +539,18 @@ export function createWebSocketTransport(deps = {}) {
       lastPongAgeSec: age == null ? null : sec(age),
       pongCount: state.pongCount,
       restartPending: state.restartPending,
-      restartSuppressed: !!state.suppression,
-      restartSuppressedReason: state.suppression ? state.suppression.cause : null,
+      restartSuppressed: !!state.suppression || !!state.lockBlock,
+      restartSuppressedReason: state.suppression ? state.suppression.cause : (state.lockBlock ? 'lock-unavailable' : null),
       restartsInWindow: snap.restartsInWindow,
       lastRestartAt: snap.lastRestartAt,
       lastRestartReason: snap.lastRestartReason,
+      lockPath: lock.lockPath,
+      lockState: lock.lockState,
+      lockAgeSec: lock.lockAgeSec,
+      lockOwnerPid: lock.lockOwnerPid,
+      lockError: lock.lockError,
+      restartBlockedSince: state.lockBlock ? new Date(state.lockBlock.since).toISOString() : null,
+      recoveryHint: state.lockBlock && lock.lockState !== 'free' ? lockRecoveryHint(lock.lockPath, lock.lockOwnerPid) : null,
     };
   }
 

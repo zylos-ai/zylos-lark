@@ -25,10 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     process (one-time WARN instead); cross-process rate limit of at most 3
     restarts per 30 minutes, persisted atomically in
     `~/zylos/components/lark/ws-restart-state.json` and serialized by an
-    exclusive lock file (`O_EXCL`, async acquisition with 2s timeout, safe
-    stale-lock takeover only for a provably dead holder); a corrupt/unreadable
-    state file, an unwritable state dir or an unavailable lock refuses the
-    restart (fail-closed) and the watchdog stays in monitoring mode.
+    exclusive lock file (`O_EXCL`, async acquisition with 2s timeout, no
+    automatic stale-lock takeover); a corrupt/unreadable state file, an
+    unwritable state dir or an unavailable lock refuses the restart
+    (fail-closed) and the watchdog stays in monitoring mode.
+  - A lock left behind by a crash blocks watchdog restarts until removed
+    manually. It is reported at startup and while blocked (ERROR at once,
+    then after 5/30/60 min, then hourly) with lock path, holder state/pid,
+    age and an ownership-safe recovery hint, plus one line when released.
   - Pong detection wraps the WSClient instance's `handleControlData`
     (coupled to node-sdk 1.59.0 internals).
   - New logs: `ws pong late` (WARN), `ws half-open detected` (ERROR),
@@ -36,7 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and a 30-minute `ws heartbeat ok` summary.
   - `/health` adds `lastPongAt`, `lastPongAgeSec`, `pongCount`,
     `restartPending`, `restartSuppressed`, `restartSuppressedReason`,
-    `restartsInWindow`, `lastRestartAt`, `lastRestartReason`.
+    `restartsInWindow`, `lastRestartAt`, `lastRestartReason`, `lockPath`,
+    `lockState`, `lockAgeSec`, `lockOwnerPid`, `lockError`,
+    `restartBlockedSince`, `recoveryHint`.
 
 ### Added
 - Optional config `ws_pong_timeout_sec` (seconds; `0` disables watchdog

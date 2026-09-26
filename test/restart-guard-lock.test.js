@@ -8,8 +8,10 @@
  * - Mutation check: the same scenario with the test-only mutants
  *   `_lockMode: 'none'` (no lock) and `'write-only'` (lock moved outside the
  *   read/decide part) MUST over-admit — proving the regression discriminates.
- * - Stale takeover, live/unknown holders (fail-closed), rename races,
- *   release-on-every-path with ownership check, non-blocking wait.
+ * - NO automatic stale-lock takeover: dead-pid, live-pid and unknown-owner
+ *   locks are all refused (fail-closed) and left untouched; the holder is
+ *   only classified for reporting. Release-on-every-path with ownership
+ *   check, non-blocking wait.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,7 +21,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { createRestartGuard, RESTART_MAX_IN_WINDOW, LOCK_TIMEOUT_MS, LOCK_STALE_MS } from '../src/lib/transport/restart-guard.js';
+import { createRestartGuard, classifyLockOwner, RESTART_MAX_IN_WINDOW, LOCK_TIMEOUT_MS } from '../src/lib/transport/restart-guard.js';
 
 const CONTENDER = fileURLToPath(new URL('./fixtures/guard-contender.mjs', import.meta.url));
 const CONTENDERS = 8;
@@ -103,47 +105,86 @@ for (const mutant of ['none', 'write-only']) {
   });
 }
 
-test('stale lock from a dead pid is taken over; no lock or tombstone left', async () => {
-  const dir = tmpDir();
-  const file = path.join(dir, 'ws-restart-state.json');
-  writeLock(file, { pid: deadPid(), acquiredAt: new Date().toISOString(), token: 'old' }, LOCK_STALE_MS + 5_000);
-  const guard = createRestartGuard({ file, lockTimeoutMs: 300 });
-  const v = await guard.tryAcquire('pong-timeout');
-  assert.equal(v.allowed, true);
-  assert.deepEqual(leftovers(dir), []);
-});
+const HOUR = 60 * 60_000;
 
-test('fail-closed: live holder (old or fresh), unparseable lock, fresh dead-pid lock, EPERM -> lock-unavailable, lock untouched', async () => {
+test('no takeover, ever: dead-pid (even hours old), live-pid and unknown-owner locks -> lock-unavailable, lock untouched, holder classified', async () => {
   const live = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
   try {
+    const dead = deadPid();
     const cases = [
-      ['live pid, old lock (possible pid reuse is not proof of death)', { pid: live.pid, token: 'x' }, LOCK_STALE_MS + 5_000],
-      ['live pid, fresh lock', { pid: live.pid, token: 'x' }, 0],
-      ['dead pid but lock younger than stale threshold', { pid: deadPid(), token: 'x' }, 0],
-      ['unparseable old lock (liveness unknown)', '{garbage', LOCK_STALE_MS + 5_000],
+      ['dead pid, 2h old', { pid: dead, acquiredAt: 'x', token: 'x' }, 2 * HOUR, 'held-by-dead-pid', dead],
+      ['dead pid, fresh', { pid: dead, token: 'x' }, 0, 'held-by-dead-pid', dead],
+      ['live pid, 2h old (possible pid reuse)', { pid: live.pid, token: 'x' }, 2 * HOUR, 'held-by-live-pid', live.pid],
+      ['live pid, fresh', { pid: live.pid, token: 'x' }, 0, 'held-by-live-pid', live.pid],
+      ['{} (no pid)', {}, 2 * HOUR, 'unknown-owner', null],
+      ['string pid', { pid: String(dead) }, 2 * HOUR, 'unknown-owner', null],
+      ['zero pid', { pid: 0 }, 2 * HOUR, 'unknown-owner', null],
+      ['negative pid', { pid: -1 }, 2 * HOUR, 'unknown-owner', null],
+      ['non-integer pid', { pid: 12.5 }, 2 * HOUR, 'unknown-owner', null],
+      ['empty file (crash between create and write)', '', 2 * HOUR, 'unknown-owner', null],
+      ['unparseable', '{garbage', 2 * HOUR, 'unknown-owner', null],
     ];
     if (process.getuid && process.getuid() !== 0) {
-      cases.push(['pid 1 -> EPERM (cannot prove dead)', { pid: 1, token: 'x' }, LOCK_STALE_MS + 5_000]);
+      cases.push(['pid 1 -> EPERM counts as live', { pid: 1, token: 'x' }, 2 * HOUR, 'held-by-live-pid', 1]);
     }
-    for (const [label, content, age] of cases) {
+    for (const [label, content, age, expectState, expectPid] of cases) {
       const dir = tmpDir();
       const file = path.join(dir, 'ws-restart-state.json');
       const lock = writeLock(file, content, age);
       const before = fs.readFileSync(lock, 'utf8');
-      const guard = createRestartGuard({ file, lockTimeoutMs: 300 });
+      const mtimeBefore = fs.statSync(lock).mtimeMs;
+      // Spy: diagnose-only (no unlink/rename/link of the foreign lock) and the
+      // ledger transaction is never entered (state file not read/written).
+      const touched = [];
+      const spyFs = {
+        ...fs,
+        unlinkSync: (p) => { touched.push(['unlink', p]); return fs.unlinkSync(p); },
+        renameSync: (a, b) => { touched.push(['rename', a, b]); return fs.renameSync(a, b); },
+        linkSync: (a, b) => { touched.push(['link', a, b]); return fs.linkSync(a, b); },
+        readFileSync: (p, ...r) => { if (p === file) touched.push(['read-ledger']); return fs.readFileSync(p, ...r); },
+        openSync: (p, ...r) => { if (p !== lock) touched.push(['open', p]); return fs.openSync(p, ...r); },
+      };
+      const guard = createRestartGuard({ file, fs: spyFs, lockTimeoutMs: 150 });
       const t0 = Date.now();
       const v = await guard.tryAcquire('pong-timeout');
       assert.equal(v.allowed, false, label);
       assert.equal(v.cause, 'lock-unavailable', label);
-      assert.match(v.detail, /cannot lock restart state: lock busy for 300ms/, label);
-      assert.ok(Date.now() - t0 >= 300, `${label}: waited the full timeout`);
-      assert.equal(fs.readFileSync(lock, 'utf8'), before, `${label}: holder's lock untouched`);
+      assert.ok(Date.now() - t0 >= 150, `${label}: waited the full timeout`);
+      assert.equal(v.lock.lockPath, lock, label);
+      assert.equal(v.lock.lockState, expectState, label);
+      assert.equal(v.lock.lockOwnerPid, expectPid, label);
+      assert.ok(Math.abs(v.lock.lockAgeSec - age / 1000) <= 2, `${label}: age ${v.lock.lockAgeSec}s`);
+      assert.match(v.detail, new RegExp(`lock busy for 150ms \\(${expectState}, pid ${expectPid ?? 'unknown'}, age \\d+s\\)`), label);
+      assert.deepEqual(guard.inspectLock(), { ...v.lock, lockAgeSec: guard.inspectLock().lockAgeSec }, label);
+      assert.ok(!v.detail.includes('"token"') && !JSON.stringify(v.lock).includes('token'), `${label}: no token exposed`);
+      assert.equal(fs.readFileSync(lock, 'utf8'), before, `${label}: lock content untouched`);
+      assert.equal(fs.statSync(lock).mtimeMs, mtimeBefore, `${label}: lock not rewritten`);
       assert.equal(fs.existsSync(file), false, `${label}: ledger not touched without the lock`);
-      assert.deepEqual(leftovers(dir), ['ws-restart-state.json.lock'], `${label}: no tombstones`);
+      assert.deepEqual(touched, [], `${label}: no unlink/rename/link, no ledger read/write`);
+      assert.deepEqual(leftovers(dir), ['ws-restart-state.json.lock'], `${label}: nothing else created`);
     }
   } finally {
     live.kill('SIGKILL');
   }
+});
+
+test('classifyLockOwner (reporting only) and inspectLock on a free lock', () => {
+  assert.equal(classifyLockOwner(process.pid), 'held-by-live-pid');
+  assert.equal(classifyLockOwner(deadPid()), 'held-by-dead-pid');
+  for (const p of [undefined, null, 0, -5, 1.5, '123', NaN]) assert.equal(classifyLockOwner(p), 'unknown-owner');
+  const file = path.join(tmpDir(), 'ws-restart-state.json');
+  assert.deepEqual(createRestartGuard({ file }).inspectLock(), { lockPath: `${file}.lock`, lockState: 'free', lockOwnerPid: null, lockAgeSec: null, lockError: null });
+});
+
+test('once the operator removes the blocking lock, the next acquisition succeeds', async () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'ws-restart-state.json');
+  const lock = writeLock(file, { pid: deadPid(), token: 'x' }, 2 * HOUR);
+  const guard = createRestartGuard({ file, lockTimeoutMs: 100 });
+  assert.equal((await guard.tryAcquire('r')).cause, 'lock-unavailable');
+  fs.unlinkSync(lock); // manual recovery
+  assert.equal((await guard.tryAcquire('r')).allowed, true);
+  assert.deepEqual(leftovers(dir), []);
 });
 
 test('lock wait does not block the event loop; default timeout is bounded', async () => {
@@ -157,55 +198,6 @@ test('lock wait does not block the event loop; default timeout is bounded', asyn
   clearInterval(iv);
   assert.equal(v.cause, 'lock-unavailable');
   assert.ok(ticks >= 20, `event loop kept running during the wait (${ticks} ticks)`);
-});
-
-test('stale takeover races: rename ENOENT -> re-compete from scratch; wrong inode -> restored, back off', async () => {
-  // (a) someone else removed the stale lock between our check and rename
-  {
-    const dir = tmpDir();
-    const file = path.join(dir, 'ws-restart-state.json');
-    const lock = writeLock(file, { pid: deadPid(), token: 'old' }, LOCK_STALE_MS + 5_000);
-    let reads = 0;
-    const racyFs = {
-      ...fs,
-      readFileSync: (p, ...a) => { if (p === file) reads++; return fs.readFileSync(p, ...a); },
-      renameSync: (a, b) => {
-        if (a === lock && b.includes('.stale.')) {
-          fs.unlinkSync(lock);
-          const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e;
-        }
-        return fs.renameSync(a, b);
-      },
-    };
-    const v = await createRestartGuard({ file, fs: racyFs, lockTimeoutMs: 300 }).tryAcquire('pong-timeout');
-    assert.equal(v.allowed, true, 're-competed and acquired a fresh lock');
-    assert.equal(reads, 1, 'ledger read exactly once, only after holding the lock');
-    assert.deepEqual(leftovers(dir), []);
-  }
-  // (b) a newer holder replaced the stale lock right before our rename
-  {
-    const dir = tmpDir();
-    const file = path.join(dir, 'ws-restart-state.json');
-    const lock = writeLock(file, { pid: deadPid(), token: 'old' }, LOCK_STALE_MS + 5_000);
-    const fresh = JSON.stringify({ pid: process.pid, token: 'newer-holder' });
-    let swapped = false;
-    const racyFs = {
-      ...fs,
-      renameSync: (a, b) => {
-        if (!swapped && a === lock && b.includes('.stale.')) {
-          swapped = true;
-          fs.unlinkSync(lock);
-          fs.writeFileSync(lock, fresh); // new inode, live holder
-        }
-        return fs.renameSync(a, b);
-      },
-    };
-    const v = await createRestartGuard({ file, fs: racyFs, lockTimeoutMs: 300 }).tryAcquire('pong-timeout');
-    assert.equal(v.cause, 'lock-unavailable');
-    assert.equal(fs.readFileSync(lock, 'utf8'), fresh, "newer holder's lock restored intact");
-    assert.deepEqual(leftovers(dir), ['ws-restart-state.json.lock'], 'our tombstone removed, nothing else');
-    assert.equal(fs.existsSync(file), false);
-  }
 });
 
 test('release on every path, only our own lock', async () => {
