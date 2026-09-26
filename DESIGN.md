@@ -331,13 +331,28 @@ The transport:
 - Cross-process rate limit (`src/lib/transport/restart-guard.js`): at most
   **3 restarts per 30 minutes**, recorded in
   `~/zylos/components/lark/ws-restart-state.json`
-  (`{"version":1,"restarts":[{"at":<ms>,"reason":"pong-timeout"}]}`), written
-  atomically (same-dir temp file, fsync, rename). When the limit is reached the
-  restart is suppressed with one ERROR per episode and the watchdog keeps
-  monitoring until the oldest entry leaves the window. Fail-safe: a corrupt or
-  unreadable state file counts as "limit reached" (the file is reset to a full
-  window so restarts resume after 30 min), and if the restart record cannot be
-  persisted (e.g. unwritable dir) the restart is refused.
+  (`{"version":1,"restarts":[{"at":<ms>,"reason":"pong-timeout","pid":<n>}]}`),
+  written atomically (same-dir temp file, fsync, rename). When the limit is
+  reached the restart is suppressed with one ERROR per episode and the
+  watchdog keeps monitoring until the oldest entry leaves the window.
+  Fail-safe: a corrupt or unreadable state file counts as "limit reached" (the
+  file is reset to a full window so restarts resume after 30 min), and if the
+  restart record cannot be persisted (e.g. unwritable dir) the restart is
+  refused.
+- The rate limit is **serialized by an exclusive lock file**
+  (`ws-restart-state.json.lock`, created with `O_CREAT|O_EXCL`, holding
+  `{pid, acquiredAt, token}`). The whole read -> decide -> persist transaction
+  runs inside the lock, so concurrent processes cannot all take the last slot.
+  Acquisition is async (jittered 5-25ms `setTimeout` retries, 2s timeout; the
+  event loop is never blocked). A stale lock (older than 10s AND holder pid
+  provably dead via `kill(pid, 0)` = ESRCH) is taken over by renaming it to a
+  unique tombstone first (only one contender can win) and verifying it moved
+  the same file (inode + mtime + content), otherwise restoring it. A live pid,
+  EPERM or unparseable lock is treated as alive (no takeover). Release is in
+  `finally` and only removes the lock if it still carries our token. If the
+  lock cannot be taken, this attempt is refused as `lock-unavailable` (logged
+  as `process restart DEFERRED`, distinct from corruption); monitoring
+  continues and the watchdog retries 60s later.
 - PM2: watchdog exits happen only after >= one full pong timeout of uptime, so
   they never count as unstable restarts (`min_uptime` default 1s) toward
   `max_restarts: 10`.
@@ -348,11 +363,16 @@ The transport:
 - `/health` includes `lastPongAt`, `lastPongAgeSec`, `pongCount`,
   `restartPending`, `restartSuppressed`, `restartSuppressedReason`,
   `restartsInWindow`, `lastRestartAt`, `lastRestartReason`.
+  `restartSuppressedReason` is one of `rate-limited`, `corrupt`,
+  `write-failed`, `lock-unavailable`, `guard-error`.
 - Tests: `test/ws-pong-watchdog.test.js` (fake clock + fake client: decision
   logic, rate limit, state file), `test/ws-real-sdk.test.js` (real SDK
   in-process against a loopback fake Lark server, including the SDK
-  limitation above) and `test/ws-restart-process.test.js` (real child
-  processes exit 75 and are restarted by a PM2 stand-in).
+  limitation above), `test/ws-restart-process.test.js` (real child
+  processes exit 75 and are restarted by a PM2 stand-in) and
+  `test/restart-guard-lock.test.js` (8 real processes racing for the last
+  slot, 5 rounds, exactly one wins; no-lock / write-only-lock mutants must
+  over-admit; stale takeover, fail-closed and release paths).
 
 ### 5.3 Environment Variables (~/zylos/.env)
 

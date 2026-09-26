@@ -33,9 +33,11 @@
  *   broken after an SDK upgrade); a one-time WARN is logged instead.
  * - Cross-process rate limit (restart-guard.js): at most
  *   RESTART_MAX_IN_WINDOW (3) restarts per RESTART_WINDOW_MS (30 min),
- *   persisted in ~/zylos/components/lark/ws-restart-state.json. When the
- *   limit is hit, or the state file is corrupt/unwritable, the restart is
- *   suppressed with one ERROR and the watchdog keeps monitoring.
+ *   persisted in ~/zylos/components/lark/ws-restart-state.json, serialized
+ *   by an exclusive lock file (async acquisition, never blocks the loop).
+ *   When the limit is hit, or the state file is corrupt/unwritable, the
+ *   restart is suppressed with one ERROR and the watchdog keeps monitoring;
+ *   if the lock cannot be taken the attempt is deferred (distinct log line).
  * - An exit only happens >= one full pong timeout (>= 30s, 360s by default)
  *   after the last pong, so PM2 never counts it as an unstable restart
  *   (min_uptime default 1s; max_restarts only applies to unstable restarts).
@@ -164,6 +166,7 @@ export function createWebSocketTransport(deps = {}) {
     /** Current suppression episode: { cause, detail, retryAt } | null */
     suppression: null,
     restartPending: false,
+    acquiring: false,
     exited: false,
   };
 
@@ -305,12 +308,28 @@ export function createWebSocketTransport(deps = {}) {
     if (pongTimeout.mode === 'disabled' || age <= timeoutMs) return;
     if (state.suppression && now() < state.suppression.retryAt) return;
 
+    if (state.acquiring) return;
     const head = `[lark] ws half-open detected: no pong for ${sec(age)}s (timeout ${sec(timeoutMs)}s, socket=${socketState()})`;
-    const verdict = guard.tryAcquire('pong-timeout');
+    state.acquiring = true;
+    // Async: the guard waits for a cross-process lock without blocking the loop.
+    Promise.resolve()
+      .then(() => guard.tryAcquire('pong-timeout'))
+      .then((verdict) => onVerdict(head, verdict))
+      .catch((err) => log.error(`[lark] ws restart guard error: ${err?.message || err}`))
+      .finally(() => { state.acquiring = false; });
+  }
+
+  function onVerdict(head, verdict) {
+    if (stopped || state.restartPending) return;
     if (!verdict.allowed) {
-      const first = !state.suppression;
+      const first = !state.suppression || state.suppression.cause !== verdict.cause;
       state.suppression = { cause: verdict.cause, detail: verdict.detail, retryAt: verdict.retryAt };
-      if (first) {
+      if (!first) return;
+      if (verdict.cause === 'lock-unavailable' || verdict.cause === 'guard-error') {
+        // Contention / lock failure is NOT state-file corruption: only this
+        // attempt is skipped; the watchdog keeps monitoring and retries.
+        log.error(`${head} -> process restart DEFERRED (${verdict.cause}: ${verdict.detail}); this attempt skipped, monitoring continues, retry at ${new Date(verdict.retryAt).toISOString()}`);
+      } else {
         log.error(`${head} -> process restart SUPPRESSED (${verdict.cause}: ${verdict.detail}; state file ${guard.file}); monitoring only, next check at ${new Date(verdict.retryAt).toISOString()}`);
       }
       return;

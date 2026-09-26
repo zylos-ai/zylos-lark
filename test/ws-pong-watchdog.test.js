@@ -13,7 +13,8 @@
  * real SDK reconnect closures and DataCache timers. Those are covered with
  * the real @larksuiteoapi/node-sdk WSClient in test/ws-real-sdk.test.js
  * (in-process) and test/ws-restart-process.test.js (real child processes
- * exiting and being restarted by a PM2 stand-in).
+ * exiting and being restarted by a PM2 stand-in). The cross-process lock is
+ * covered by test/restart-guard-lock.test.js.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -387,7 +388,9 @@ test('state dir unwritable -> restart refused (an unrecorded restart would escap
   await env.clock.advance(TIMEOUT + WATCHDOG_TICK_MS);
   assert.equal(env.exits.length, 0);
   assert.equal(halfOpenErrors(env).length, 1);
-  assert.match(halfOpenErrors(env)[0], /SUPPRESSED \((write-failed: cannot persist restart record|corrupt: state file unreadable) \(ENOTDIR\)/);
+  // The lock file cannot even be created -> fail-closed as lock-unavailable.
+  assert.match(halfOpenErrors(env)[0], /process restart DEFERRED \(lock-unavailable: cannot lock restart state: ENOTDIR\); this attempt skipped, monitoring continues/);
+  assert.doesNotMatch(halfOpenErrors(env)[0], /corrupt/);
   assert.equal(env.tr.getConnectionState().restartSuppressed, true);
   await env.clock.advance(3 * RESTART_WINDOW_MS);
   assert.equal(env.exits.length, 0);
@@ -396,26 +399,28 @@ test('state dir unwritable -> restart refused (an unrecorded restart would escap
 
 test('state dir unwritable (write fails after a clean read) -> restart refused', async () => {
   const stateFile = tmpStateFile();
-  const failingFs = { ...fs, openSync: () => { const e = new Error('EROFS: read-only file system'); e.code = 'EROFS'; throw e; } };
+  // Lock works; only the ledger temp-file write fails.
+  const failingFs = { ...fs, openSync: (p, ...a) => { if (p.endsWith('.tmp')) { const e = new Error('EROFS: read-only file system'); e.code = 'EROFS'; throw e; } return fs.openSync(p, ...a); } };
   const env = await setup({ stateFile, fsImpl: failingFs });
   await env.client().pong();
   await env.clock.advance(TIMEOUT + WATCHDOG_TICK_MS);
   assert.equal(env.exits.length, 0);
   assert.match(halfOpenErrors(env)[0], /SUPPRESSED \(write-failed: cannot persist restart record \(EROFS\)/);
+  assert.equal(fs.existsSync(`${stateFile}.lock`), false, 'lock released after write failure');
 });
 
-test('atomic write: same-dir temp file, fsync, rename; no temp left behind', () => {
+test('atomic write: same-dir temp file, fsync, rename; no temp left behind', async () => {
   const stateFile = tmpStateFile();
   const calls = [];
   const spyFs = {
     ...fs,
-    openSync: (p, ...a) => { calls.push(['open', p]); return fs.openSync(p, ...a); },
-    fsyncSync: (fd) => { calls.push(['fsync']); return fs.fsyncSync(fd); },
+    openSync: (p, ...a) => { if (!p.endsWith('.lock')) calls.push(['open', p]); return fs.openSync(p, ...a); },
+    fsyncSync: (fd) => { if (calls.length) calls.push(['fsync']); return fs.fsyncSync(fd); },
     renameSync: (a, b) => { calls.push(['rename', a, b]); return fs.renameSync(a, b); },
   };
   let t = 5_000_000;
   const guard = createRestartGuard({ file: stateFile, fs: spyFs, now: () => t });
-  assert.deepEqual(guard.tryAcquire('pong-timeout'), { allowed: true, restartsInWindow: 1 });
+  assert.deepEqual(await guard.tryAcquire('pong-timeout'), { allowed: true, restartsInWindow: 1 });
   const [open, fsync, rename] = calls;
   assert.equal(open[0], 'open');
   assert.equal(path.dirname(open[1]), path.dirname(stateFile), 'temp file in the same directory');
@@ -430,14 +435,14 @@ test('atomic write: same-dir temp file, fsync, rename; no temp left behind', () 
   const badFs = { ...spyFs, renameSync: () => { const e = new Error('EXDEV'); e.code = 'EXDEV'; throw e; } };
   t += 1000;
   const g2 = createRestartGuard({ file: stateFile, fs: badFs, now: () => t });
-  const v = g2.tryAcquire('pong-timeout');
+  const v = await g2.tryAcquire('pong-timeout');
   assert.equal(v.allowed, false);
   assert.equal(v.cause, 'write-failed');
   assert.equal(fs.readFileSync(stateFile, 'utf8'), before);
   assert.deepEqual(fs.readdirSync(path.dirname(stateFile)), ['ws-restart-state.json']);
 });
 
-test('restart guard: window pruning and future timestamps counted conservatively', () => {
+test('restart guard: window pruning and future timestamps counted conservatively', async () => {
   const stateFile = tmpStateFile();
   let t = 10 * RESTART_WINDOW_MS;
   fs.writeFileSync(stateFile, JSON.stringify({ version: 1, restarts: [
@@ -446,9 +451,9 @@ test('restart guard: window pruning and future timestamps counted conservatively
     { at: t - 1000, reason: 'recent' },
   ] }));
   const guard = createRestartGuard({ file: stateFile, now: () => t });
-  assert.equal(guard.tryAcquire('pong-timeout').allowed, true); // 2 in window -> 3rd allowed
+  assert.equal((await guard.tryAcquire('pong-timeout')).allowed, true); // 2 in window -> 3rd allowed
   assert.deepEqual(readState(stateFile).restarts.map((r) => r.reason), ['recent', 'future', 'pong-timeout']);
-  const v = guard.tryAcquire('pong-timeout');
+  const v = await guard.tryAcquire('pong-timeout');
   assert.equal(v.allowed, false);
   assert.equal(v.cause, 'rate-limited');
   assert.equal(v.retryAt, t - 1000 + RESTART_WINDOW_MS);

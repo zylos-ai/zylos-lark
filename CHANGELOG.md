@@ -22,10 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     leaks a `DataCache` interval per client, so only process exit cleans up.
     Exactly one `WSClient` exists per process.
   - Anti-loop safeguards: never restarts if no pong was ever observed in the
-    process (one-time WARN instead); at most 3 restarts per 30 minutes,
-    persisted atomically in `~/zylos/components/lark/ws-restart-state.json`;
-    a corrupt/unreadable state file or an unwritable state dir suppresses the
-    restart (fail-safe) and the watchdog stays in monitoring mode.
+    process (one-time WARN instead); cross-process rate limit of at most 3
+    restarts per 30 minutes, persisted atomically in
+    `~/zylos/components/lark/ws-restart-state.json` and serialized by an
+    exclusive lock file (`O_EXCL`, async acquisition with 2s timeout, safe
+    stale-lock takeover only for a provably dead holder); a corrupt/unreadable
+    state file, an unwritable state dir or an unavailable lock refuses the
+    restart (fail-closed) and the watchdog stays in monitoring mode.
   - Pong detection wraps the WSClient instance's `handleControlData`
     (coupled to node-sdk 1.59.0 internals).
   - New logs: `ws pong late` (WARN), `ws half-open detected` (ERROR),
@@ -39,7 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional config `ws_pong_timeout_sec` (seconds; `0` disables watchdog
   restarts while keeping monitoring; minimum 30).
 - Tests with the real node-sdk `WSClient` against a loopback fake Lark server,
-  in-process and as real child processes restarted by a PM2 stand-in.
+  in-process and as real child processes restarted by a PM2 stand-in, plus a
+  concurrent-acquisition regression (8 real processes, 1 slot, exactly 1 wins).
 
 ## [0.3.12] - 2026-08-27
 

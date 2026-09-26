@@ -15,7 +15,7 @@ module.exports = {
     // default) of uptime, far above PM2's default min_uptime (1s), so they are
     // never counted as unstable restarts against max_restarts. The watchdog
     // also rate-limits itself (3 per 30 min, persisted in
-    // ~/zylos/components/lark/ws-restart-state.json).
+    // ~/zylos/components/lark/ws-restart-state.json under a lock file).
     autorestart: true,
     max_restarts: 10,
     restart_delay: 5000,

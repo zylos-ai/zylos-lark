@@ -23,6 +23,32 @@
  * - Entries with a timestamp in the future (clock stepped backwards) are
  *   counted as inside the window (conservative).
  * - Writes are atomic: temp file in the same directory, fsync, rename.
+ *
+ * Cross-process serialization: the whole acquisition transaction
+ * (read -> decide -> persist) runs under an exclusive lock file
+ * `<state file>.lock`, created with open(O_CREAT|O_EXCL) ('wx') and holding
+ * { pid, acquiredAt, token } (token = random, unique per acquisition).
+ * Without it, N processes could all read the same old ledger, all take the
+ * last slot and overwrite each other.
+ * - Acquisition is async: on EEXIST it retries after jittered setTimeout
+ *   sleeps (LOCK_RETRY_MIN_MS..LOCK_RETRY_MAX_MS) up to LOCK_TIMEOUT_MS, so the
+ *   event loop is never blocked. The critical section is a few ms of local
+ *   synchronous I/O. State is only read AFTER the lock is held.
+ * - Stale takeover only if the lock is older than LOCK_STALE_MS (mtime) AND
+ *   its holder is provably dead: parseable content with a pid for which
+ *   process.kill(pid, 0) throws ESRCH. Live pid (incl. possible pid reuse),
+ *   EPERM, or unparseable content = treated as alive -> no takeover
+ *   (fail-closed). Takeover renames the lock to a unique tombstone (atomic:
+ *   only one contender can move it); ENOENT or any rename failure -> go back
+ *   to competing from scratch. If the moved inode is not the one judged
+ *   stale, it is restored with link() and we back off. Only our own tombstone
+ *   is unlinked.
+ * - Release in `finally` on every path, and only if the lock file still
+ *   carries our token — a newer holder's lock is never removed.
+ * - Fail-closed: lock timeout or any lock error -> this restart attempt is
+ *   refused with cause 'lock-unavailable' (distinct from 'corrupt'); the
+ *   caller keeps monitoring and retries later. Nothing proceeds without the
+ *   lock.
  */
 
 import nodeFs from 'node:fs';
@@ -34,6 +60,24 @@ export const RESTART_MAX_IN_WINDOW = 3;
 /** Sliding window for RESTART_MAX_IN_WINDOW. */
 export const RESTART_WINDOW_MS = 30 * 60_000;
 export const CORRUPT_REASON = 'state-file-corrupt';
+/** Max time to wait for the cross-process lock before refusing (fail-closed). */
+export const LOCK_TIMEOUT_MS = 2_000;
+/** A lock older than this whose holder pid is dead may be taken over. */
+export const LOCK_STALE_MS = 10_000;
+export const LOCK_RETRY_MIN_MS = 5;
+export const LOCK_RETRY_MAX_MS = 25;
+/** After a lock-unavailable refusal, re-evaluate this much later. */
+export const LOCK_RETRY_AFTER_MS = 60_000;
+
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code !== 'ESRCH'; // EPERM / unknown = cannot prove dead -> alive
+  }
+}
 
 const STATE_VERSION = 1;
 
@@ -52,6 +96,8 @@ function isValidState(obj) {
  * @param {function} [opts.now]
  * @param {number} [opts.maxInWindow]
  * @param {number} [opts.windowMs]
+ * @param {number} [opts.lockTimeoutMs]
+ * @param {number} [opts.lockStaleMs]
  */
 export function createRestartGuard({
   file,
@@ -59,9 +105,19 @@ export function createRestartGuard({
   now = () => Date.now(),
   maxInWindow = RESTART_MAX_IN_WINDOW,
   windowMs = RESTART_WINDOW_MS,
+  lockTimeoutMs = LOCK_TIMEOUT_MS,
+  lockStaleMs = LOCK_STALE_MS,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  // TEST-ONLY mutation hooks (never set in production):
+  //   _lockMode: 'full' (default) | 'none' | 'write-only'
+  //   _afterRead: (async) fn run inside the transaction between read and write
+  _lockMode = 'full',
+  _afterRead = null,
 } = {}) {
   if (!file) throw new Error('restart guard: state file path required');
+  const lockFile = `${file}.lock`;
   let tmpSeq = 0;
+  let lockSeq = 0;
   /** Last successfully read/written entries (for /health). */
   let cached = [];
   /** Last load problem (null when the file was fine or missing). */
@@ -92,7 +148,11 @@ export function createRestartGuard({
       lastError = 'unexpected shape';
       return { ok: false, error: lastError };
     }
-    cached = parsed.restarts.map((r) => ({ at: r.at, reason: typeof r.reason === 'string' ? r.reason : 'unknown' }));
+    cached = parsed.restarts.map((r) => ({
+      at: r.at,
+      reason: typeof r.reason === 'string' ? r.reason : 'unknown',
+      ...(Number.isInteger(r.pid) ? { pid: r.pid } : {}),
+    }));
     lastError = null;
     return { ok: true, restarts: cached };
   }
@@ -118,6 +178,93 @@ export function createRestartGuard({
     cached = restarts;
   }
 
+  function readLock() {
+    const st = fs.statSync(lockFile);
+    let raw = null;
+    let info = null;
+    try { raw = fs.readFileSync(lockFile, 'utf8'); info = JSON.parse(raw); } catch { /* empty / partial */ }
+    return { st, raw, info };
+  }
+
+  /**
+   * Try to take over a stale lock. Returns true when the lock path was freed
+   * (by us or someone else) and the caller should re-compete immediately.
+   */
+  function breakStaleLock() {
+    let cur;
+    try { cur = readLock(); } catch (err) { return err?.code === 'ENOENT'; }
+    if (Date.now() - cur.st.mtimeMs <= lockStaleMs) return false;
+    if (!cur.info || pidAlive(cur.info.pid)) return false; // cannot prove dead
+    const tomb = `${lockFile}.stale.${process.pid}.${++lockSeq}.${Math.random().toString(36).slice(2)}`;
+    try {
+      fs.renameSync(lockFile, tomb); // atomic: only one contender moves it
+    } catch (err) {
+      return err?.code === 'ENOENT'; // gone already -> re-compete; else back off
+    }
+    // Same file we judged stale? Inode numbers are reused immediately, so
+    // also compare mtime and the exact content (tokens are unique).
+    let same = false;
+    try {
+      const moved = fs.statSync(tomb);
+      same = moved.ino === cur.st.ino && moved.mtimeMs === cur.st.mtimeMs
+        && fs.readFileSync(tomb, 'utf8') === cur.raw;
+    } catch { /* treat as not ours */ }
+    if (!same) {
+      // We moved a newer holder's lock (it replaced the stale one between our
+      // check and rename). Put it back; if that fails leave it untouched.
+      try {
+        fs.linkSync(tomb, lockFile);
+        fs.unlinkSync(tomb); // lock still reachable via lockFile
+      } catch { /* leave the newer holder's file alone */ }
+      return false;
+    }
+    try { fs.unlinkSync(tomb); } catch { /* ignore */ } // our own tombstone
+    return true;
+  }
+
+  /** Acquire the exclusive lock or throw (fail-closed). Resolves to our token. */
+  async function acquireLock() {
+    const token = `${process.pid}.${Date.now()}.${++lockSeq}.${Math.random().toString(36).slice(2)}`;
+    const body = JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString(), token });
+    const deadline = Date.now() + lockTimeoutMs;
+    for (;;) {
+      let fd = null;
+      try {
+        fd = fs.openSync(lockFile, 'wx', 0o600);
+      } catch (err) {
+        if (err?.code !== 'EEXIST') throw err;
+      }
+      if (fd !== null) {
+        try {
+          fs.writeSync(fd, body);
+          fs.fsyncSync(fd);
+          fs.closeSync(fd);
+        } catch (err) {
+          try { fs.closeSync(fd); } catch { /* ignore */ }
+          try { fs.unlinkSync(lockFile); } catch { /* ours: created by this O_EXCL open */ }
+          throw err;
+        }
+        return token;
+      }
+      if (breakStaleLock()) continue;
+      if (Date.now() >= deadline) {
+        const e = new Error(`lock busy for ${lockTimeoutMs}ms`);
+        e.code = 'ELOCKTIMEOUT';
+        throw e;
+      }
+      await sleep(LOCK_RETRY_MIN_MS + Math.random() * (LOCK_RETRY_MAX_MS - LOCK_RETRY_MIN_MS));
+    }
+  }
+
+  /** Remove the lock only if it is still ours (token match). */
+  function releaseLock(token) {
+    if (!token) return;
+    try {
+      const info = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+      if (info?.token === token) fs.unlinkSync(lockFile);
+    } catch { /* not ours / already gone */ }
+  }
+
   function inWindow(restarts, t = now()) {
     return restarts.filter((r) => t - r.at < windowMs).sort((a, b) => a.at - b.at);
   }
@@ -127,9 +274,40 @@ export function createRestartGuard({
    * @returns {{ allowed: true, restartsInWindow: number }
    *   | { allowed: false, cause: 'rate-limited'|'corrupt'|'write-failed', detail: string, retryAt: number, restartsInWindow: number|null }}
    */
-  function tryAcquire(reason) {
+  async function tryAcquire(reason) {
+    const lockUnavailable = (err) => ({
+      allowed: false,
+      cause: 'lock-unavailable',
+      detail: `cannot lock restart state: ${err?.code === 'ELOCKTIMEOUT' ? err.message : err?.code || err?.message || 'error'}`,
+      retryAt: now() + LOCK_RETRY_AFTER_MS,
+      restartsInWindow: null,
+    });
+    let token = null;
+    try {
+      if (_lockMode === 'full') token = await acquireLock();
+    } catch (err) {
+      return lockUnavailable(err);
+    }
+    try {
+      return await acquireLocked(reason);
+    } catch (err) {
+      return {
+        allowed: false,
+        cause: 'guard-error',
+        detail: `restart guard error: ${err?.message || err}`,
+        retryAt: now() + LOCK_RETRY_AFTER_MS,
+        restartsInWindow: null,
+      };
+    } finally {
+      releaseLock(token);
+    }
+  }
+
+  /** read -> decide -> persist; must run under the lock. */
+  async function acquireLocked(reason) {
     const t = now();
     const loaded = load();
+    if (_afterRead) await _afterRead();
     if (!loaded.ok) {
       let healed = false;
       try {
@@ -156,8 +334,10 @@ export function createRestartGuard({
         restartsInWindow: recent.length,
       };
     }
+    let wToken = null;
     try {
-      write([...recent, { at: t, reason }]);
+      if (_lockMode === 'write-only') wToken = await acquireLock();
+      write([...recent, { at: t, reason, pid: process.pid }]);
     } catch (err) {
       return {
         allowed: false,
@@ -166,6 +346,8 @@ export function createRestartGuard({
         retryAt: t + windowMs,
         restartsInWindow: recent.length,
       };
+    } finally {
+      releaseLock(wToken);
     }
     return { allowed: true, restartsInWindow: recent.length + 1 };
   }
@@ -182,5 +364,5 @@ export function createRestartGuard({
     };
   }
 
-  return { load, tryAcquire, snapshot, file, maxInWindow, windowMs };
+  return { load, tryAcquire, snapshot, file, lockFile, maxInWindow, windowMs };
 }
