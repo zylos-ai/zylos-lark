@@ -352,39 +352,67 @@ The transport:
   instance, so genuine contention is essentially nil, while every auto-break
   scheme we tried (rename-then-verify, link restore) opened worse failure
   modes (a live holder losing its lock while a third process also enters the
-  critical section). The holder is therefore only *classified for reporting*:
-  `held-by-live-pid` (`kill(pid, 0)` succeeds or EPERM), `held-by-dead-pid`
-  (explicit ESRCH), `unknown-owner` (missing/invalid pid, empty or
-  unparseable file, read/stat error such as EACCES).
+  critical section). The lock is therefore only *observed for reporting*
+  (`lstat` + read, never unlink/rename/link of a lock we do not own):
+  `free`; `held-by-live-pid` (`kill(pid, 0)` succeeds or EPERM);
+  `held-by-dead-pid` (explicit ESRCH); `unknown-owner` (a lock entry exists
+  but has no valid pid, is empty/unparseable, or cannot be read);
+  `path-error` (no lock entry can exist or be inspected: data dir missing,
+  a path component is not a directory, or the dir is not accessible).
+- **Lock init failure:** if writing our content fails right after the
+  `O_EXCL` create, the lock is *not* unlinked by path (the pathname may
+  already belong to another process; an fd-vs-path identity check is not
+  robust against every race). The attempt fails closed and the leftover is
+  reported like any other blocking lock (usually `unknown-owner`,
+  `error=empty`).
 - **Permanently blocked states** (restarts stay refused until an operator
-  acts): an empty lock left by a crash between create and write
-  (`unknown-owner`, `error=empty`); a lock whose owner died
+  acts): an empty lock left by a crash between create and write, or by a lock
+  init failure (`unknown-owner`, `error=empty`); a lock whose owner died
   (`held-by-dead-pid`); a lock whose dead owner's pid was reused by an
-  unrelated live process (`held-by-live-pid`); an unreadable lock path
-  (`unknown-owner`, `error=EACCES` etc.).
+  unrelated live process (`held-by-live-pid`); an unreadable lock
+  (`unknown-owner`, `error=EACCES`); a broken data dir (`path-error`).
 - **Detection:** at startup (a restarted process re-detects a leftover lock
-  immediately), on a refused restart, and on every watchdog tick while
-  blocked. ERROR lines — `ws restart lock present at startup -> watchdog
-  restarts BLOCKED`, `ws half-open detected ... -> process restart DEFERRED
+  immediately) and on every watchdog tick (one `lstat`, 10s), plus on a
+  refused restart. ERROR lines — `ws restart lock present at startup ->
+  watchdog restarts BLOCKED`, `ws restart lock held -> watchdog restarts
+  BLOCKED`, `ws half-open detected ... -> process restart DEFERRED
   (lock-unavailable: ...)`, `ws watchdog restarts STILL BLOCKED for <n>m`,
   `ws restart lock holder changed` — carry
   `lock <path> state=<state> pid=<pid> age=<s>s [error=<code>]` and the
   recovery hint. Cadence within one episode: immediately, then after 5, 30 and
-  60 minutes, then hourly; a changed holder/state logs at once and restarts
-  the cadence. When the lock disappears (or is acquired) exactly one
+  60 minutes, then hourly; a changed holder/state/error logs at once and
+  restarts the cadence. When the lock disappears (or is acquired) exactly one
   `ws restart lock released after <n>m ...; watchdog restarts re-enabled`
-  line is logged. `/health` reports the current observation: `lockPath`,
-  `lockState` (`free` | `held-by-live-pid` | `held-by-dead-pid` |
-  `unknown-owner`), `lockAgeSec`, `lockOwnerPid`, `lockError`
-  (`ENOENT-during-read`, `EACCES`, `empty`, ...), `restartBlockedSince`,
-  `recoveryHint`. Lock tokens are never logged or exposed.
-- **Manual recovery** (same wording as the log/health hint): *verify the
-  holder first: `ps -p <pid>` shows that pid is not a running zylos-lark
-  process (or the lock names no valid owner pid) and `pm2 ls` shows no second
-  zylos-lark instance; only then remove
-  `~/zylos/components/lark/ws-restart-state.json.lock` manually to re-enable
-  watchdog restarts.* No service restart is needed; the next watchdog tick
-  logs the release.
+  line is logged.
+- **`/health`** derives every lock field from ONE fresh observation per
+  request: `lockPath`, `lockState`, `lockAgeSec`, `lockOwnerPid`, `lockError`
+  (`ENOENT-during-read`, `ENOENT-parent`, `ENOTDIR`, `EACCES`, `EPERM`,
+  `empty`, `unparseable`, ...), `restartSuppressed` /
+  `restartSuppressedReason` (`lock-unavailable` whenever the lock is not
+  free), `recoveryHint`, and `restartBlockedSince` (start of the tracked
+  episode; null when free, or until the next tick registers a just-appeared
+  lock). The tick-tracked episode is exposed separately as
+  `lastBlockedEpisode` `{since, lastLoggedAt, logCount, endedAt}`. Lock
+  tokens are never logged or exposed.
+- **Manual recovery** — the hint is specific to the observed state (same
+  wording in logs and `/health`):
+  - lock entry observed (`held-by-*`, `unknown-owner` with readable
+    content): *verify the holder first: `ps -p <pid>` shows that pid is not a
+    running zylos-lark process (or: the lock names no valid owner pid) and
+    `pm2 ls` shows no second zylos-lark instance; only then remove
+    `<data dir>/ws-restart-state.json.lock` manually to re-enable watchdog
+    restarts.*
+  - lock observed but unreadable (`EACCES`/`EPERM` on read): *restore read
+    access to `<lock path>` for the zylos-lark user, then re-check.*
+  - `path-error` `ENOTDIR`: *the data directory path is invalid (`<dir>` or
+    one of its parents is not a directory); fix or recreate the component data
+    dir `<dir>`, no lock file exists to remove.*
+  - `path-error` `ENOENT-parent`: *the data directory `<dir>` does not exist;
+    recreate the component data dir (owned by the zylos-lark user), no lock
+    file exists to remove.*
+  - `path-error` `EACCES`/`EPERM`: *restore access to `<dir>` for the
+    zylos-lark user (read + search, and write for restarts), then re-check.*
+  No service restart is needed; the next watchdog tick logs the release.
 - PM2: watchdog exits happen only after >= one full pong timeout of uptime, so
   they never count as unstable restarts (`min_uptime` default 1s) toward
   `max_restarts: 10`.

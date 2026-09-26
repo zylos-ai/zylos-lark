@@ -241,6 +241,49 @@ test('release on every path, only our own lock', async () => {
     assert.equal(fs.readFileSync(`${file}.lock`, 'utf8'), foreign, "a lock that is not ours is left alone");
     assert.deepEqual(leftovers(dir), ['ws-restart-state.json.lock']);
   }
+  // lock init failure after a successful O_EXCL create: the pathname was
+  // replaced by another process before our write -> fail closed and the
+  // replacement lock is NOT deleted
+  {
+    const { dir, file } = mk();
+    const lock = `${file}.lock`;
+    const foreign = JSON.stringify({ pid: 424242, token: 'FOREIGN' });
+    let injected = false;
+    const swapFs = {
+      ...fs,
+      writeSync: (fd, ...a) => {
+        if (!injected) {
+          injected = true;
+          fs.unlinkSync(lock);
+          fs.writeFileSync(lock, foreign); // someone else now owns the path
+          const e = new Error('EIO'); e.code = 'EIO'; throw e;
+        }
+        return fs.writeSync(fd, ...a);
+      },
+    };
+    const v = await createRestartGuard({ file, fs: swapFs, lockTimeoutMs: 50 }).tryAcquire('r');
+    assert.equal(v.allowed, false);
+    assert.equal(v.cause, 'lock-unavailable');
+    assert.match(v.detail, /EIO/);
+    assert.equal(fs.readFileSync(lock, 'utf8'), foreign, 'replacement lock left intact');
+    assert.equal(fs.existsSync(file), false, 'ledger not touched');
+    assert.deepEqual(leftovers(dir), ['ws-restart-state.json.lock']);
+  }
+  // lock init failure without a replacement: our partial (empty) lock stays
+  // in place (fail-closed) and is reported as unknown-owner/empty
+  {
+    const { file } = mk();
+    const lock = `${file}.lock`;
+    const eioFs = { ...fs, fsyncSync: () => { const e = new Error('EIO'); e.code = 'EIO'; throw e; } };
+    const g = createRestartGuard({ file, fs: eioFs, lockTimeoutMs: 50 });
+    const v = await g.tryAcquire('r');
+    assert.equal(v.cause, 'lock-unavailable');
+    assert.ok(fs.existsSync(lock), 'not unlinked by path');
+    const obs = g.inspectLock();
+    assert.equal(obs.lockState, 'held-by-live-pid', 'content was written before fsync failed');
+    const g2 = createRestartGuard({ file, lockTimeoutMs: 50 });
+    assert.equal((await g2.tryAcquire('r')).cause, 'lock-unavailable', 'stays blocked until manual recovery');
+  }
   // lock file cannot be created at all -> fail-closed, distinct cause
   {
     const { file } = mk();

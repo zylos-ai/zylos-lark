@@ -34,7 +34,7 @@ import {
   RESTART_MAX_IN_WINDOW,
   RESTART_WINDOW_MS,
 } from '../src/lib/transport/websocket.js';
-import { createRestartGuard, CORRUPT_REASON } from '../src/lib/transport/restart-guard.js';
+import { createRestartGuard, lockRecoveryHint, CORRUPT_REASON } from '../src/lib/transport/restart-guard.js';
 
 const INTERVAL = DEFAULT_PING_INTERVAL_MS; // 120s
 const TIMEOUT = 3 * INTERVAL; // 360s
@@ -391,8 +391,14 @@ test('state dir unwritable -> restart refused (an unrecorded restart would escap
   assert.equal(env.exits.length, 0);
   assert.equal(halfOpenErrors(env).length, 1);
   // The lock file cannot even be created -> fail-closed as lock-unavailable.
-  assert.ok(env.log.lines.error.some((l) => /restart lock present at startup -> watchdog restarts BLOCKED; lock .* state=unknown-owner pid=unknown age=\?s error=ENOTDIR/.test(l)));
-  assert.match(halfOpenErrors(env)[0], /process restart DEFERRED \(lock-unavailable: cannot lock restart state: ENOTDIR \(unknown-owner, pid unknown, age \?s\)\); blocked for \d+m; lock .* state=unknown-owner .*error=ENOTDIR/);
+  const startupLine = env.log.lines.error.find((l) => l.includes('present at startup'));
+  assert.match(startupLine, /restart lock present at startup -> watchdog restarts BLOCKED; lock .* state=path-error pid=unknown age=\?s error=ENOTDIR; recovery: the data directory path is invalid \(.*\/file or one of its parents is not a directory\); fix or recreate the component data dir .*\/file, no lock file exists to remove$/);
+  assert.doesNotMatch(startupLine, /remove .*\.lock/);
+  assert.match(halfOpenErrors(env)[0], /process restart DEFERRED \(lock-unavailable: cannot lock restart state: ENOTDIR \(path-error, pid unknown, age \?s\)\); blocked for \d+m; lock .* state=path-error .*error=ENOTDIR/);
+  const h = env.tr.getConnectionState();
+  assert.equal(h.lockState, 'path-error');
+  assert.equal(h.lockError, 'ENOTDIR');
+  assert.match(h.recoveryHint, /^the data directory path is invalid/);
   assert.doesNotMatch(halfOpenErrors(env)[0], /corrupt/);
   assert.equal(env.tr.getConnectionState().restartSuppressed, true);
   await env.clock.advance(3 * RESTART_WINDOW_MS);
@@ -504,20 +510,24 @@ test('blocked lock found at startup: immediate ERROR with path/owner/safe hint, 
   assert.ok(!all.includes('SECRET'), 'lock token never logged or exposed');
 });
 
-test('blocked lock appearing at half-open: first line is DEFERRED with diagnosis; new process re-detects it at once', async () => {
+test('blocked lock appearing at runtime: next tick alerts, half-open refusal adds DEFERRED; new process re-detects it at once', async () => {
   const stateFile = tmpStateFile();
   const lock = `${stateFile}.lock`;
   const env = await setup({ stateFile, guardOptions: { lockTimeoutMs: 0 } });
   assert.equal(blockedLines(env).length, 0);
   assert.equal(env.tr.getConnectionState().lockState, 'free');
-  fs.writeFileSync(lock, ''); // e.g. crash between create and write
   await env.client().pong();
-  await env.clock.advance(TIMEOUT + WATCHDOG_TICK_MS);
+  fs.writeFileSync(lock, ''); // e.g. crash between create and write
+  await env.clock.advance(WATCHDOG_TICK_MS);
   assert.equal(blockedLines(env).length, 1);
-  assert.match(blockedLines(env)[0], new RegExp(`-> process restart DEFERRED \\(lock-unavailable: .*\\(unknown-owner, pid unknown, age \\d+s\\)\\); lock ${esc(lock)} state=unknown-owner pid=unknown age=\\d+s error=empty; monitoring continues, retrying every 60s; recovery: verify the holder first: the lock names no valid owner pid and \`pm2 ls\` shows no second zylos-lark instance; only then remove ${esc(lock)} manually`));
+  assert.equal(blockedLines(env)[0], `[lark] ws restart lock held -> watchdog restarts BLOCKED; lock ${lock} state=unknown-owner pid=unknown age=0s error=empty; recovery: verify the holder first: the lock names no valid owner pid and \`pm2 ls\` shows no second zylos-lark instance; only then remove ${lock} manually to re-enable watchdog restarts`);
+  await env.clock.advance(TIMEOUT);
+  assert.equal(blockedLines(env).length, 3, '5m repeat + DEFERRED');
+  assert.match(blockedLines(env)[2], new RegExp(`-> process restart DEFERRED \\(lock-unavailable: .*\\(unknown-owner, pid unknown, age \\d+s\\)\\); blocked for 6m; lock ${esc(lock)} state=unknown-owner pid=unknown age=\\d+s error=empty; recovery: verify the holder first: the lock names no valid owner pid`));
   const h = env.tr.getConnectionState();
   assert.equal(h.lockState, 'unknown-owner');
   assert.equal(h.lockError, 'empty');
+  assert.equal(env.exits.length, 0);
   env.tr.stop();
 
   // "process restart": in-memory counters are gone, the lock is not
@@ -528,25 +538,98 @@ test('blocked lock appearing at half-open: first line is DEFERRED with diagnosis
   env2.tr.stop();
 });
 
-test('inspectLock distinguishes absent, released-during-read and permission errors', () => {
+test('inspectLock + hints: free, released-during-read, path errors (ENOTDIR / missing dir / EACCES), unreadable lock, observed lock', () => {
   const stateFile = tmpStateFile();
+  const dir = path.dirname(stateFile);
   const lock = `${stateFile}.lock`;
-  const mkFs = (over) => ({ ...fs, ...over });
   const err = (code) => { const e = new Error(code); e.code = code; return e; };
-  const g = (over) => createRestartGuard({ file: stateFile, fs: mkFs(over) }).inspectLock();
-  assert.deepEqual(g({}), { lockPath: lock, lockState: 'free', lockOwnerPid: null, lockAgeSec: null, lockError: null });
-  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, token: 't' }));
-  assert.deepEqual(g({ readFileSync: (p, ...a) => { if (p === lock) throw err('ENOENT'); return fs.readFileSync(p, ...a); } }),
-    { lockPath: lock, lockState: 'free', lockOwnerPid: null, lockAgeSec: null, lockError: 'ENOENT-during-read' });
-  const acc = g({ readFileSync: (p, ...a) => { if (p === lock) throw err('EACCES'); return fs.readFileSync(p, ...a); } });
-  assert.equal(acc.lockState, 'unknown-owner');
-  assert.equal(acc.lockError, 'EACCES');
-  const perm = g({ statSync: (p, ...a) => { if (p === lock) throw err('EPERM'); return fs.statSync(p, ...a); } });
-  assert.deepEqual(perm, { lockPath: lock, lockState: 'unknown-owner', lockOwnerPid: null, lockAgeSec: null, lockError: 'EPERM' });
-  const ok = g({});
+  const g = (over = {}, file = stateFile) => createRestartGuard({ file, fs: { ...fs, ...over } }).inspectLock();
+  const base = { lockPath: lock, lockOwnerPid: null, lockAgeSec: null };
+
+  // free
+  assert.deepEqual(g(), { ...base, lockState: 'free', lockError: null });
+  assert.equal(lockRecoveryHint(g()), null);
+
+  // data dir missing
+  const gone = path.join(dir, 'missing', 'ws-restart-state.json');
+  const miss = g({}, gone);
+  assert.deepEqual(miss, { ...base, lockPath: `${gone}.lock`, lockState: 'path-error', lockError: 'ENOENT-parent' });
+  assert.equal(lockRecoveryHint(miss), `the data directory ${path.dirname(gone)} does not exist; recreate the component data dir (owned by the zylos-lark user), no lock file exists to remove`);
+
+  // parent is a regular file (real ENOTDIR)
+  const f = path.join(dir, 'plainfile'); fs.writeFileSync(f, 'x');
+  const nd = g({}, path.join(f, 'ws-restart-state.json'));
+  assert.equal(nd.lockState, 'path-error');
+  assert.equal(nd.lockError, 'ENOTDIR');
+  assert.equal(lockRecoveryHint(nd), `the data directory path is invalid (${f} or one of its parents is not a directory); fix or recreate the component data dir ${f}, no lock file exists to remove`);
+
+  // directory not searchable (simulated EACCES / EPERM on lstat)
+  for (const code of ['EACCES', 'EPERM']) {
+    const pe = g({ lstatSync: (p, ...a) => { if (p === lock) throw err(code); return fs.lstatSync(p, ...a); } });
+    assert.deepEqual(pe, { ...base, lockState: 'path-error', lockError: code });
+    assert.equal(lockRecoveryHint(pe), `restore access to ${dir} for the zylos-lark user (read + search, and write for restarts), then re-check`);
+  }
+
+  // an observed lock entry
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, token: 'tok-secret' }));
+  // released between lstat and read -> free
+  const rel = g({ readFileSync: (p, ...a) => { if (p === lock) throw err('ENOENT'); return fs.readFileSync(p, ...a); } });
+  assert.deepEqual(rel, { ...base, lockState: 'free', lockError: 'ENOENT-during-read' });
+  assert.equal(lockRecoveryHint(rel), null);
+  // observed but unreadable (simulated EACCES on read)
+  const ur = g({ readFileSync: (p, ...a) => { if (p === lock) throw err('EACCES'); return fs.readFileSync(p, ...a); } });
+  assert.equal(ur.lockState, 'unknown-owner');
+  assert.equal(ur.lockError, 'EACCES');
+  assert.equal(typeof ur.lockAgeSec, 'number');
+  assert.equal(lockRecoveryHint(ur), `restore read access to ${lock} for the zylos-lark user, then re-check`);
+  // observed + readable -> ownership-safe delete advice
+  const ok = g();
   assert.equal(ok.lockState, 'held-by-live-pid');
   assert.equal(ok.lockOwnerPid, process.pid);
-  assert.ok(!JSON.stringify(ok).includes('"t"'), 'token not exposed');
+  assert.equal(lockRecoveryHint(ok), `verify the holder first: \`ps -p ${process.pid}\` shows that pid is not a running zylos-lark process and \`pm2 ls\` shows no second zylos-lark instance; only then remove ${lock} manually to re-enable watchdog restarts`);
+  fs.writeFileSync(lock, '');
+  assert.equal(lockRecoveryHint(g()), `verify the holder first: the lock names no valid owner pid and \`pm2 ls\` shows no second zylos-lark instance; only then remove ${lock} manually to re-enable watchdog restarts`);
+  assert.ok(!JSON.stringify(ok).includes('tok-secret'));
+});
+
+test('health is one consistent lock snapshot even between ticks (lock appears / disappears)', async () => {
+  const stateFile = tmpStateFile();
+  const lock = `${stateFile}.lock`;
+  const env = await setup({ stateFile, guardOptions: { lockTimeoutMs: 0 } });
+  const t0 = env.clock.now();
+  await env.clock.advance(1_000); // mid-tick
+
+  // appears between ticks: suppressed + hint + state agree, episode not yet registered
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, token: 'x' }));
+  let h = env.tr.getConnectionState();
+  assert.equal(h.lockState, 'held-by-live-pid');
+  assert.equal(h.restartSuppressed, true);
+  assert.equal(h.restartSuppressedReason, 'lock-unavailable');
+  assert.match(h.recoveryHint, new RegExp(`ps -p ${process.pid}`));
+  assert.equal(h.restartBlockedSince, null, 'episode registered at the next tick');
+  assert.equal(h.lastBlockedEpisode, null);
+
+  await env.clock.advance(WATCHDOG_TICK_MS); // tick registers the episode
+  h = env.tr.getConnectionState();
+  assert.equal(h.restartBlockedSince, new Date(t0 + WATCHDOG_TICK_MS).toISOString(), 'registered by this tick');
+  assert.deepEqual(h.lastBlockedEpisode, { since: h.restartBlockedSince, lastLoggedAt: h.restartBlockedSince, logCount: 1, endedAt: null });
+  assert.ok(env.log.lines.error.some((l) => l.startsWith('[lark] ws restart lock held -> watchdog restarts BLOCKED; ')), 'alerted without any restart attempt');
+
+  // disappears between ticks: suppressed false, no hint, no blocked-since — before the tick notices
+  fs.unlinkSync(lock);
+  h = env.tr.getConnectionState();
+  assert.equal(h.lockState, 'free');
+  assert.equal(h.restartSuppressed, false);
+  assert.equal(h.restartSuppressedReason, null);
+  assert.equal(h.recoveryHint, null);
+  assert.equal(h.restartBlockedSince, null);
+  assert.equal(h.lastBlockedEpisode.endedAt, null, 'episode view still open until the next tick');
+
+  await env.clock.advance(WATCHDOG_TICK_MS);
+  h = env.tr.getConnectionState();
+  assert.ok(h.lastBlockedEpisode.endedAt, 'episode closed by the tick');
+  assert.equal(env.log.lines.log.filter((l) => l.includes('restart lock released')).length, 1);
+  env.tr.stop();
 });
 
 test('atomic write: same-dir temp file, fsync, rename; no temp left behind', async () => {
@@ -667,7 +750,7 @@ test('health fields present and no ws url is ever logged', async () => {
   const s0 = env.tr.getConnectionState();
   assert.deepEqual(Object.keys(s0).sort(), [
     'connected', 'connectedSince', 'lastPongAgeSec', 'lastPongAt', 'lastRestartAt', 'lastRestartReason',
-    'lockAgeSec', 'lockError', 'lockOwnerPid', 'lockPath', 'lockState',
+    'lastBlockedEpisode', 'lockAgeSec', 'lockError', 'lockOwnerPid', 'lockPath', 'lockState',
     'pongCount', 'recoveryHint', 'restartBlockedSince', 'restartPending', 'restartSuppressed', 'restartSuppressedReason', 'restartsInWindow',
   ].sort());
   assert.equal(s0.lockPath, `${env.stateFile}.lock`);
@@ -675,6 +758,7 @@ test('health fields present and no ws url is ever logged', async () => {
   assert.equal(s0.lockAgeSec, null);
   assert.equal(s0.lockOwnerPid, null);
   assert.equal(s0.lockError, null);
+  assert.equal(s0.lastBlockedEpisode, null);
   assert.equal(s0.restartBlockedSince, null);
   assert.equal(s0.recoveryHint, null);
   assert.equal(s0.connected, true);

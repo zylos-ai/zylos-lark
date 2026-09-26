@@ -49,6 +49,13 @@
  *   it. inspectLock() classifies the holder FOR REPORTING ONLY
  *   (held-by-live-pid | held-by-dead-pid | unknown-owner) so logs and
  *   /health can show the lock path, owner pid, age and a recovery hint.
+ *   Path-level problems (data dir missing / not a directory / not
+ *   accessible) are reported as 'path-error' with a path-specific hint —
+ *   never as a lock to delete.
+ * - If writing our lock content fails right after the O_EXCL create, the
+ *   lock is NOT unlinked by path (the pathname may already belong to someone
+ *   else); the attempt fails closed and the leftover is reported like any
+ *   other blocking lock.
  */
 
 import nodeFs from 'node:fs';
@@ -84,12 +91,35 @@ export function classifyLockOwner(pid) {
 }
 
 /**
- * Ownership-safe manual recovery instruction (never an unconditional rm).
+ * Actionable, error-specific manual recovery instruction for a lock
+ * observation (from inspectLock). Returns null when the lock is free.
+ * Only an actually observed lock entry gets the (ownership-safe) delete
+ * advice; path-level problems get path fixes. Never an unconditional rm.
  * Keep in sync with DESIGN.md §5.2.1.
  */
-export function lockRecoveryHint(lockFile, ownerPid = null) {
-  const pidCheck = ownerPid ? `\`ps -p ${ownerPid}\` shows that pid is not a running zylos-lark process` : 'the lock names no valid owner pid';
-  return `verify the holder first: ${pidCheck} and \`pm2 ls\` shows no second zylos-lark instance; only then remove ${lockFile} manually to re-enable watchdog restarts`;
+export function lockRecoveryHint(obs) {
+  if (!obs || obs.lockState === 'free') return null;
+  const dir = path.dirname(obs.lockPath);
+  const code = obs.lockError;
+  if (obs.lockState === 'path-error') {
+    if (code === 'ENOTDIR') {
+      return `the data directory path is invalid (${dir} or one of its parents is not a directory); fix or recreate the component data dir ${dir}, no lock file exists to remove`;
+    }
+    if (code === 'ENOENT-parent') {
+      return `the data directory ${dir} does not exist; recreate the component data dir (owned by the zylos-lark user), no lock file exists to remove`;
+    }
+    if (code === 'EACCES' || code === 'EPERM') {
+      return `restore access to ${dir} for the zylos-lark user (read + search, and write for restarts), then re-check`;
+    }
+    return `cannot inspect ${obs.lockPath} (${code}); check the component data dir ${dir}`;
+  }
+  if (code === 'EACCES' || code === 'EPERM') {
+    return `restore read access to ${obs.lockPath} for the zylos-lark user, then re-check`;
+  }
+  const pidCheck = obs.lockOwnerPid
+    ? `\`ps -p ${obs.lockOwnerPid}\` shows that pid is not a running zylos-lark process`
+    : 'the lock names no valid owner pid';
+  return `verify the holder first: ${pidCheck} and \`pm2 ls\` shows no second zylos-lark instance; only then remove ${obs.lockPath} manually to re-enable watchdog restarts`;
 }
 
 const STATE_VERSION = 1;
@@ -191,26 +221,31 @@ export function createRestartGuard({
 
   /**
    * Best-effort description of the current lock holder. REPORTING ONLY.
-   * @returns {{ lockPath: string, lockState: 'free'|'held-by-live-pid'|'held-by-dead-pid'|'unknown-owner', lockOwnerPid: number|null, lockAgeSec: number|null }}
+   * @returns {{ lockPath: string, lockState: 'free'|'held-by-live-pid'|'held-by-dead-pid'|'unknown-owner'|'path-error', lockOwnerPid: number|null, lockAgeSec: number|null, lockError: string|null }}
    */
   function inspectLock() {
     const res = { lockPath: lockFile, lockState: 'free', lockOwnerPid: null, lockAgeSec: null, lockError: null };
+    const pathError = (code) => ({ ...res, lockState: 'path-error', lockError: code || 'stat-error' });
     let st;
     try {
-      st = fs.statSync(lockFile);
+      st = fs.lstatSync(lockFile);
     } catch (err) {
-      if (err?.code !== 'ENOENT') { // absent = free; anything else = cannot tell
-        res.lockState = 'unknown-owner';
-        res.lockError = err?.code || 'stat-error';
+      if (err?.code !== 'ENOENT') return pathError(err?.code); // ENOTDIR, EACCES, ...
+      // Absent. Is that because the data dir itself is missing / not a dir?
+      try {
+        if (!fs.statSync(path.dirname(lockFile)).isDirectory()) return pathError('ENOTDIR');
+      } catch (e2) {
+        return pathError(e2?.code === 'ENOENT' ? 'ENOENT-parent' : e2?.code);
       }
-      return res;
+      return res; // truly free
     }
+    // A lock entry was observed.
     res.lockAgeSec = Math.max(0, Math.round((Date.now() - st.mtimeMs) / 1000));
     let raw;
     try {
       raw = fs.readFileSync(lockFile, 'utf8');
     } catch (err) {
-      if (err?.code === 'ENOENT') { // released between stat and read
+      if (err?.code === 'ENOENT') { // released between lstat and read
         return { ...res, lockAgeSec: null, lockError: 'ENOENT-during-read' };
       }
       return { ...res, lockState: 'unknown-owner', lockError: err?.code || 'read-error' };
@@ -242,8 +277,13 @@ export function createRestartGuard({
           fs.fsyncSync(fd);
           fs.closeSync(fd);
         } catch (err) {
+          // Fail closed WITHOUT unlinking by path: the pathname may no longer
+          // be the file we created (replaced by another process), and an
+          // fd-vs-path identity check is not robust against every race. The
+          // partial lock stays and is reported (unknown-owner / empty) with
+          // the manual recovery surface.
           try { fs.closeSync(fd); } catch { /* ignore */ }
-          try { fs.unlinkSync(lockFile); } catch { /* ours: created by this O_EXCL open */ }
+          err.lockInitFailed = true;
           throw err;
         }
         return token;

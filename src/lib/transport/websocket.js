@@ -186,6 +186,8 @@ export function createWebSocketTransport(deps = {}) {
     acquiring: false,
     /** Restarts blocked by an unavailable lock: { since, logs } | null */
     lockBlock: null,
+    /** Last finished blocked-lock episode (for /health). */
+    lastBlockedEpisode: null,
     exited: false,
   };
 
@@ -355,10 +357,10 @@ export function createWebSocketTransport(deps = {}) {
    */
   function noteLockBlocked(lock, { head = null, detail = null, startup = false } = {}) {
     const t = now();
-    const hint = `recovery: ${lockRecoveryHint(lock.lockPath, lock.lockOwnerPid)}`;
+    const hint = `recovery: ${lockRecoveryHint(lock)}`;
     const lb = state.lockBlock;
     if (!lb) {
-      state.lockBlock = { since: t, cadenceStart: t, logs: 1, key: lockKey(lock), deferredLogged: !!head };
+      state.lockBlock = { since: t, cadenceStart: t, logs: 1, lastLoggedAt: t, key: lockKey(lock), deferredLogged: !!head };
       if (head) {
         log.error(`${head} -> process restart DEFERRED (lock-unavailable: ${detail}); ${describeLock(lock)}; monitoring continues, retrying every ${sec(LOCK_RETRY_AFTER_MS)}s; ${hint}`);
       } else {
@@ -370,30 +372,47 @@ export function createWebSocketTransport(deps = {}) {
       lb.key = lockKey(lock);
       lb.cadenceStart = t;
       lb.logs = 1;
+      lb.lastLoggedAt = t;
       log.error(`[lark] ws restart lock holder changed -> watchdog restarts still BLOCKED (for ${mins(t - lb.since)}m); ${describeLock(lock)}; ${hint}`);
       return;
     }
     if (head && !lb.deferredLogged) {
       lb.deferredLogged = true;
+      lb.lastLoggedAt = t;
       log.error(`${head} -> process restart DEFERRED (lock-unavailable: ${detail}); blocked for ${mins(t - lb.since)}m; ${describeLock(lock)}; ${hint}`);
       return;
     }
     if (t - lb.cadenceStart >= lockBlockedLogDueMs(lb.logs)) {
       lb.logs++;
+      lb.lastLoggedAt = t;
       log.error(`[lark] ws watchdog restarts STILL BLOCKED for ${mins(t - lb.since)}m; ${describeLock(lock)}; ${hint}`);
     }
+  }
+
+  function episodeView(lb) {
+    return {
+      since: new Date(lb.since).toISOString(),
+      lastLoggedAt: new Date(lb.lastLoggedAt).toISOString(),
+      logCount: lb.logs,
+      endedAt: null,
+    };
   }
 
   function clearLockBlock(how) {
     if (!state.lockBlock) return;
     log.log(`[lark] ws restart lock released after ${mins(now() - state.lockBlock.since)}m (${how}); watchdog restarts re-enabled`);
+    state.lastBlockedEpisode = { ...episodeView(state.lockBlock), endedAt: new Date(now()).toISOString() };
     state.lockBlock = null;
     if (state.suppression?.cause === 'lock-unavailable') state.suppression = null;
   }
 
-  /** Called every tick while blocked: follow the CURRENT lock observation. */
+  /**
+   * Called every tick: follow the CURRENT lock observation (one lstat). A
+   * lock seen at tick time is never our own: ours lives only within a single
+   * macrotask of tryAcquire (create -> read/decide/write -> release, no timer
+   * in between), so any non-free state at a tick means restarts are blocked.
+   */
   function watchLock() {
-    if (!state.lockBlock) return;
     const lock = guard.inspectLock();
     if (lock.lockState === 'free') clearLockBlock(`lock ${lock.lockPath} gone`);
     else noteLockBlocked(lock);
@@ -527,11 +546,18 @@ export function createWebSocketTransport(deps = {}) {
     if (closeClient()) log.log('[lark] WebSocket client stopped');
   }
 
-  /** Current connection state for /health endpoint. */
+  /**
+   * Current connection state for /health endpoint. All lock-related fields
+   * derive from ONE fresh lock observation taken here; the tick-tracked
+   * episode is exposed separately (lastBlockedEpisode).
+   */
   function getState() {
     const age = state.lastPongAt ? now() - state.lastPongAt : null;
     const snap = guard.snapshot();
     const lock = guard.inspectLock();
+    const blocked = lock.lockState !== 'free';
+    // A stale 'lock-unavailable' suppression is not reported once the lock is free.
+    const otherSuppression = state.suppression && state.suppression.cause !== 'lock-unavailable' ? state.suppression : null;
     return {
       connected: state.connected,
       connectedSince: state.connectedSince,
@@ -539,8 +565,8 @@ export function createWebSocketTransport(deps = {}) {
       lastPongAgeSec: age == null ? null : sec(age),
       pongCount: state.pongCount,
       restartPending: state.restartPending,
-      restartSuppressed: !!state.suppression || !!state.lockBlock,
-      restartSuppressedReason: state.suppression ? state.suppression.cause : (state.lockBlock ? 'lock-unavailable' : null),
+      restartSuppressed: blocked || !!otherSuppression,
+      restartSuppressedReason: blocked ? 'lock-unavailable' : (otherSuppression ? otherSuppression.cause : null),
       restartsInWindow: snap.restartsInWindow,
       lastRestartAt: snap.lastRestartAt,
       lastRestartReason: snap.lastRestartReason,
@@ -549,8 +575,11 @@ export function createWebSocketTransport(deps = {}) {
       lockAgeSec: lock.lockAgeSec,
       lockOwnerPid: lock.lockOwnerPid,
       lockError: lock.lockError,
-      restartBlockedSince: state.lockBlock ? new Date(state.lockBlock.since).toISOString() : null,
-      recoveryHint: state.lockBlock && lock.lockState !== 'free' ? lockRecoveryHint(lock.lockPath, lock.lockOwnerPid) : null,
+      // Start of the tracked episode; null while not blocked, or until the
+      // watchdog registers a just-appeared lock at its next tick.
+      restartBlockedSince: blocked && state.lockBlock ? new Date(state.lockBlock.since).toISOString() : null,
+      recoveryHint: lockRecoveryHint(lock),
+      lastBlockedEpisode: state.lockBlock ? episodeView(state.lockBlock) : state.lastBlockedEpisode,
     };
   }
 
