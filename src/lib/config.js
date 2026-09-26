@@ -22,7 +22,9 @@ export const DEFAULT_CONFIG = {
   transport: 'websocket',
   // Optional (not defaulted here): ws_pong_timeout_sec — WebSocket half-open
   // watchdog timeout in seconds. Unset = 3 x server ping interval; 0 = disable
-  // watchdog reconnects. See src/lib/transport/websocket.js.
+  // watchdog restarts (monitoring/logging stays on); values < 30 are rejected.
+  // On timeout the process exits (code 75) and PM2 restarts it.
+  // See src/lib/transport/websocket.js.
   // Bot settings
   bot: {
     encrypt_key: '',

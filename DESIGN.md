@@ -293,7 +293,7 @@ node send.js "oc_xxx" "[MEDIA:file]/path/to/document.pdf"
 | proxy.enabled | boolean | Proxy enable/disable toggle |
 | message.context_messages | number | Number of group context messages to include |
 | transport | string | `websocket` (long connection, default) or `webhook` |
-| ws_pong_timeout_sec | number | Optional. WebSocket half-open watchdog: reconnect when no pong arrives for this many seconds. Default: 3 x server ping interval (360s today). `0` disables watchdog reconnects. Minimum 30. Read at startup. |
+| ws_pong_timeout_sec | number | Optional. WebSocket half-open watchdog: controlled process restart when no pong arrives for this many seconds (only after at least one pong was seen in the process). Default: 3 x server ping interval (360s today). `0` disables watchdog restarts (monitoring and logs stay on). Values < 30 are rejected with a WARN (default used). Read at startup. |
 
 ### 5.2.1 WebSocket Transport and Half-Open Watchdog
 
@@ -302,26 +302,57 @@ SDK's `WSClient` long connection. The SDK pings every server-provided interval
 (currently 120s) but has no pong timeout, so a half-open socket (stays OPEN, no
 close/error, no inbound frames) would never trigger its `autoReconnect`.
 
-The transport therefore:
+**Recovery is a controlled process restart, not an in-process client swap.**
+SDK 1.59.0 cannot be reliably destroyed: `close()` does not cancel a
+`reConnect()` closure already awaiting `pullConnectConfig()` (it still opens a
+socket and schedules further reconnects afterwards), and each `WSClient`
+creates a `DataCache` whose 10s `setInterval` is never cleared. Replacing
+clients in one process would accumulate those. Process exit is the only
+complete cleanup, so exactly one `WSClient` is created per process.
+
+The transport:
 
 - Detects pongs by wrapping the WSClient instance's `handleControlData` and
   matching control frames with header `type=pong` (coupled to
   `@larksuiteoapi/node-sdk` internals, verified on 1.59.0 — re-check on SDK
-  upgrades). Tracks `lastPongAt` and a pong count.
-- Runs an unref'd watchdog (10s tick). If no pong for `ws_pong_timeout_sec`
-  (default 3 x ping interval) it closes the old WSClient, neuters it, and
-  starts a fresh one (never the SDK's `reConnect()`, see node-sdk#177).
-  Reconnects are single-flight with exponential backoff (5s -> 60s cap). A new
-  client counts as connected only once its socket is OPEN (30s deadline).
-- Self-check: if no pong has ever been observed 2 intervals after connect, it
-  logs a WARN that pong detection may be broken and allows at most one
-  pong-timeout reconnect until a pong is seen (prevents a reconnect loop if an
-  SDK upgrade breaks detection).
+  upgrades). The wrapper always delegates to the SDK handler. Tracks
+  `lastPongAt` and a pong count.
+- Runs an unref'd watchdog (10s tick). If a pong has been seen in this process
+  and none arrives for `ws_pong_timeout_sec` (default 3 x ping interval) it
+  logs `ws half-open detected ... -> requesting controlled process restart`
+  (ERROR), closes the WSClient best-effort, runs the host's graceful shutdown
+  (stop timers, persist user cache, close the HTTP server, flush stdout/stderr)
+  and exits with code **75**; PM2 `autorestart` starts a fresh process. A hard
+  deadline of **4s** (below PM2 `kill_timeout` 5s) forces the exit if cleanup
+  hangs.
+- Never restarts if no pong has ever been observed in the process (pong
+  detection may be broken after an SDK upgrade): logs a one-time WARN after 2
+  intervals instead. This rules out a boot loop.
+- Cross-process rate limit (`src/lib/transport/restart-guard.js`): at most
+  **3 restarts per 30 minutes**, recorded in
+  `~/zylos/components/lark/ws-restart-state.json`
+  (`{"version":1,"restarts":[{"at":<ms>,"reason":"pong-timeout"}]}`), written
+  atomically (same-dir temp file, fsync, rename). When the limit is reached the
+  restart is suppressed with one ERROR per episode and the watchdog keeps
+  monitoring until the oldest entry leaves the window. Fail-safe: a corrupt or
+  unreadable state file counts as "limit reached" (the file is reset to a full
+  window so restarts resume after 30 min), and if the restart record cannot be
+  persisted (e.g. unwritable dir) the restart is refused.
+- PM2: watchdog exits happen only after >= one full pong timeout of uptime, so
+  they never count as unstable restarts (`min_uptime` default 1s) toward
+  `max_restarts: 10`.
 - Logs: `ws pong late` (WARN, once per episode), `ws half-open detected`
-  (ERROR), `ws reconnected in ...` / `ws reconnect failed ...`, and a 30-minute
-  `ws heartbeat ok` summary. The WS URL (contains credentials) is never logged.
+  (ERROR), `ws restart: exiting with code 75 ...`, `ws previous watchdog
+  restart at ...` on startup after a restart, and a 30-minute `ws heartbeat ok`
+  summary. The WS URL (contains credentials) is never logged.
 - `/health` includes `lastPongAt`, `lastPongAgeSec`, `pongCount`,
-  `reconnects`, `lastReconnectReason`, `lastReconnectAt`, `reconnecting`.
+  `restartPending`, `restartSuppressed`, `restartSuppressedReason`,
+  `restartsInWindow`, `lastRestartAt`, `lastRestartReason`.
+- Tests: `test/ws-pong-watchdog.test.js` (fake clock + fake client: decision
+  logic, rate limit, state file), `test/ws-real-sdk.test.js` (real SDK
+  in-process against a loopback fake Lark server, including the SDK
+  limitation above) and `test/ws-restart-process.test.js` (real child
+  processes exit 75 and are restarted by a PM2 stand-in).
 
 ### 5.3 Environment Variables (~/zylos/.env)
 

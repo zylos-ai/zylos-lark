@@ -1658,13 +1658,11 @@ app.post('/internal/record-outgoing', (req, res) => {
 let server = null;
 let isShuttingDown = false;
 
-// Graceful shutdown
-function shutdown() {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
-  console.log(`[lark] Shutting down...`);
+// Graceful cleanup shared by signal shutdown and the WS watchdog restart.
+// Resolves once the HTTP server is closed (or after a 2s cap). Never exits.
+function gracefulCleanup() {
   // Release WebSocket connection slot first (before time-consuming cleanup)
-  // Always call — stopWebSocket() is a no-op if wsClient is null
+  // Always call — stopWebSocket() is idempotent and a no-op without a client
   stopWebSocket();
   clearInterval(dedupCleanupInterval);
   clearInterval(typingCheckInterval);
@@ -1679,15 +1677,39 @@ function shutdown() {
   }
   activeTypingIndicators.clear();
 
-  const finishExit = () => process.exit(0);
-  const closeServer = () => {
-    if (!server) return finishExit();
-    server.close(() => finishExit());
-    setTimeout(finishExit, 2000).unref();
-  };
+  const closeServer = () => new Promise((resolve) => {
+    if (!server) return resolve();
+    server.close(() => resolve());
+    setTimeout(resolve, 2000).unref();
+  });
 
-  Promise.allSettled(clearTypingPromises)
-    .finally(closeServer);
+  return Promise.allSettled(clearTypingPromises).then(closeServer);
+}
+
+/** Wait for pending stdout/stderr writes (PM2 log pipes) before exiting. */
+function flushStdio() {
+  const flush = (stream) => new Promise((resolve) => {
+    try { stream.write('', () => resolve()); } catch { resolve(); }
+  });
+  return Promise.all([flush(process.stdout), flush(process.stderr)]);
+}
+
+// Graceful shutdown (signals / component disabled)
+function shutdown() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[lark] Shutting down...`);
+  gracefulCleanup().finally(() => process.exit(0));
+}
+
+// Invoked by the WS half-open watchdog right before it exits non-zero so PM2
+// restarts the process. The transport enforces a hard exit deadline.
+async function shutdownForRestart({ reason } = {}) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[lark] Shutting down for controlled restart (reason=${reason || 'unknown'})...`);
+  await gracefulCleanup();
+  await flushStdio();
 }
 
 process.on('SIGINT', shutdown);
@@ -1703,7 +1725,7 @@ if (transport !== 'websocket' && transport !== 'webhook') {
 if (transport === 'websocket') {
   // WebSocket long connection mode — no verification_token needed
   const wsCreds = getCredentials();
-  startWebSocket(config, wsCreds, handleMessageEvent, isDuplicate)
+  startWebSocket(config, wsCreds, handleMessageEvent, isDuplicate, { onShutdown: shutdownForRestart })
     .then(() => console.log('[lark] Transport: WebSocket long connection'))
     .catch(err => console.error(`[lark] WebSocket start error: ${err.message}`));
 } else {

@@ -8,27 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.13] - 2026-09-25
 
 ### Fixed
-- **Half-open WebSocket connections are now detected and recovered**
-  (`src/lib/transport/websocket.js`). The SDK `WSClient` pings every
-  server-provided interval (120s) but never times out on a missing pong, so a
-  socket that stayed OPEN without close/error while delivering no frames went
-  undetected until a manual restart. The transport now tracks pong receipt and,
-  when no pong arrives within `ws_pong_timeout_sec` (default 3 x ping interval),
-  closes the old client and starts a fresh one — single-flight, exponential
-  backoff 5s -> 60s, never via the SDK's `reConnect()` (node-sdk#177).
+- **Half-open WebSocket connections are now detected and recovered by a
+  controlled process restart** (`src/lib/transport/websocket.js`). The SDK
+  `WSClient` pings every server-provided interval (120s) but never times out
+  on a missing pong, so a socket that stayed OPEN without close/error while
+  delivering no frames went undetected until a manual restart. The transport
+  now tracks pong receipt and, once a pong has been seen and then none arrives
+  within `ws_pong_timeout_sec` (default 3 x ping interval), logs an ERROR,
+  closes the client, runs a graceful shutdown (HTTP server, caches, log flush)
+  and exits with code 75 so PM2 restarts the process (hard exit deadline 4s).
+  - Recovery deliberately does not build a new `WSClient` in-process:
+    node-sdk 1.59.0 `close()` cannot cancel an in-flight `reConnect()` and
+    leaks a `DataCache` interval per client, so only process exit cleans up.
+    Exactly one `WSClient` exists per process.
+  - Anti-loop safeguards: never restarts if no pong was ever observed in the
+    process (one-time WARN instead); at most 3 restarts per 30 minutes,
+    persisted atomically in `~/zylos/components/lark/ws-restart-state.json`;
+    a corrupt/unreadable state file or an unwritable state dir suppresses the
+    restart (fail-safe) and the watchdog stays in monitoring mode.
   - Pong detection wraps the WSClient instance's `handleControlData`
-    (coupled to node-sdk 1.59.0 internals). A startup self-check WARNs if no
-    pong is ever observed and caps blind reconnects so an SDK change cannot
-    cause a reconnect loop.
+    (coupled to node-sdk 1.59.0 internals).
   - New logs: `ws pong late` (WARN), `ws half-open detected` (ERROR),
-    `ws reconnected in ...` / `ws reconnect failed ...`, and a 30-minute
-    `ws heartbeat ok` summary.
-  - `/health` adds `lastPongAt`, `lastPongAgeSec`, `pongCount`, `reconnects`,
-    `lastReconnectReason`, `lastReconnectAt`, `reconnecting`.
+    `ws restart: exiting with code 75`, `ws previous watchdog restart at ...`,
+    and a 30-minute `ws heartbeat ok` summary.
+  - `/health` adds `lastPongAt`, `lastPongAgeSec`, `pongCount`,
+    `restartPending`, `restartSuppressed`, `restartSuppressedReason`,
+    `restartsInWindow`, `lastRestartAt`, `lastRestartReason`.
 
 ### Added
 - Optional config `ws_pong_timeout_sec` (seconds; `0` disables watchdog
-  reconnects; minimum 30).
+  restarts while keeping monitoring; minimum 30).
+- Tests with the real node-sdk `WSClient` against a loopback fake Lark server,
+  in-process and as real child processes restarted by a PM2 stand-in.
 
 ## [0.3.12] - 2026-08-27
 
