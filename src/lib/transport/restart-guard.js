@@ -47,7 +47,8 @@
  *   (empty file if the crash hit between create and write, or a dead /
  *   reused pid) therefore blocks watchdog restarts until an operator removes
  *   it. inspectLock() classifies the holder FOR REPORTING ONLY
- *   (held-by-live-pid | held-by-dead-pid | unknown-owner) so logs and
+ *   (held-by-self | held-by-live-pid | held-by-dead-pid | unknown-owner |
+ *   path-error) so logs and
  *   /health can show the lock path, owner pid, age and a recovery hint.
  *   Path-level problems (data dir missing / not a directory / not
  *   accessible) are reported as 'path-error' with a path-specific hint —
@@ -116,6 +117,12 @@ export function lockRecoveryHint(obs) {
   if (code === 'EACCES' || code === 'EPERM') {
     return `restore read access to ${obs.lockPath} for the zylos-lark user, then re-check`;
   }
+  if (obs.lockState === 'held-by-self' || obs.lockState === 'held-by-live-pid') {
+    // The holder may be a running zylos-lark (for held-by-self: this very
+    // process), so the lock can only be removed with the service stopped.
+    const who = obs.lockState === 'held-by-self' ? 'this zylos-lark process holds it' : 'the holder may be a running zylos-lark';
+    return `${who}: run \`pm2 stop zylos-lark\`, confirm \`ps -p ${obs.lockOwnerPid}\` no longer shows that pid and \`pm2 ls\` shows no running zylos-lark, then remove ${obs.lockPath}, then \`pm2 start zylos-lark\``;
+  }
   const pidCheck = obs.lockOwnerPid
     ? `\`ps -p ${obs.lockOwnerPid}\` shows that pid is not a running zylos-lark process`
     : 'the lock names no valid owner pid';
@@ -159,6 +166,8 @@ export function createRestartGuard({
   const lockFile = `${file}.lock`;
   let tmpSeq = 0;
   let lockSeq = 0;
+  /** Tokens minted by this process (to recognise a lock we left behind). */
+  const mintedTokens = new Set();
   /** Last successfully read/written entries (for /health). */
   let cached = [];
   /** Last load problem (null when the file was fine or missing). */
@@ -221,7 +230,7 @@ export function createRestartGuard({
 
   /**
    * Best-effort description of the current lock holder. REPORTING ONLY.
-   * @returns {{ lockPath: string, lockState: 'free'|'held-by-live-pid'|'held-by-dead-pid'|'unknown-owner'|'path-error', lockOwnerPid: number|null, lockAgeSec: number|null, lockError: string|null }}
+   * @returns {{ lockPath: string, lockState: 'free'|'held-by-self'|'held-by-live-pid'|'held-by-dead-pid'|'unknown-owner'|'path-error', lockOwnerPid: number|null, lockAgeSec: number|null, lockError: string|null }}
    */
   function inspectLock() {
     const res = { lockPath: lockFile, lockState: 'free', lockOwnerPid: null, lockAgeSec: null, lockError: null };
@@ -255,6 +264,10 @@ export function createRestartGuard({
     const pid = info && typeof info === 'object' ? info.pid : undefined;
     res.lockOwnerPid = Number.isInteger(pid) && pid > 0 ? pid : null;
     res.lockState = classifyLockOwner(pid);
+    // Our own pid AND a token we minted -> left behind by this process (e.g.
+    // fsync/close failed after the content was written). Our pid with a
+    // foreign token stays held-by-live-pid (pid in use, lock not ours).
+    if (pid === process.pid && mintedTokens.has(info?.token)) res.lockState = 'held-by-self';
     if (!info) res.lockError = raw.length ? 'unparseable' : 'empty';
     return res;
   }
@@ -262,6 +275,7 @@ export function createRestartGuard({
   /** Acquire the exclusive lock or throw (fail-closed). Resolves to our token. */
   async function acquireLock() {
     const token = `${process.pid}.${Date.now()}.${++lockSeq}.${Math.random().toString(36).slice(2)}`;
+    mintedTokens.add(token);
     const body = JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString(), token });
     const deadline = Date.now() + lockTimeoutMs;
     for (;;) {
@@ -280,8 +294,9 @@ export function createRestartGuard({
           // Fail closed WITHOUT unlinking by path: the pathname may no longer
           // be the file we created (replaced by another process), and an
           // fd-vs-path identity check is not robust against every race. The
-          // partial lock stays and is reported (unknown-owner / empty) with
-          // the manual recovery surface.
+          // partial lock stays and is reported (held-by-self, or
+          // unknown-owner / empty) with the manual recovery surface. Even a
+          // held-by-self lock is never auto-deleted (path-replacement TOCTOU).
           try { fs.closeSync(fd); } catch { /* ignore */ }
           err.lockInitFailed = true;
           throw err;

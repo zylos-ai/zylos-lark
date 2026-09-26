@@ -354,7 +354,10 @@ The transport:
   modes (a live holder losing its lock while a third process also enters the
   critical section). The lock is therefore only *observed for reporting*
   (`lstat` + read, never unlink/rename/link of a lock we do not own):
-  `free`; `held-by-live-pid` (`kill(pid, 0)` succeeds or EPERM);
+  `free`; `held-by-self` (the lock names this process's pid AND a token this
+  process minted — e.g. left behind when fsync/close failed after the content
+  was written; never auto-deleted either, because of path-replacement
+  races); `held-by-live-pid` (`kill(pid, 0)` succeeds or EPERM);
   `held-by-dead-pid` (explicit ESRCH); `unknown-owner` (a lock entry exists
   but has no valid pid, is empty/unparseable, or cannot be read);
   `path-error` (no lock entry can exist or be inspected: data dir missing,
@@ -363,11 +366,12 @@ The transport:
   `O_EXCL` create, the lock is *not* unlinked by path (the pathname may
   already belong to another process; an fd-vs-path identity check is not
   robust against every race). The attempt fails closed and the leftover is
-  reported like any other blocking lock (usually `unknown-owner`,
-  `error=empty`).
+  reported like any other blocking lock: `held-by-self` if our content was
+  written, otherwise `unknown-owner` / `error=empty`.
 - **Permanently blocked states** (restarts stay refused until an operator
   acts): an empty lock left by a crash between create and write, or by a lock
-  init failure (`unknown-owner`, `error=empty`); a lock whose owner died
+  init failure (`unknown-owner`, `error=empty`); a lock this process left
+  after a failed fsync/close (`held-by-self`); a lock whose owner died
   (`held-by-dead-pid`); a lock whose dead owner's pid was reused by an
   unrelated live process (`held-by-live-pid`); an unreadable lock
   (`unknown-owner`, `error=EACCES`); a broken data dir (`path-error`).
@@ -391,17 +395,26 @@ The transport:
   `restartSuppressedReason` (`lock-unavailable` whenever the lock is not
   free), `recoveryHint`, and `restartBlockedSince` (start of the tracked
   episode; null when free, or until the next tick registers a just-appeared
-  lock). The tick-tracked episode is exposed separately as
-  `lastBlockedEpisode` `{since, lastLoggedAt, logCount, endedAt}`. Lock
-  tokens are never logged or exposed.
+  lock). The tick-tracked episodes are exposed separately, as watcher state:
+  `currentBlockedEpisode` `{since, lastLoggedAt, logCount, endedAt: null}` —
+  the episode the watchdog is tracking, which may lag the fresh observation
+  by up to one tick (10s) when a lock appears or disappears — and
+  `lastBlockedEpisode` — the last FINISHED episode (`endedAt` always set), or
+  null. Lock tokens are never logged or exposed.
 - **Manual recovery** — the hint is specific to the observed state (same
   wording in logs and `/health`):
-  - lock entry observed (`held-by-*`, `unknown-owner` with readable
-    content): *verify the holder first: `ps -p <pid>` shows that pid is not a
-    running zylos-lark process (or: the lock names no valid owner pid) and
-    `pm2 ls` shows no second zylos-lark instance; only then remove
-    `<data dir>/ws-restart-state.json.lock` manually to re-enable watchdog
-    restarts.*
+  - holder may be a live zylos-lark (`held-by-self`: *this zylos-lark process
+    holds it*; `held-by-live-pid`: *the holder may be a running zylos-lark*):
+    *run `pm2 stop zylos-lark`, confirm `ps -p <pid>` no longer shows that pid
+    and `pm2 ls` shows no running zylos-lark, then remove `<lock path>`, then
+    `pm2 start zylos-lark`.* The service restart is required here: the lock
+    must never be removed while its possible holder is running.
+  - holder dead or unidentifiable (`held-by-dead-pid`, `unknown-owner` with
+    readable content): *verify the holder first: `ps -p <pid>` shows that pid
+    is not a running zylos-lark process (or: the lock names no valid owner
+    pid) and `pm2 ls` shows no second zylos-lark instance; only then remove
+    `<lock path>` manually to re-enable watchdog restarts.* No service
+    restart is needed; the next watchdog tick logs the release.
   - lock observed but unreadable (`EACCES`/`EPERM` on read): *restore read
     access to `<lock path>` for the zylos-lark user, then re-check.*
   - `path-error` `ENOTDIR`: *the data directory path is invalid (`<dir>` or
@@ -412,7 +425,6 @@ The transport:
     file exists to remove.*
   - `path-error` `EACCES`/`EPERM`: *restore access to `<dir>` for the
     zylos-lark user (read + search, and write for restarts), then re-check.*
-  No service restart is needed; the next watchdog tick logs the release.
 - PM2: watchdog exits happen only after >= one full pong timeout of uptime, so
   they never count as unstable restarts (`min_uptime` default 1s) toward
   `max_restarts: 10`.

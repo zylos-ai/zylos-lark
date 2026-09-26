@@ -186,7 +186,7 @@ export function createWebSocketTransport(deps = {}) {
     acquiring: false,
     /** Restarts blocked by an unavailable lock: { since, logs } | null */
     lockBlock: null,
-    /** Last finished blocked-lock episode (for /health). */
+    /** Last FINISHED blocked-lock episode (endedAt set), for /health. */
     lastBlockedEpisode: null,
     exited: false,
   };
@@ -549,7 +549,9 @@ export function createWebSocketTransport(deps = {}) {
   /**
    * Current connection state for /health endpoint. All lock-related fields
    * derive from ONE fresh lock observation taken here; the tick-tracked
-   * episode is exposed separately (lastBlockedEpisode).
+   * episodes are exposed separately: currentBlockedEpisode (active watcher
+   * state, may lag the observation by up to one tick) and
+   * lastBlockedEpisode (last FINISHED episode, endedAt always set).
    */
   function getState() {
     const age = state.lastPongAt ? now() - state.lastPongAt : null;
@@ -579,7 +581,10 @@ export function createWebSocketTransport(deps = {}) {
       // watchdog registers a just-appeared lock at its next tick.
       restartBlockedSince: blocked && state.lockBlock ? new Date(state.lockBlock.since).toISOString() : null,
       recoveryHint: lockRecoveryHint(lock),
-      lastBlockedEpisode: state.lockBlock ? episodeView(state.lockBlock) : state.lastBlockedEpisode,
+      // Watcher state: the episode the tick is tracking. May lag the fresh
+      // observation above by up to one tick (appear / disappear).
+      currentBlockedEpisode: state.lockBlock ? episodeView(state.lockBlock) : null,
+      lastBlockedEpisode: state.lastBlockedEpisode,
     };
   }
 

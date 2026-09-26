@@ -484,6 +484,7 @@ test('blocked lock found at startup: immediate ERROR with path/owner/safe hint, 
   await env.clock.advance(WATCHDOG_TICK_MS);
   assert.equal(blockedLines(env).length, 8);
   assert.match(blockedLines(env)[7], new RegExp(`^\\[lark\\] ws restart lock holder changed -> watchdog restarts still BLOCKED \\(for 180m\\); lock ${esc(lock)} state=held-by-live-pid pid=${live} `));
+  assert.ok(blockedLines(env)[7].endsWith(`recovery: the holder may be a running zylos-lark: run \`pm2 stop zylos-lark\`, confirm \`ps -p ${live}\` no longer shows that pid and \`pm2 ls\` shows no running zylos-lark, then remove ${lock}, then \`pm2 start zylos-lark\``), blockedLines(env)[7]);
   const changedAt = env.clock.now();
   await env.clock.advance(5 * M - WATCHDOG_TICK_MS); assert.equal(blockedLines(env).length, 8);
   await env.clock.advance(changedAt + 5 * M - env.clock.now()); assert.equal(blockedLines(env).length, 9, 'cadence restarted at the change');
@@ -538,6 +539,28 @@ test('blocked lock appearing at runtime: next tick alerts, half-open refusal add
   env2.tr.stop();
 });
 
+test('lock init failure (fsync) in the watchdog: lock kept, reported held-by-self with the stop/verify/remove/start procedure', async () => {
+  const stateFile = tmpStateFile();
+  const lock = `${stateFile}.lock`;
+  const fsyncFails = { ...fs, fsyncSync: () => { const e = new Error('EIO'); e.code = 'EIO'; throw e; } };
+  const env = await setup({ stateFile, fsImpl: fsyncFails, guardOptions: { lockTimeoutMs: 0 } });
+  await env.client().pong();
+  await env.clock.advance(TIMEOUT + WATCHDOG_TICK_MS);
+  assert.equal(env.exits.length, 0);
+  assert.ok(fs.existsSync(lock), 'not auto-deleted');
+  const procedure = `this zylos-lark process holds it: run \`pm2 stop zylos-lark\`, confirm \`ps -p ${process.pid}\` no longer shows that pid and \`pm2 ls\` shows no running zylos-lark, then remove ${lock}, then \`pm2 start zylos-lark\``;
+  const h = env.tr.getConnectionState();
+  assert.equal(h.lockState, 'held-by-self');
+  assert.equal(h.lockOwnerPid, process.pid);
+  assert.equal(h.recoveryHint, procedure);
+  assert.equal(h.restartSuppressed, true);
+  await env.clock.advance(WATCHDOG_TICK_MS); // tick picks up the (changed) state
+  const lines = blockedLines(env);
+  assert.ok(lines.some((l) => l.includes(`state=held-by-self pid=${process.pid}`) && l.endsWith(`recovery: ${procedure}`)), lines.join('\n'));
+  assert.ok(!lines.some((l) => l.includes('held-by-self') && l.includes('verify the holder first')), 'never the no-restart hint for a self-held lock');
+  env.tr.stop();
+});
+
 test('inspectLock + hints: free, released-during-read, path errors (ENOTDIR / missing dir / EACCES), unreadable lock, observed lock', () => {
   const stateFile = tmpStateFile();
   const dir = path.dirname(stateFile);
@@ -582,11 +605,16 @@ test('inspectLock + hints: free, released-during-read, path errors (ENOTDIR / mi
   assert.equal(ur.lockError, 'EACCES');
   assert.equal(typeof ur.lockAgeSec, 'number');
   assert.equal(lockRecoveryHint(ur), `restore read access to ${lock} for the zylos-lark user, then re-check`);
-  // observed + readable -> ownership-safe delete advice
+  // observed + readable, holder pid alive (foreign token) -> stop/verify/remove/start procedure
   const ok = g();
   assert.equal(ok.lockState, 'held-by-live-pid');
   assert.equal(ok.lockOwnerPid, process.pid);
-  assert.equal(lockRecoveryHint(ok), `verify the holder first: \`ps -p ${process.pid}\` shows that pid is not a running zylos-lark process and \`pm2 ls\` shows no second zylos-lark instance; only then remove ${lock} manually to re-enable watchdog restarts`);
+  assert.equal(lockRecoveryHint(ok), `the holder may be a running zylos-lark: run \`pm2 stop zylos-lark\`, confirm \`ps -p ${process.pid}\` no longer shows that pid and \`pm2 ls\` shows no running zylos-lark, then remove ${lock}, then \`pm2 start zylos-lark\``);
+  // dead holder -> verify then remove (no restart needed)
+  const dead = deadPid();
+  fs.writeFileSync(lock, JSON.stringify({ pid: dead, token: 'x' }));
+  assert.equal(g().lockState, 'held-by-dead-pid');
+  assert.equal(lockRecoveryHint(g()), `verify the holder first: \`ps -p ${dead}\` shows that pid is not a running zylos-lark process and \`pm2 ls\` shows no second zylos-lark instance; only then remove ${lock} manually to re-enable watchdog restarts`);
   fs.writeFileSync(lock, '');
   assert.equal(lockRecoveryHint(g()), `verify the holder first: the lock names no valid owner pid and \`pm2 ls\` shows no second zylos-lark instance; only then remove ${lock} manually to re-enable watchdog restarts`);
   assert.ok(!JSON.stringify(ok).includes('tok-secret'));
@@ -605,14 +633,16 @@ test('health is one consistent lock snapshot even between ticks (lock appears / 
   assert.equal(h.lockState, 'held-by-live-pid');
   assert.equal(h.restartSuppressed, true);
   assert.equal(h.restartSuppressedReason, 'lock-unavailable');
-  assert.match(h.recoveryHint, new RegExp(`ps -p ${process.pid}`));
+  assert.match(h.recoveryHint, new RegExp(`^the holder may be a running zylos-lark: run \`pm2 stop zylos-lark\`, confirm \`ps -p ${process.pid}\``));
   assert.equal(h.restartBlockedSince, null, 'episode registered at the next tick');
+  assert.equal(h.currentBlockedEpisode, null, 'watcher lags by up to one tick');
   assert.equal(h.lastBlockedEpisode, null);
 
   await env.clock.advance(WATCHDOG_TICK_MS); // tick registers the episode
   h = env.tr.getConnectionState();
   assert.equal(h.restartBlockedSince, new Date(t0 + WATCHDOG_TICK_MS).toISOString(), 'registered by this tick');
-  assert.deepEqual(h.lastBlockedEpisode, { since: h.restartBlockedSince, lastLoggedAt: h.restartBlockedSince, logCount: 1, endedAt: null });
+  assert.deepEqual(h.currentBlockedEpisode, { since: h.restartBlockedSince, lastLoggedAt: h.restartBlockedSince, logCount: 1, endedAt: null });
+  assert.equal(h.lastBlockedEpisode, null, 'no finished episode yet');
   assert.ok(env.log.lines.error.some((l) => l.startsWith('[lark] ws restart lock held -> watchdog restarts BLOCKED; ')), 'alerted without any restart attempt');
 
   // disappears between ticks: suppressed false, no hint, no blocked-since — before the tick notices
@@ -623,11 +653,15 @@ test('health is one consistent lock snapshot even between ticks (lock appears / 
   assert.equal(h.restartSuppressedReason, null);
   assert.equal(h.recoveryHint, null);
   assert.equal(h.restartBlockedSince, null);
-  assert.equal(h.lastBlockedEpisode.endedAt, null, 'episode view still open until the next tick');
+  assert.ok(h.currentBlockedEpisode && h.currentBlockedEpisode.endedAt === null, 'watcher state still open until the next tick (documented lag)');
+  assert.equal(h.lastBlockedEpisode, null, 'lastBlockedEpisode only ever holds finished episodes');
 
   await env.clock.advance(WATCHDOG_TICK_MS);
   h = env.tr.getConnectionState();
-  assert.ok(h.lastBlockedEpisode.endedAt, 'episode closed by the tick');
+  assert.equal(h.currentBlockedEpisode, null, 'closed by the tick');
+  assert.equal(h.lastBlockedEpisode.since, new Date(t0 + WATCHDOG_TICK_MS).toISOString());
+  assert.equal(h.lastBlockedEpisode.endedAt, new Date(t0 + 2 * WATCHDOG_TICK_MS).toISOString());
+  assert.equal(h.lastBlockedEpisode.logCount, 1);
   assert.equal(env.log.lines.log.filter((l) => l.includes('restart lock released')).length, 1);
   env.tr.stop();
 });
@@ -750,7 +784,7 @@ test('health fields present and no ws url is ever logged', async () => {
   const s0 = env.tr.getConnectionState();
   assert.deepEqual(Object.keys(s0).sort(), [
     'connected', 'connectedSince', 'lastPongAgeSec', 'lastPongAt', 'lastRestartAt', 'lastRestartReason',
-    'lastBlockedEpisode', 'lockAgeSec', 'lockError', 'lockOwnerPid', 'lockPath', 'lockState',
+    'currentBlockedEpisode', 'lastBlockedEpisode', 'lockAgeSec', 'lockError', 'lockOwnerPid', 'lockPath', 'lockState',
     'pongCount', 'recoveryHint', 'restartBlockedSince', 'restartPending', 'restartSuppressed', 'restartSuppressedReason', 'restartsInWindow',
   ].sort());
   assert.equal(s0.lockPath, `${env.stateFile}.lock`);
@@ -759,6 +793,7 @@ test('health fields present and no ws url is ever logged', async () => {
   assert.equal(s0.lockOwnerPid, null);
   assert.equal(s0.lockError, null);
   assert.equal(s0.lastBlockedEpisode, null);
+  assert.equal(s0.currentBlockedEpisode, null);
   assert.equal(s0.restartBlockedSince, null);
   assert.equal(s0.recoveryHint, null);
   assert.equal(s0.connected, true);

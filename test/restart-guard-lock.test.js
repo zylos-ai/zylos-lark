@@ -21,7 +21,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { createRestartGuard, classifyLockOwner, RESTART_MAX_IN_WINDOW, LOCK_TIMEOUT_MS } from '../src/lib/transport/restart-guard.js';
+import { createRestartGuard, classifyLockOwner, lockRecoveryHint, RESTART_MAX_IN_WINDOW, LOCK_TIMEOUT_MS } from '../src/lib/transport/restart-guard.js';
 
 const CONTENDER = fileURLToPath(new URL('./fixtures/guard-contender.mjs', import.meta.url));
 const CONTENDERS = 8;
@@ -280,7 +280,12 @@ test('release on every path, only our own lock', async () => {
     assert.equal(v.cause, 'lock-unavailable');
     assert.ok(fs.existsSync(lock), 'not unlinked by path');
     const obs = g.inspectLock();
-    assert.equal(obs.lockState, 'held-by-live-pid', 'content was written before fsync failed');
+    assert.equal(obs.lockState, 'held-by-self', 'our pid + a token we minted (content written before fsync failed)');
+    assert.equal(obs.lockOwnerPid, process.pid);
+    assert.equal(lockRecoveryHint(obs), `this zylos-lark process holds it: run \`pm2 stop zylos-lark\`, confirm \`ps -p ${process.pid}\` no longer shows that pid and \`pm2 ls\` shows no running zylos-lark, then remove ${lock}, then \`pm2 start zylos-lark\``);
+    assert.equal(fs.readFileSync(lock, 'utf8').length > 0, true, 'held-by-self is never auto-deleted');
+    // another guard instance (did not mint that token) sees our pid as a live foreign holder
+    assert.equal(createRestartGuard({ file }).inspectLock().lockState, 'held-by-live-pid');
     const g2 = createRestartGuard({ file, lockTimeoutMs: 50 });
     assert.equal((await g2.tryAcquire('r')).cause, 'lock-unavailable', 'stays blocked until manual recovery');
   }

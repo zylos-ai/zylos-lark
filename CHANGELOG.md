@@ -32,9 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A lock left behind by a crash blocks watchdog restarts until removed
     manually. It is reported at startup and while blocked (ERROR at once,
     then after 5/30/60 min, then hourly) with lock path, holder state/pid,
-    age and an error-specific recovery hint (ownership-safe delete only for an
-    observed lock entry; path fixes for a broken data dir), plus one line
-    when released. A failed lock initialization never unlinks by path.
+    age and an error-specific recovery hint (stop / verify / remove / start
+    when the holder may be a live zylos-lark incl. this process; verify then
+    remove for a dead or unidentifiable holder; path fixes for a broken data
+    dir), plus one line when released. A failed lock initialization never
+    unlinks by path.
   - Pong detection wraps the WSClient instance's `handleControlData`
     (coupled to node-sdk 1.59.0 internals).
   - New logs: `ws pong late` (WARN), `ws half-open detected` (ERROR),
@@ -44,8 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `restartPending`, `restartSuppressed`, `restartSuppressedReason`,
     `restartsInWindow`, `lastRestartAt`, `lastRestartReason`, `lockPath`,
     `lockState`, `lockAgeSec`, `lockOwnerPid`, `lockError`,
-    `restartBlockedSince`, `recoveryHint`, `lastBlockedEpisode` (lock fields
-    from one fresh observation per request).
+    `restartBlockedSince`, `recoveryHint` (lock fields from one fresh
+    observation per request), `currentBlockedEpisode` (watcher state) and
+    `lastBlockedEpisode` (last finished episode).
 
 ### Added
 - Optional config `ws_pong_timeout_sec` (seconds; `0` disables watchdog
