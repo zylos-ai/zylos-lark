@@ -1,13 +1,13 @@
 {
   "name": "zylos-lark",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "description": "Lark (international) communication channel",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
     "cli": "node src/cli.js",
-    "test": "node --test"
+    "test": "node --test test/*.test.js"
   },
   "homepage": "https://github.com/zylos-ai/zylos-lark#readme",
   "bugs": {

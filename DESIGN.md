@@ -292,6 +292,165 @@ node send.js "oc_xxx" "[MEDIA:file]/path/to/document.pdf"
 | smart_groups | object[] | Groups where all messages are monitored |
 | proxy.enabled | boolean | Proxy enable/disable toggle |
 | message.context_messages | number | Number of group context messages to include |
+| transport | string | `websocket` (long connection, default) or `webhook` |
+| ws_pong_timeout_sec | number | Optional. WebSocket half-open watchdog: controlled process restart when no pong arrives for this many seconds (only after at least one pong was seen in the process). Default: 3 x server ping interval (360s today). `0` disables watchdog restarts (monitoring and logs stay on). Values < 30 are rejected with a WARN (default used). Read at startup. |
+
+### 5.2.1 WebSocket Transport and Half-Open Watchdog
+
+In `websocket` mode (`src/lib/transport/websocket.js`) events arrive over the
+SDK's `WSClient` long connection. The SDK pings every server-provided interval
+(currently 120s) but has no pong timeout, so a half-open socket (stays OPEN, no
+close/error, no inbound frames) would never trigger its `autoReconnect`.
+
+**Recovery is a controlled process restart, not an in-process client swap.**
+SDK 1.59.0 cannot be reliably destroyed: `close()` does not cancel a
+`reConnect()` closure already awaiting `pullConnectConfig()` (it still opens a
+socket and schedules further reconnects afterwards), and each `WSClient`
+creates a `DataCache` whose 10s `setInterval` is never cleared. Replacing
+clients in one process would accumulate those. Process exit is the only
+complete cleanup, so exactly one `WSClient` is created per process.
+
+The transport:
+
+- Detects pongs by wrapping the WSClient instance's `handleControlData` and
+  matching control frames with header `type=pong` (coupled to
+  `@larksuiteoapi/node-sdk` internals, verified on 1.59.0 — re-check on SDK
+  upgrades). The wrapper always delegates to the SDK handler. Tracks
+  `lastPongAt` and a pong count.
+- Runs an unref'd watchdog (10s tick). If a pong has been seen in this process
+  and none arrives for `ws_pong_timeout_sec` (default 3 x ping interval) it
+  logs `ws half-open detected ... -> requesting controlled process restart`
+  (ERROR), closes the WSClient best-effort, runs the host's graceful shutdown
+  (stop timers, persist user cache, close the HTTP server, flush stdout/stderr)
+  and exits with code **75**; PM2 `autorestart` starts a fresh process. A hard
+  deadline of **4s** (below PM2 `kill_timeout` 5s) forces the exit if cleanup
+  hangs.
+- Never restarts if no pong has ever been observed in the process (pong
+  detection may be broken after an SDK upgrade): logs a one-time WARN after 2
+  intervals instead. This rules out a boot loop.
+- Cross-process rate limit (`src/lib/transport/restart-guard.js`): at most
+  **3 restarts per 30 minutes**, recorded in
+  `~/zylos/components/lark/ws-restart-state.json`
+  (`{"version":1,"restarts":[{"at":<ms>,"reason":"pong-timeout","pid":<n>}]}`),
+  written atomically (same-dir temp file, fsync, rename). Lock and ledger
+  bodies are written completely (short writes are looped; zero progress or
+  an error fails closed: a short lock write keeps the partial lock and
+  refuses, a short ledger write removes only our own temp file, leaves the
+  ledger unchanged and refuses the restart). When the limit is
+  reached the restart is suppressed with one ERROR per episode and the
+  watchdog keeps monitoring until the oldest entry leaves the window.
+  Fail-safe: a corrupt or unreadable state file counts as "limit reached" (the
+  file is reset to a full window so restarts resume after 30 min), and if the
+  restart record cannot be persisted (e.g. unwritable dir) the restart is
+  refused.
+- The rate limit is **serialized by an exclusive lock file**
+  (`ws-restart-state.json.lock`, created with `O_CREAT|O_EXCL`, holding
+  `{pid, acquiredAt, token}`). The whole read -> decide -> persist transaction
+  runs inside the lock, so concurrent processes cannot all take the last slot.
+  Acquisition is async (jittered 5-25ms `setTimeout` retries, 2s timeout; the
+  event loop is never blocked). Release is in `finally` and only removes the
+  lock if it still carries our token. If the lock cannot be taken, this
+  attempt is refused as `lock-unavailable` (distinct from corruption);
+  monitoring continues and the watchdog retries every 60s.
+- **No automatic stale-lock takeover.** zylos-lark runs as a single PM2
+  instance, so genuine contention is essentially nil, while every auto-break
+  scheme we tried (rename-then-verify, link restore) opened worse failure
+  modes (a live holder losing its lock while a third process also enters the
+  critical section). The lock is therefore only *observed for reporting*
+  (`lstat` + read, never unlink/rename/link of a lock we do not own):
+  `free`; `held-by-self` (the lock names this process's pid AND a token this
+  process minted — e.g. left behind when fsync/close failed after the content
+  was written; never auto-deleted either, because of path-replacement
+  races); `held-by-live-pid` (`kill(pid, 0)` succeeds or EPERM);
+  `held-by-dead-pid` (explicit ESRCH); `unknown-owner` (a lock entry exists
+  but has no valid pid, is empty/unparseable, or cannot be read);
+  `path-error` (no lock entry can exist or be inspected: data dir missing,
+  a path component is not a directory, or the dir is not accessible).
+- **Lock init failure:** if writing our content fails right after the
+  `O_EXCL` create, the lock is *not* unlinked by path (the pathname may
+  already belong to another process; an fd-vs-path identity check is not
+  robust against every race). The attempt fails closed and the leftover is
+  reported like any other blocking lock: `held-by-self` if our content was
+  written, otherwise `unknown-owner` / `error=empty`.
+- **Permanently blocked states** (restarts stay refused until an operator
+  acts): an empty lock left by a crash between create and write, or by a lock
+  init failure (`unknown-owner`, `error=empty`); a lock this process left
+  after a failed fsync/close (`held-by-self`); a lock whose owner died
+  (`held-by-dead-pid`); a lock whose dead owner's pid was reused by an
+  unrelated live process (`held-by-live-pid`); an unreadable lock
+  (`unknown-owner`, `error=EACCES`); a broken data dir (`path-error`).
+- **Detection:** at startup (a restarted process re-detects a leftover lock
+  immediately) and on every watchdog tick (one `lstat`, 10s), plus on a
+  refused restart. ERROR lines — `ws restart lock present at startup ->
+  watchdog restarts BLOCKED`, `ws restart lock held -> watchdog restarts
+  BLOCKED`, `ws half-open detected ... -> process restart DEFERRED
+  (lock-unavailable: ...)`, `ws watchdog restarts STILL BLOCKED for <n>m`,
+  `ws restart lock holder changed` — carry
+  `lock <path> state=<state> pid=<pid> age=<s>s [error=<code>]` and the
+  recovery hint. Cadence within one episode: immediately, then after 5, 30 and
+  60 minutes, then hourly; a changed holder/state/error logs at once and
+  restarts the cadence. When the lock disappears (or is acquired) exactly one
+  `ws restart lock released after <n>m ...; watchdog restarts re-enabled`
+  line is logged.
+- **`/health`** derives every lock field from ONE fresh observation per
+  request: `lockPath`, `lockState`, `lockAgeSec`, `lockOwnerPid`, `lockError`
+  (`ENOENT-during-read`, `ENOENT-parent`, `ENOTDIR`, `EACCES`, `EPERM`,
+  `empty`, `unparseable`, ...), `restartSuppressed` /
+  `restartSuppressedReason` (`lock-unavailable` whenever the lock is not
+  free), `recoveryHint`, and `restartBlockedSince` (start of the tracked
+  episode; null when free, or until the next tick registers a just-appeared
+  lock). The tick-tracked episodes are exposed separately, as watcher state:
+  `currentBlockedEpisode` `{since, lastLoggedAt, logCount, endedAt: null}` —
+  the episode the watchdog is tracking, which may lag the fresh observation
+  by up to one tick (10s) when a lock appears or disappears — and
+  `lastBlockedEpisode` — the last FINISHED episode (`endedAt` always set), or
+  null. Lock tokens are never logged or exposed.
+- **Manual recovery** — the hint is specific to the observed state (same
+  wording in logs and `/health`):
+  - holder may be a live zylos-lark (`held-by-self`: *this zylos-lark process
+    holds it*; `held-by-live-pid`: *the holder may be a running zylos-lark*):
+    *run `pm2 stop zylos-lark`, confirm `ps -p <pid>` no longer shows that pid
+    and `pm2 ls` shows no running zylos-lark, then remove `<lock path>`, then
+    `pm2 start zylos-lark`.* The service restart is required here: the lock
+    must never be removed while its possible holder is running.
+  - holder dead or unidentifiable (`held-by-dead-pid`, `unknown-owner` with
+    readable content): *verify the holder first: `ps -p <pid>` shows that pid
+    is not a running zylos-lark process (or: the lock names no valid owner
+    pid) and `pm2 ls` shows no second zylos-lark instance; only then remove
+    `<lock path>` manually to re-enable watchdog restarts.* No service
+    restart is needed; the next watchdog tick logs the release.
+  - lock observed but unreadable (`EACCES`/`EPERM` on read): *restore read
+    access to `<lock path>` for the zylos-lark user, then re-check.*
+  - `path-error` `ENOTDIR`: *the data directory path is invalid (`<dir>` or
+    one of its parents is not a directory); fix or recreate the component data
+    dir `<dir>`, no lock file exists to remove.*
+  - `path-error` `ENOENT-parent`: *the data directory `<dir>` does not exist;
+    recreate the component data dir (owned by the zylos-lark user), no lock
+    file exists to remove.*
+  - `path-error` `EACCES`/`EPERM`: *restore access to `<dir>` for the
+    zylos-lark user (read + search, and write for restarts), then re-check.*
+- PM2: watchdog exits happen only after >= one full pong timeout of uptime, so
+  they never count as unstable restarts (`min_uptime` default 1s) toward
+  `max_restarts: 10`.
+- Logs: `ws pong late` (WARN, once per episode), `ws half-open detected`
+  (ERROR), `ws restart: exiting with code 75 ...`, `ws previous watchdog
+  restart at ...` on startup after a restart, and a 30-minute `ws heartbeat ok`
+  summary. The WS URL (contains credentials) is never logged.
+- `/health` includes `lastPongAt`, `lastPongAgeSec`, `pongCount`,
+  `restartPending`, `restartSuppressed`, `restartSuppressedReason`,
+  `restartsInWindow`, `lastRestartAt`, `lastRestartReason`.
+  `restartSuppressedReason` is one of `rate-limited`, `corrupt`,
+  `write-failed`, `lock-unavailable`, `guard-error`; plus the lock fields
+  listed above.
+- Tests: `test/ws-pong-watchdog.test.js` (fake clock + fake client: decision
+  logic, rate limit, state file), `test/ws-real-sdk.test.js` (real SDK
+  in-process against a loopback fake Lark server, including the SDK
+  limitation above), `test/ws-restart-process.test.js` (real child
+  processes exit 75 and are restarted by a PM2 stand-in) and
+  `test/restart-guard-lock.test.js` (8 real processes racing for the last
+  slot, 5 rounds, exactly one wins; no-lock / write-only-lock mutants must
+  over-admit; dead/live/unknown-owner locks are never taken over and the
+  ledger is not touched; release paths).
 
 ### 5.3 Environment Variables (~/zylos/.env)
 
