@@ -254,6 +254,11 @@ node ~/zylos/.claude/skills/lark/scripts/download.js file om_xxx file_v3_xxx rep
 The keys come from context messages like `[image, image_key: xxx, msg_id: xxx]`
 or `[file: name.pdf, file_key: xxx, msg_id: xxx]`.
 
+Rich-text posts can contain several files while their text body is empty. In
+that case, zylos-lark emits one `[file: ..., file_key: ..., msg_id: ...]` line
+per attachment. Treat these lines as a multi-attachment message, not as an
+empty message, and download each resource key separately.
+
 Output: local file path on success, error message on failure.
 
 ## Config Location
