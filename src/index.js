@@ -18,6 +18,7 @@ dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 import { getConfig, watchConfig, saveConfig, stopWatching, DATA_DIR, getCredentials } from './lib/config.js';
 import { downloadImage, downloadFile, downloadAudio, sendMessage, replyToMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
 import { extractInteractiveText } from './lib/card-text.js';
+import { extractPostText } from './lib/post-text.js';
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
 import { getBotInfo, setBotIdentity } from './lib/client.js';
@@ -475,8 +476,7 @@ async function getContextWithFallback(containerId, currentMessageId, containerTy
           if (msg.type === 'post' && typeof text === 'string') {
             try {
               const parsed = JSON.parse(text);
-              const content = parsed.content || [];
-              ({ text } = extractPostText(content, msg.id));
+              ({ text } = extractPostText(parsed, msg.id));
             } catch { /* use raw content */ }
           } else if (msg.type === 'interactive' && typeof text === 'string') {
             try {
@@ -823,7 +823,7 @@ function parseMessageItemText(msg, fallbackMessageId) {
   if (msg.msg_type === 'text') {
     text = content.text || '';
   } else if (msg.msg_type === 'post') {
-    ({ text } = extractPostText(content.content || [], messageId));
+    ({ text } = extractPostText(content, messageId));
   } else if (msg.msg_type === 'interactive') {
     text = extractInteractiveText(content);
   } else if (msg.msg_type === 'file') {
@@ -982,56 +982,6 @@ Decide whether to respond. Reply with exactly [SKIP] when a response is unnecess
   return message;
 }
 
-/**
- * Extract text from a Lark post (rich text) message.
- */
-function extractPostText(paragraphs, messageId) {
-  const imageKeys = [];
-  const lines = [];
-
-  for (const paragraph of paragraphs) {
-    if (!Array.isArray(paragraph)) continue;
-    const parts = [];
-
-    for (const el of paragraph) {
-      switch (el.tag) {
-        case 'text':
-          parts.push(el.text || '');
-          break;
-        case 'at':
-          parts.push(`@${el.user_name || el.user_id || 'unknown'}`);
-          break;
-        case 'a':
-          if (el.href) {
-            parts.push(`${el.text || ''}(${el.href})`);
-          } else {
-            parts.push(el.text || '');
-          }
-          break;
-        case 'img':
-          if (el.image_key) {
-            imageKeys.push(el.image_key);
-            parts.push(`[image, image_key: ${el.image_key}, msg_id: ${messageId}]`);
-          }
-          break;
-        case 'media':
-          parts.push(`[media, file_key: ${el.file_key || 'unknown'}, msg_id: ${messageId}]`);
-          break;
-        case 'emotion':
-          parts.push(el.emoji_type ? `[${el.emoji_type}]` : '');
-          break;
-        default:
-          if (el.text) parts.push(el.text);
-          break;
-      }
-    }
-
-    lines.push(parts.join(''));
-  }
-
-  return { text: lines.join('\n'), imageKeys };
-}
-
 // Extract content from Lark message
 // Returns imageKeys as array (all images from post messages, or single image)
 async function extractMessageContent(message) {
@@ -1048,8 +998,8 @@ async function extractMessageContent(message) {
     case 'text':
       return { text: content.text || '', imageKeys: [], fileKey: null, fileName: null };
     case 'post': {
-      if (content.content) {
-        const { text, imageKeys } = extractPostText(content.content, message.message_id);
+      if (content.content || content.content_v2 || content.files) {
+        const { text, imageKeys } = extractPostText(content, message.message_id);
         const fullText = content.title ? `[${content.title}] ${text}` : text;
         return { text: fullText, imageKeys, fileKey: null, fileName: null };
       }
