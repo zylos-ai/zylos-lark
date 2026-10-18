@@ -272,6 +272,7 @@ export function syncCredentialsToLarkCli(opts = {}) {
     '--app-id', appId,
     '--app-secret-stdin',
     '--brand', LARK_BRAND,
+    '--name', LARK_BRAND,
     '--lang', lang,
   ], {
     input: appSecret + '\n',
