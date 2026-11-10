@@ -18,7 +18,7 @@ const CHAT = 'oc_0123456789abcdef0123456789abcdef';
 const GROUP_CHAT = 'oc_fedcba9876543210fedcba9876543210';
 const THREAD = 'omt_0a1b2c3d4e5f6a7b';
 
-// T1: mapping table
+// Mapping table: DM, group, reply chain, topic
 const MAPPING = [
   ['DM', buildEndpoint(CHAT, { chatType: 'p2p', messageId: 'om_1' }), `dm-${CHAT}`],
   ['DM thread is not split', buildEndpoint(CHAT, { chatType: 'p2p', rootId: 'om_r', messageId: 'om_1', threadId: THREAD }), `dm-${CHAT}`],
@@ -81,7 +81,7 @@ test('a 95-character name is accepted', () => {
   assert.equal(name.length, 95);
 });
 
-// T1': invalid input always throws - no guessing, rewriting or truncation
+// Invalid input always throws - no guessing, rewriting or truncation
 const INVALID = [
   ['empty endpoint', ''],
   ['bare chat id without type (never guessed)', CHAT],
@@ -111,7 +111,7 @@ test('throws on non-string input', () => {
   assert.throws(() => sessionGroupFromEndpoint(null));
 });
 
-// T2: query script agrees with the inbound mapping
+// Query script agrees with the inbound mapping
 const runScript = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' });
 
 test('scripts/session-group.js prints the same group as the inbound mapping', () => {

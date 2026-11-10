@@ -101,7 +101,7 @@ const assertNoCoreText = replies => {
   for (const r of replies) assert.ok(r === null || !String(r).includes(CORE_TEXT), `leaked core text: ${r}`);
 };
 
-describe('T3: option probe and argv', () => {
+describe('option probe and argv', () => {
   const base = { source: 'lark', endpoint: 'oc_x|type:p2p', content: 'hi', sessionGroup: 'dm-oc_x' };
   // Golden sample: argv after c4-receive.js exactly as origin/main f4bd3a2 built it.
   const GOLDEN = ['--channel', 'lark', '--endpoint', 'oc_x|type:p2p', '--json', '--content', 'hi'];
@@ -186,7 +186,7 @@ describe('rejection classification', () => {
   });
 });
 
-describe('T4: sendToC4', () => {
+describe('sendToC4 rejection and retry handling', () => {
   test('new Core: sends the topic group, runs process.execPath without a timeout', async () => {
     writeOptions(SG);
     script({ exit: 0, stdout: '{"ok":true}' });
@@ -337,7 +337,7 @@ describe('T4: sendToC4', () => {
   });
 });
 
-describe('T5: createRejectReply', () => {
+describe('createRejectReply callback', () => {
   const make = (withStored = true) => {
     const log = [];
     const reply = createRejectReply({

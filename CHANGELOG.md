@@ -38,6 +38,11 @@ These also apply on older Cores:
 - `c4-receive` is resolved from `$ZYLOS_DIR` (default `$HOME/zylos`) and run
   with the current Node binary (`process.execPath`) instead of `node` from
   `PATH`.
+- An endpoint that cannot be mapped to a session group (no or unknown
+  `type:`, unexpected id characters, name over 95 characters) is not sent to
+  `c4-receive`; the user gets the "Please try again later." notice. Inbound
+  endpoints always carry `type:p2p`/`type:group` and `oc_` ids, so this is not
+  expected in practice.
 
 ### Fixed
 - Core's raw error text is no longer sent to Lark users; it only goes to the
