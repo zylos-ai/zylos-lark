@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-10
+
+### Added
+- **Session groups for multi-session zylos-core.** Each inbound message is
+  passed to `c4-receive` with `--session-group`, derived only from its
+  endpoint: `dm-<chat_id>` for private chats (threads not split),
+  `group-<chat_id>` for groups (quote/reply chains included), and
+  `group-<chat_id>:topic-<thread_id>` for group messages with a `thread_id`.
+  Core adds the `lark:` namespace. The rules are fixed: group names are Core's
+  memory keys. Ids are used verbatim; an endpoint that cannot be mapped is not
+  sent and the user is asked to try again later (never the overall group).
+  The option is passed only when the installed Core lists it in
+  `c4-receive-options.json` (re-read on every message); older Cores receive
+  exactly the same arguments as before (`src/lib/session-group.js`,
+  `src/lib/c4.js`, `src/lib/endpoint.js`).
+- `scripts/session-group.js <endpoint>` prints the session group for an
+  endpoint (exit 0), or exits 1 with empty stdout for bad input, including a
+  bare `<chat_id>` without `|type:` (DM vs group is never guessed).
+
+### Changed
+These also apply on older Cores:
+- `c4-receive` no longer has a 35s timeout (killing it could lose or
+  duplicate a message Core had already stored).
+- Only a `c4-receive` that could not be started is retried (once, after 2s).
+  Any other failure without a structured result is not resent; the user is
+  told the message may not have arrived.
+- Rejection notices are two fixed English sentences: "Sorry, I couldn't take
+  this message right now. Please try again later." (not stored) and "Sorry,
+  this message may not have reached me. If you don't get a reply in a few
+  minutes, please send it again." (outcome unknown).
+- `c4-receive` is resolved from `$ZYLOS_DIR` (default `$HOME/zylos`) and run
+  with the current Node binary (`process.execPath`) instead of `node` from
+  `PATH`.
+
+### Fixed
+- Core's raw error text is no longer sent to Lark users; it only goes to the
+  component log.
+- A rejection that Core reports as already stored (`error.persisted`
+  non-empty) no longer shows an error to the user; the typing indicator is
+  cleared and the group context cursor advanced.
+- When the retry also failed without a structured result, the user got no
+  reply and the typing indicator stayed; the user now gets the "may not have
+  reached me" notice.
+
 ## [0.3.13] - 2026-09-25
 
 ### Fixed
