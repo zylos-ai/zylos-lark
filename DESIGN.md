@@ -125,7 +125,7 @@ zylos-lark is a Zylos communication component that enables bidirectional messagi
 
 | Module | File | Responsibility |
 |--------|------|----------------|
-| Main | index.js | Express Webhook server, event handling, message formatting, calling c4-receive |
+| Main | index.js | Express Webhook server, event handling, message formatting, calling c4-receive via lib/c4.js |
 | Config | lib/config.js | Load .env + config.json, hot-reload configuration |
 | Client | lib/client.js | Lark API authentication (app_id + app_secret -> tenant_access_token) |
 | Message | lib/message.js | Send/receive messages, file upload/download |
@@ -133,7 +133,11 @@ zylos-lark is a Zylos communication component that enables bidirectional messagi
 | Calendar | lib/calendar.js | Calendar event queries |
 | Chat | lib/chat.js | Group listing, search, member queries |
 | Contact | lib/contact.js | User information lookup |
+| C4 | lib/c4.js | Call c4-receive, pass `--session-group` when Core supports it, handle rejections |
+| Session group | lib/session-group.js | Derive the session group from an endpoint (fixed rules) |
+| Endpoint | lib/endpoint.js | Build/parse the structured endpoint string |
 | Send | scripts/send.js | C4 standard interface for sending text and media |
+| Session group query | scripts/session-group.js | Print the session group for an endpoint |
 | Admin | src/admin.js | CLI for managing config (groups, whitelist, owner) |
 | CLI | src/cli.js | Lark API command-line tool |
 
@@ -164,8 +168,10 @@ User sends message
 │ c4-receive  │  C4 Bridge interface
 └─────┬───────┘
       │ --channel lark
-      │ --endpoint <chat_id>
+      │ --endpoint <chat_id>|type:...
       │ --content "..."
+      │ [--session-group dm-<chat_id> | group-<chat_id>[:topic-<thread_id>]]
+      │   (only when c4-receive-options.json lists it)
       ▼
 ┌─────────────┐
 │   Claude    │  Processes message

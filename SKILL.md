@@ -424,6 +424,57 @@ Outgoing messages can be rendered as interactive cards with proper markdown form
 
 On by default. Note mobile display limitation: cards cannot be long-pressed to copy on mobile. Can be disabled via `node admin.js set-markdown-card off`. When enabled (cards cannot be long-pressed to copy on mobile). When enabled, messages containing markdown are auto-detected and sent as cards; plain text messages are sent normally. Falls back to plain text if card sending fails.
 
+## Session Groups (multi-session Core)
+
+With a zylos-core that supports multi-session, each inbound message carries a
+session group, so every DM, group and group topic gets its own conversation
+thread. Replies still go through the same `reply via` path; nothing changes on
+the sending side (`scripts/send.js` and the endpoint format are unchanged).
+
+| Conversation | Endpoint | Session group | Example |
+|---|---|---|---|
+| Private chat | `<chat_id>\|type:p2p...` | `dm-<chat_id>` | `dm-oc_0123456789abcdef0123456789abcdef` |
+| Group (incl. quote/reply chains) | `<chat_id>\|type:group...` without `thread:` | `group-<chat_id>` | `group-oc_fedcba9876543210fedcba9876543210` |
+| Group topic | `<chat_id>\|type:group...\|thread:<thread_id>` | `group-<chat_id>:topic-<thread_id>` | `group-oc_fedcba9876543210fedcba9876543210:topic-omt_0a1b2c3d4e5f6a7b` |
+
+Core adds the `lark:` namespace (e.g. `lark:dm-oc_...`).
+
+- These rules are fixed. Group names are Core's memory keys, so changing them
+  would need a migration together with Core.
+- Every group message with a `thread_id` gets its own topic group, in ordinary
+  groups and topic groups alike. Quote/reply chains without a `thread_id` stay in
+  the group. Threads inside a private chat are not split: one group per DM.
+- Per-message endpoint parts (`msg`, `root`, `parent`) never affect the group.
+- Ids are used verbatim, never truncated or hashed. An endpoint that cannot be
+  mapped (no or unknown `type:`, unexpected characters, name over 95 characters)
+  is not sent to Core; the user is asked to try again later. It never falls back
+  to the overall group.
+- The group is passed only if the installed Core lists `--session-group` in
+  `c4-receive-options.json` (re-read on every message, so no restart is needed
+  after a Core upgrade). Older Cores receive exactly the same arguments as before.
+- If Core rejects a message, Core's raw text goes only to the component log. The
+  user gets "Sorry, I couldn't take this message right now. Please try again
+  later." when Core says nothing was stored, and "Sorry, this message may not
+  have reached me. If you don't get a reply in a few minutes, please send it
+  again." when Core cannot say or the outcome is unknown. If Core reports the
+  message as already stored, nothing is sent and the typing indicator is
+  cleared. A rejected message is never resent without its group. c4-receive runs
+  without a timeout and is retried (once, after 2s) only when the process could
+  not be started at all. Smart-mode messages without an @mention are handled the
+  same way.
+
+Look up the session group for an endpoint:
+
+```bash
+node ~/zylos/.claude/skills/lark/scripts/session-group.js "<endpoint>"
+# prints e.g. group-oc_xxx:topic-omt_yyy (without "lark:"), exit 0
+```
+
+Use the full inbound endpoint (the `reply via` value with `|type:`). A bare
+`<chat_id>` like the one used for proactive sends above has no type, so the
+script cannot tell a DM from a group: it prints an error to stderr and exits 1
+(it never guesses). Wrong argument count also exits 1 with empty stdout.
+
 ## Group Context
 
 When responding to @mentions in groups, the bot includes recent message context
