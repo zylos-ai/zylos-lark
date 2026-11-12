@@ -445,10 +445,11 @@ Core adds the `lark:` namespace (e.g. `lark:dm-oc_...`).
   groups and topic groups alike. Quote/reply chains without a `thread_id` stay in
   the group. Threads inside a private chat are not split: one group per DM.
 - Per-message endpoint parts (`msg`, `root`, `parent`) never affect the group.
-- Ids are used verbatim, never truncated or hashed. An endpoint that cannot be
-  mapped (no or unknown `type:`, unexpected characters, name over 95 characters)
-  is not sent to Core; the user is asked to try again later. It never falls back
-  to the overall group.
+- Ids are used verbatim, never truncated or hashed. On a multi-session Core, an
+  endpoint that cannot be mapped (no or unknown `type:`, unexpected characters,
+  name over 95 characters) is not sent to Core; the user is asked to try again
+  later. It never falls back to the overall group. On an older Core no group is
+  derived at all, so such an endpoint is sent exactly as before.
 - The group is passed only if the installed Core lists `--session-group` in
   `c4-receive-options.json` (re-read on every message, so no restart is needed
   after a Core upgrade). Older Cores receive exactly the same arguments as before.
@@ -458,9 +459,10 @@ Core adds the `lark:` namespace (e.g. `lark:dm-oc_...`).
   have reached me. If you don't get a reply in a few minutes, please send it
   again." when Core cannot say or the outcome is unknown. If Core reports the
   message as already stored, nothing is sent and the typing indicator is
-  cleared. A rejected message is never resent without its group. c4-receive runs
-  without a timeout and is retried (once, after 2s) only when the process could
-  not be started at all. Smart-mode messages without an @mention are handled the
+  cleared. A rejected message is never resent without its group. c4-receive is
+  killed after 35s; a timeout counts as an unknown outcome (the "may not have
+  reached me" notice, never resent). It is retried (once, after 2s) only when
+  the process could not be started at all. Smart-mode messages without an @mention are handled the
   same way.
 
 Look up the session group for an endpoint:

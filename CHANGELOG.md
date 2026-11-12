@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memory keys. Ids are used verbatim; an endpoint that cannot be mapped is not
   sent and the user is asked to try again later (never the overall group).
   The option is passed only when the installed Core lists it in
-  `c4-receive-options.json` (re-read on every message); older Cores receive
-  exactly the same arguments as before (`src/lib/session-group.js`,
+  `c4-receive-options.json` (re-read on every message); on older Cores no
+  session group is derived at all, so they receive exactly the same arguments
+  as before and no endpoint is rejected for lacking a group (`src/lib/session-group.js`,
   `src/lib/c4.js`, `src/lib/endpoint.js`).
 - `scripts/session-group.js <endpoint>` prints the session group for an
   endpoint (exit 0), or exits 1 with empty stdout for bad input, including a
@@ -26,8 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 These also apply on older Cores:
-- `c4-receive` no longer has a 35s timeout (killing it could lose or
-  duplicate a message Core had already stored).
+- A `c4-receive` that exceeds the 35s timeout is killed and treated as an
+  unknown outcome: the user is told the message may not have arrived and it
+  is not resent (previously it was retried, which could duplicate a message
+  Core had already stored).
 - Only a `c4-receive` that could not be started is retried (once, after 2s).
   Any other failure without a structured result is not resent; the user is
   told the message may not have arrived.

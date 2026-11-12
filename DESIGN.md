@@ -171,7 +171,9 @@ User sends message
       │ --endpoint <chat_id>|type:...
       │ --content "..."
       │ [--session-group dm-<chat_id> | group-<chat_id>[:topic-<thread_id>]]
-      │   (only when c4-receive-options.json lists it)
+      │   (only when c4-receive-options.json lists it; otherwise no group
+      │    is derived and the argv is the same as before)
+      │ 35s timeout -> "may not have reached me" notice, never resent
       ▼
 ┌─────────────┐
 │   Claude    │  Processes message

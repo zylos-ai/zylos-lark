@@ -7,9 +7,13 @@
  *   from a version). On an older Core the argv is exactly what it was before.
  * - Core's error text is written for the agent, never for the Lark user: users
  *   only ever see TRY_LATER or MAYBE_LOST; the raw text stays in the logs.
- * - c4-receive runs without a timeout. Only a call that never started (spawn
- *   failure) is retried, once; a stored or unknown outcome is never resent,
- *   and a rejected group is never resent without the group.
+ * - On an older Core (option not listed) no session group is derived at all:
+ *   the endpoint is never rejected for lacking one, exactly as before.
+ * - c4-receive is killed after C4_RECEIVE_TIMEOUT_MS (35s, as on main). A
+ *   timeout is an unknown outcome: the user gets MAYBE_LOST and nothing is
+ *   resent. Only a call that never started (spawn failure) is retried, once;
+ *   a stored or unknown outcome is never resent, and a rejected group is never
+ *   resent without the group.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,6 +21,7 @@ import { execFile } from 'node:child_process';
 import { sessionGroupFromEndpoint } from './session-group.js';
 
 export const TRY_LATER = "Sorry, I couldn't take this message right now. Please try again later.";
+export const C4_RECEIVE_TIMEOUT_MS = 35000;
 export const MAYBE_LOST = "Sorry, this message may not have reached me. If you don't get a reply in a few minutes, please send it again.";
 
 /**
@@ -51,9 +56,10 @@ export function c4ReceiveSupportsOption(name) {
  * Arguments after the c4-receive.js path.
  * @returns {string[]}
  */
-export function buildC4ReceiveArgs({ source, endpoint, content, sessionGroup }) {
+export function buildC4ReceiveArgs({ source, endpoint, content, sessionGroup,
+  supportsSessionGroup = c4ReceiveSupportsOption('--session-group') }) {
   const args = ['--channel', source, '--endpoint', endpoint, '--json', '--content', content];
-  if (sessionGroup != null && sessionGroup !== '' && c4ReceiveSupportsOption('--session-group')) {
+  if (sessionGroup != null && sessionGroup !== '' && supportsSessionGroup) {
     args.push('--session-group', sessionGroup);
   }
   return args;
@@ -115,37 +121,45 @@ function neverStarted(error) {
  * @param {function} [opts.execFileImpl] - Test hook: replaces child_process.execFile
  */
 export function sendToC4(source, endpoint, content, onReject, onSuccess,
-  { retryDelayMs = 2000, onDone, execFileImpl = execFile } = {}) {
+  { retryDelayMs = 2000, timeoutMs = C4_RECEIVE_TIMEOUT_MS, onDone, execFileImpl = execFile } = {}) {
   const done = outcome => { if (onDone) onDone(outcome); };
   if (!content) {
     console.error('[lark] sendToC4 called with empty content');
     return done('empty');
   }
 
+  // The options file is re-read on every attempt (including the retry). The
+  // session group is derived only when the installed Core supports it, and
+  // once derived it stays the same for the retry.
   let sessionGroup;
-  try {
-    sessionGroup = sessionGroupFromEndpoint(endpoint);
-  } catch (err) {
-    // Never fall back to the overall group: that would mix this conversation into it.
-    console.error(`[lark] No session group for endpoint, not sending to C4: ${err.message}`);
-    if (onReject) onReject(TRY_LATER);
-    return done('no_group');
-  }
-
-  // Options file is re-read on every attempt (including the retry); the group stays the same.
-  const run = cb => execFileImpl(process.execPath,
-    [getC4ReceivePath(), ...buildC4ReceiveArgs({ source, endpoint, content, sessionGroup })],
-    { encoding: 'utf8' }, cb);
+  const run = cb => {
+    const supportsSessionGroup = c4ReceiveSupportsOption('--session-group');
+    if (supportsSessionGroup && sessionGroup === undefined) {
+      try {
+        sessionGroup = sessionGroupFromEndpoint(endpoint);
+      } catch (err) {
+        // Never fall back to the overall group: that would mix this conversation into it.
+        console.error(`[lark] No session group for endpoint, not sending to C4: ${err.message}`);
+        if (onReject) onReject(TRY_LATER);
+        done('no_group');
+        return false;
+      }
+    }
+    execFileImpl(process.execPath,
+      [getC4ReceivePath(), ...buildC4ReceiveArgs({ source, endpoint, content, sessionGroup, supportsSessionGroup })],
+      { encoding: 'utf8', timeout: timeoutMs }, cb);
+    return true;
+  };
 
   const handleRejection = (response, label) => {
     const { code, message } = response.error;
     const kind = classifyC4Rejection(response);
     if (kind === 'stored') {
-      console.warn(`[lark] C4 ${label} after storing (${code}) [group=${sessionGroup}], not resending: ${message}`);
+      console.warn(`[lark] C4 ${label} after storing (${code}) [group=${sessionGroup ?? 'none'}], not resending: ${message}`);
       if (onReject) onReject(null);
       return done('stored');
     }
-    console.warn(`[lark] C4 ${label} (${code}, ${kind}) [group=${sessionGroup}]: ${message}`);
+    console.warn(`[lark] C4 ${label} (${code}, ${kind}) [group=${sessionGroup ?? 'none'}]: ${message}`);
     if (onReject) onReject(kind === 'not_stored' ? TRY_LATER : MAYBE_LOST);
     return done(kind);
   };

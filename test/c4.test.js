@@ -7,6 +7,7 @@ import path from 'node:path';
 
 import {
   buildC4ReceiveArgs,
+  C4_RECEIVE_TIMEOUT_MS,
   c4ReceiveSupportsOption,
   classifyC4Rejection,
   createRejectReply,
@@ -42,6 +43,7 @@ fs.appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slic
 const list = JSON.parse(fs.readFileSync(${JSON.stringify(responsesFile)}, 'utf8'));
 const r = list.length > 1 ? list.shift() : list[0];
 fs.writeFileSync(${JSON.stringify(responsesFile)}, JSON.stringify(list));
+if (r.hangMs) { setTimeout(() => process.exit(0), r.hangMs); return; }
 if (r.signal) process.kill(process.pid, r.signal);
 if (r.stdout) process.stdout.write(r.stdout);
 // a large write must flush before exit, so end without process.exit()
@@ -74,7 +76,7 @@ const reject = (code, persisted) => {
  * spawnFailures: how many attempts run a missing executable instead (a real
  * spawn failure, so c4-receive never starts); onSpawnFail runs on each.
  */
-function send(endpoint = TOPIC_EP, { spawnFailures = 0, onSpawnFail } = {}) {
+function send(endpoint = TOPIC_EP, { spawnFailures = 0, onSpawnFail, timeoutMs } = {}) {
   const replies = [];
   const execCalls = [];
   let successes = 0;
@@ -91,6 +93,7 @@ function send(endpoint = TOPIC_EP, { spawnFailures = 0, onSpawnFail } = {}) {
   return new Promise(resolve => {
     sendToC4('lark', endpoint, 'hello', m => replies.push(m), () => successes++, {
       retryDelayMs: 10,
+      ...(timeoutMs !== undefined && { timeoutMs }),
       execFileImpl,
       onDone: outcome => resolve({ outcome, replies, successes, execCalls, calls: recorded() })
     });
@@ -187,7 +190,7 @@ describe('rejection classification', () => {
 });
 
 describe('sendToC4 rejection and retry handling', () => {
-  test('new Core: sends the topic group, runs process.execPath without a timeout', async () => {
+  test('new Core: sends the topic group, runs process.execPath with the 35s timeout', async () => {
     writeOptions(SG);
     script({ exit: 0, stdout: '{"ok":true}' });
     const r = await send();
@@ -198,7 +201,8 @@ describe('sendToC4 rejection and retry handling', () => {
     assert.deepEqual(r.calls[0].slice(-2), ['--session-group', TOPIC_GROUP]);
     assert.equal(r.execCalls[0].file, process.execPath);
     assert.equal(r.execCalls[0].args[0], path.join(scriptsDir, 'c4-receive.js'));
-    assert.equal(r.execCalls[0].opts.timeout, undefined);
+    assert.equal(C4_RECEIVE_TIMEOUT_MS, 35000);
+    assert.equal(r.execCalls[0].opts.timeout, 35000);
   });
 
   test('new Core: DM and plain group names', async () => {
@@ -317,11 +321,46 @@ describe('sendToC4 rejection and retry handling', () => {
     });
   }
 
-  test('no session group also on an old Core (never falls back to the overall group)', async () => {
+  for (const endpoint of ['oc_bare', `${CHAT}|type:topic`, 'oc_a.b|type:group']) {
+    test(`old Core: no session group is derived, ${JSON.stringify(endpoint)} is sent exactly as on main`, async () => {
+      script({ exit: 0, stdout: '{"ok":true}' });
+      const r = await send(endpoint);
+      assert.equal(r.outcome, 'sent');
+      assert.deepEqual(r.replies, []);
+      assert.deepEqual(r.calls, [['--channel', 'lark', '--endpoint', endpoint, '--json', '--content', 'hello']]);
+      assert.equal(r.execCalls[0].opts.timeout, 35000);
+    });
+  }
+
+  test('old Core: the session group is never derived (mapping not consulted)', async () => {
+    // 0.9.x shape: options file exists but does not list --session-group.
+    writeOptions({ '--channel': { takesValue: true } });
     script({ exit: 0, stdout: '{"ok":true}' });
     const r = await send('oc_bare');
+    assert.equal(r.outcome, 'sent');
+    assert.ok(!r.execCalls[0].args.includes('--session-group'));
+  });
+
+  for (const core of ['new', 'old']) {
+    test(`${core} Core: timeout kills c4-receive, MAYBE_LOST, not resent`, async () => {
+      if (core === 'new') writeOptions(SG);
+      script({ hangMs: 5000, exit: 0 }, { exit: 0, stdout: '{"ok":true}' });
+      const r = await send(TOPIC_EP, { timeoutMs: 300 });
+      assert.equal(r.outcome, 'unknown');
+      assert.deepEqual(r.replies, [MAYBE_LOST]);
+      assert.equal(r.execCalls.length, 1);
+      assert.equal(r.execCalls[0].opts.timeout, 300);
+      assert.equal(r.successes, 0);
+    });
+  }
+
+  test('spawn failure on an old Core, Core upgraded before the retry, unmappable endpoint: TRY_LATER, Core never reached', async () => {
+    script({ exit: 0, stdout: '{"ok":true}' });
+    const r = await send('oc_bare', { spawnFailures: 1, onSpawnFail: () => writeOptions(SG) });
     assert.equal(r.outcome, 'no_group');
-    assert.equal(r.execCalls.length, 0);
+    assert.deepEqual(r.replies, [TRY_LATER]);
+    assert.equal(r.execCalls.length, 1);
+    assert.equal(r.calls.length, 0);
   });
 
   test('empty content: not sent', async () => {
