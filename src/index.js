@@ -23,9 +23,9 @@ import { listChatMembers } from './lib/chat.js';
 import { getBotInfo, setBotIdentity } from './lib/client.js';
 import { createMessageDeduper, MESSAGE_DEDUP_TTL_MS } from './lib/message-dedup.js';
 import { startWebSocket, stopWebSocket, getConnectionState } from './lib/transport/websocket.js';
+import { sendToC4, createRejectReply } from './lib/c4.js';
+import { buildEndpoint } from './lib/endpoint.js';
 
-// C4 receive interface path
-const C4_RECEIVE = path.join(process.env.HOME, 'zylos/.claude/skills/comm-bridge/scripts/c4-receive.js');
 const INTERNAL_TOKEN = crypto.randomBytes(24).toString('hex');
 process.env.LARK_INTERNAL_TOKEN = INTERNAL_TOKEN;
 // Persist token to file so send.js (spawned by C4 in a separate process tree) can read it
@@ -721,90 +721,6 @@ function resolveMentions(text, mentions, { stripBot = false, botOpenId: botId } 
 }
 
 /**
- * Parse c4-receive JSON response from stdout.
- */
-function parseC4Response(stdout) {
-  if (!stdout) return null;
-  try {
-    return JSON.parse(stdout.trim());
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Send message to Claude via C4 (with 1 retry on unexpected failure)
- */
-function sendToC4(source, endpoint, content, onReject, onSuccess) {
-  if (!content) {
-    console.error('[lark] sendToC4 called with empty content');
-    return;
-  }
-  const args = [
-    C4_RECEIVE,
-    '--channel', source,
-    '--endpoint', endpoint,
-    '--json',
-    '--content', content
-  ];
-
-  execFile('node', args, { encoding: 'utf8', timeout: 35000 }, (error, stdout) => {
-    if (!error) {
-      console.log(`[lark] Sent to C4: ${content.substring(0, 50)}...`);
-      if (onSuccess) onSuccess();
-      return;
-    }
-    const response = parseC4Response(error.stdout || stdout);
-    if (response && response.ok === false && response.error?.message) {
-      console.warn(`[lark] C4 rejected (${response.error.code}): ${response.error.message}`);
-      if (onReject) onReject(response.error.message);
-      return;
-    }
-    console.warn(`[lark] C4 send failed, retrying in 2s: ${error.message}`);
-    setTimeout(() => {
-      execFile('node', args, { encoding: 'utf8', timeout: 35000 }, (retryError, retryStdout) => {
-        if (!retryError) {
-          console.log(`[lark] Sent to C4 (retry): ${content.substring(0, 50)}...`);
-          if (onSuccess) onSuccess();
-          return;
-        }
-        const retryResponse = parseC4Response(retryError.stdout || retryStdout);
-        if (retryResponse && retryResponse.ok === false && retryResponse.error?.message) {
-          console.error(`[lark] C4 rejected after retry (${retryResponse.error.code}): ${retryResponse.error.message}`);
-          if (onReject) onReject(retryResponse.error.message);
-        } else {
-          console.error(`[lark] C4 send failed after retry: ${retryError.message}`);
-        }
-      });
-    }, 2000);
-  });
-}
-
-/**
- * Build structured endpoint string for C4.
- * Format: chatId|type:group|root:rootId|parent:parentId|msg:messageId|thread:threadId
- */
-function buildEndpoint(chatId, { chatType, rootId, parentId, messageId, threadId } = {}) {
-  let endpoint = chatId;
-  if (chatType) {
-    endpoint += `|type:${chatType}`;
-  }
-  if (rootId) {
-    endpoint += `|root:${rootId}`;
-  }
-  if (parentId) {
-    endpoint += `|parent:${parentId}`;
-  }
-  if (messageId) {
-    endpoint += `|msg:${messageId}`;
-  }
-  if (threadId) {
-    endpoint += `|thread:${threadId}`;
-  }
-  return endpoint;
-}
-
-/**
  * Parse the msg_type/body.content of a single Lark message item (as returned by
  * `im.message.get`) into display text, resolving mentions if present.
  */
@@ -1151,6 +1067,21 @@ function transcribeAudio(audioPath) {
 }
 
 /**
+ * Send a C4 rejection notice (TRY_LATER / MAYBE_LOST) into the conversation,
+ * replying in the parent/root thread when there is one.
+ */
+function deliverRejectNotice(chatId, errMsg, { parentId, rootId, threadId, messageId }) {
+  const rejectTarget = parentId || rootId || (threadId ? messageId : null);
+  if (rejectTarget) {
+    replyToMessage(rejectTarget, errMsg).then(r => {
+      if (!r.success) sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+    }).catch(() => sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message)));
+  } else {
+    sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
+  }
+}
+
+/**
  * Handle im.message.receive_v1 event.
  */
 async function handleMessageEvent(event) {
@@ -1235,17 +1166,10 @@ async function handleMessageEvent(event) {
     const senderName = await resolveUserName(senderUserId);
     const cleanText = resolveMentions(text, mentions);
     const threadRootId = threadId ? rootId : null;
-    const rejectReply = (errMsg) => {
-      removeTypingIndicator(messageId);
-      const rejectTarget = parentId || rootId || (threadId ? messageId : null);
-      if (rejectTarget) {
-        replyToMessage(rejectTarget, errMsg).then(r => {
-          if (!r.success) sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
-        }).catch(() => sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message)));
-      } else {
-        sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
-      }
-    };
+    const rejectReply = createRejectReply({
+      removeTyping: () => removeTypingIndicator(messageId),
+      deliver: (errMsg) => deliverRejectNotice(chatId, errMsg, { parentId, rootId, threadId, messageId })
+    });
 
     if (imageKeys.length > 0) {
       const mediaPaths = [];
@@ -1415,17 +1339,11 @@ async function handleMessageEvent(event) {
     const cleanText = resolveMentions(text, mentions);
     const threadRootId = threadId ? rootId : null;
     const groupName = getGroupName(chatId);
-    const groupRejectReply = (errMsg) => {
-      removeTypingIndicator(messageId);
-      const rejectTarget = parentId || rootId || (threadId ? messageId : null);
-      if (rejectTarget) {
-        replyToMessage(rejectTarget, errMsg).then(r => {
-          if (!r.success) sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
-        }).catch(() => sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message)));
-      } else {
-        sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
-      }
-    };
+    const groupRejectReply = createRejectReply({
+      removeTyping: () => removeTypingIndicator(messageId),
+      onStored: markCursorDelivered,
+      deliver: (errMsg) => deliverRejectNotice(chatId, errMsg, { parentId, rootId, threadId, messageId })
+    });
 
     if (imageKeys.length > 0) {
       if (smartNoMention) {
