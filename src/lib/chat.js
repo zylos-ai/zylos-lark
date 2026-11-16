@@ -160,6 +160,7 @@ export async function getChatInfo(chatId) {
           description: res.data.description,
           memberCount: res.data.user_count,
           owner: res.data.owner_id,
+          chatMode: res.data.chat_mode,  // 'p2p', 'group' or 'topic'
         },
       };
     } else {
