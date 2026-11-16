@@ -513,6 +513,20 @@ Configuration in `config.json`:
 
 Message logs are stored in `~/zylos/components/lark/logs/<chat_id>.log`.
 
+## Troubleshooting
+
+### lark-cli credentials / logged-in users
+
+`zylos add lark` / `zylos upgrade lark` push `LARK_APP_ID` / `LARK_APP_SECRET` from `~/zylos/.env` into lark-cli. `lark-cli config init` is only re-run when the App ID, brand, `LARK_LANG` or the `.env` secret changed, or when lark-cli's encrypted secret store (`~/.local/share/lark-cli/master.key` + `appsecret_<appId>.enc`) is missing. When it runs, users logged in via `lark-cli auth login` for the same App ID are kept; a warning is printed if one is lost (e.g. the App ID changed — then run `lark-cli auth login` again).
+
+Not detected automatically: someone ran `lark-cli config init` by hand with a **different secret for the same App ID** (or the store is damaged but still looks intact). `--as bot` then keeps failing even after `zylos upgrade lark`. Force a full re-sync (logged-in users are still preserved):
+
+```bash
+ZYLOS_LARK_FORCE_CLI_INIT=1 node -e "import('$HOME/zylos/.claude/skills/lark/hooks/post-install-shared.js').then(m => m.syncCredentialsToLarkCli())"
+```
+
+Alternatively delete `~/zylos/components/lark/lark-cli-sync.json`; the next `zylos upgrade lark` (or the command above without the variable) re-runs `config init`.
+
 ## Service Management
 
 ```bash

@@ -86,8 +86,8 @@ installLarkCliSkills(SKILL_DIR);
 
 // 5. Sync App ID / Secret from ~/zylos/.env into lark-cli's keychain via
 //    `lark-cli config init` (skipped when unchanged; users logged in via
-//    `lark-cli auth login` are preserved — issue #112), so subsequent
-//    `--as bot` calls just work.
+//    `lark-cli auth login` are preserved), so subsequent `--as bot` calls
+//    just work. ZYLOS_LARK_FORCE_CLI_INIT=1 forces a re-sync.
 console.log('\nSyncing App credentials to lark-cli keychain...');
 syncCredentialsToLarkCli();
 

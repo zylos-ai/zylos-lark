@@ -8,9 +8,10 @@ import {
   syncCredentialsToLarkCli,
   normalizeLarkLang,
   getLarkCliConfigPath,
+  getLarkCliKeychainDir,
 } from '../hooks/post-install-shared.js';
 
-// Tests for issue #112: `lark-cli config init` must not wipe users that were
+// `lark-cli config init` must not wipe users that were
 // logged in via `lark-cli auth login`.
 
 const APP_ID = 'cli_test_app_1';
@@ -20,6 +21,7 @@ const USER = { userOpenId: 'ou_alice', userName: 'Alice' };
 let tmp;
 let configPath;
 let stateFile;
+let keychainDir;
 let calls;
 let logs;
 let origLog;
@@ -29,6 +31,7 @@ let origWarn;
  * Fake `lark-cli config init` reproducing lark-cli v1.0.81 non-profile
  * behaviour (saveInitConfig → saveAsOnlyApp): config.json is replaced by a
  * single app with `users: []`; lang is normalised; all other fields dropped.
+ * Also writes the file-based keychain entries (master.key + secret .enc).
  */
 function fakeLarkCli(file, args, options) {
   calls.push({ file, args, input: options.input });
@@ -44,6 +47,15 @@ function fakeLarkCli(file, args, options) {
       users: [],
     }],
   };
+  fs.mkdirSync(keychainDir, { recursive: true });
+  const keyPath = path.join(keychainDir, 'master.key');
+  // lark-cli getMasterKey: wrong-size key → "keychain is corrupted", not regenerated
+  if (fs.existsSync(keyPath) && fs.statSync(keyPath).size !== 32) {
+    throw new Error('keychain unavailable: keychain is corrupted');
+  }
+  if (!fs.existsSync(keyPath)) fs.writeFileSync(keyPath, Buffer.alloc(32, 7), { mode: 0o600 });
+  const encName = `appsecret:${get('--app-id')}`.replace(/[^a-zA-Z0-9._-]/g, '_') + '.enc';
+  fs.writeFileSync(path.join(keychainDir, encName), Buffer.alloc(60, 1), { mode: 0o600 });
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
   fs.chmodSync(configPath, 0o600);
@@ -84,6 +96,8 @@ function sync(overrides = {}) {
     execFile: fakeLarkCli,
     configPath,
     stateFile,
+    keychainDir,
+    env: {},
     ...overrides,
   });
 }
@@ -92,6 +106,7 @@ beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-cli-sync-'));
   configPath = path.join(tmp, '.lark-cli', 'config.json');
   stateFile = path.join(tmp, 'components', 'lark', 'lark-cli-sync.json');
+  keychainDir = path.join(tmp, '.local', 'share', 'lark-cli');
   calls = [];
   logs = [];
   origLog = console.log;
@@ -108,7 +123,7 @@ afterEach(() => {
 
 const warnings = () => logs.filter((l) => l.level === 'warn').map((l) => l.msg);
 
-describe('lark-cli credential sync: preserve users across config init (#112)', () => {
+describe('lark-cli credential sync: preserve logged-in users across config init', () => {
   it('fresh install (no config.json): runs init, writes 0600 state without the plain secret', () => {
     const res = sync();
     assert.equal(calls.length, 1);
@@ -286,6 +301,75 @@ describe('lark-cli credential sync: preserve users across config init (#112)', (
     assert.deepEqual(readConfig().apps[0].users, [USER]);
   });
 
+  for (const [label, damage] of [
+    ['encrypted secret file missing', () => fs.rmSync(path.join(keychainDir, `appsecret_${APP_ID}.enc`))],
+    ['encrypted secret file truncated', () => fs.writeFileSync(path.join(keychainDir, `appsecret_${APP_ID}.enc`), '')],
+    ['master.key missing', () => fs.rmSync(path.join(keychainDir, 'master.key'))],
+  ]) {
+    it(`${label}: falls back to config init (users preserved)`, () => {
+      writeConfig({ apps: [appEntry()] });
+      sync();
+      damage();
+      calls = [];
+      const res = sync();
+      assert.equal(calls.length, 1, 'config init must run to repair the secret store');
+      assert.equal(res.initSkipped, false);
+      assert.deepEqual(readConfig().apps[0].users, [USER]);
+      calls = [];
+      assert.equal(sync().initSkipped, true, 'repaired store allows skipping again');
+    });
+  }
+
+  it('master.key corrupted (wrong size): runs config init, which fails like lark-cli does; users kept', () => {
+    writeConfig({ apps: [appEntry()] });
+    sync();
+    fs.writeFileSync(path.join(keychainDir, 'master.key'), 'short');
+    calls = [];
+    assert.throws(() => sync(), /keychain is corrupted/);
+    assert.equal(calls.length, 1, 'must not silently skip');
+    assert.deepEqual(readConfig().apps[0].users, [USER]);
+  });
+
+  it('keychain cannot be inspected (non-Linux, keychainDir null): never skips', () => {
+    writeConfig({ apps: [appEntry()] });
+    sync({ keychainDir: null });
+    calls = [];
+    sync({ keychainDir: null });
+    assert.equal(calls.length, 1);
+    assert.deepEqual(readConfig().apps[0].users, [USER]);
+  });
+
+  it('ZYLOS_LARK_FORCE_CLI_INIT=1 forces config init even when unchanged, users preserved', () => {
+    writeConfig({ apps: [appEntry()] });
+    sync();
+    calls = [];
+    const res = sync({ env: { ZYLOS_LARK_FORCE_CLI_INIT: '1' } });
+    assert.equal(calls.length, 1);
+    assert.equal(res.initSkipped, false);
+    assert.deepEqual(readConfig().apps[0].users, [USER]);
+    assert.ok(logs.some((l) => /ZYLOS_LARK_FORCE_CLI_INIT=1 set; forcing/.test(l.msg)));
+    calls = [];
+    assert.equal(sync({ env: { ZYLOS_LARK_FORCE_CLI_INIT: '0' } }).initSkipped, true, 'only "1" forces');
+  });
+
+  it('deleting the sync state file forces config init, users preserved', () => {
+    writeConfig({ apps: [appEntry()] });
+    sync();
+    fs.rmSync(stateFile);
+    calls = [];
+    sync();
+    assert.equal(calls.length, 1);
+    assert.deepEqual(readConfig().apps[0].users, [USER]);
+  });
+
+  it('skip message tells how to force a re-sync', () => {
+    writeConfig({ apps: [appEntry()] });
+    sync();
+    logs = [];
+    sync();
+    assert.ok(logs.some((l) => l.msg.includes('ZYLOS_LARK_FORCE_CLI_INIT=1') && l.msg.includes(stateFile)));
+  });
+
   it('never logs the secret', () => {
     writeConfig({ apps: [appEntry({ appId: 'cli_old_app' })] });
     sync();
@@ -316,6 +400,15 @@ describe('lark-cli helpers', () => {
     assert.equal(normalizeLarkLang('xx'), null);
     assert.equal(normalizeLarkLang(''), null);
     assert.equal(normalizeLarkLang('constructor'), null);
+  });
+
+  it('getLarkCliKeychainDir mirrors lark-cli StorageDir on Linux', () => {
+    assert.equal(getLarkCliKeychainDir({ HOME: '/h' }, 'linux'), '/h/.local/share/lark-cli');
+    assert.equal(getLarkCliKeychainDir({ HOME: '/h', XDG_DATA_HOME: '/xdg' }, 'linux'), '/h/.local/share/lark-cli');
+    assert.equal(getLarkCliKeychainDir({ HOME: '/h', LARKSUITE_CLI_DATA_DIR: '/d' }, 'linux'), '/d/lark-cli');
+    assert.equal(getLarkCliKeychainDir({ HOME: '/h', LARKSUITE_CLI_DATA_DIR: 'rel' }, 'linux'), '/h/.local/share/lark-cli');
+    assert.equal(getLarkCliKeychainDir({ HOME: '/h' }, 'darwin'), null);
+    assert.equal(getLarkCliKeychainDir({ HOME: '/h' }, 'win32'), null);
   });
 
   it('getLarkCliConfigPath honours LARKSUITE_CLI_CONFIG_DIR', () => {

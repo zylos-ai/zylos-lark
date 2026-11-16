@@ -8,7 +8,7 @@
  *   3. syncCredentialsToLarkCli(opts)   - read ~/zylos/.env, delegate to
  *                                          `lark-cli config init --app-secret-stdin`
  *                                          (skipped when unchanged; preserves
- *                                          logged-in users — issue #112)
+ *                                          logged-in users)
  *
  * The target lark-cli version is read from package.json `larkCli.version`,
  * falling back to a hardcoded minimum for backward compatibility with
@@ -219,7 +219,7 @@ export function installLarkCliSkills(skillDir) {
 }
 
 // ---------------------------------------------------------------------------
-// lark-cli config.json preservation (issue #112)
+// lark-cli config.json preservation
 //
 // `lark-cli config init` (non-profile mode) rewrites config.json from scratch
 // as a single app with `users: []` (lark-cli v1.0.81 cmd/config/init.go
@@ -227,12 +227,18 @@ export function installLarkCliSkills(skillDir) {
 // appId survive, only the config entries pointing at them are lost. To keep
 // `lark-cli auth login` identities across install/upgrade we:
 //   1. skip `config init` entirely when nothing changed (see canSkipConfigInit)
+//      and lark-cli's local encrypted store still holds the app secret;
+//      ZYLOS_LARK_FORCE_CLI_INIT=1 (or deleting the sync state file) forces it
 //   2. otherwise snapshot the same-appId user state before init and restore
 //      it afterwards (never across a different appId)
 //   3. warn when a user identity present before the sync is missing after it
 // ---------------------------------------------------------------------------
 
 const SYNC_STATE_VERSION = 1;
+const FORCE_INIT_ENV = 'ZYLOS_LARK_FORCE_CLI_INIT';
+const LARK_CLI_KEYCHAIN_SERVICE = 'lark-cli';
+const LARK_CLI_MASTER_KEY_BYTES = 32; // keychain_other.go masterKeyBytes
+const LARK_CLI_MIN_ENC_BYTES = 12 + 16; // AES-GCM iv + tag
 const DEFAULT_SYNC_STATE_FILE = path.join(
   process.env.HOME || '', 'zylos/components/lark/lark-cli-sync.json'
 );
@@ -257,6 +263,43 @@ export function normalizeLarkLang(lang) {
 export function getLarkCliConfigPath(env = process.env) {
   const base = env.LARKSUITE_CLI_CONFIG_DIR || path.join(env.HOME || '', '.lark-cli');
   return path.join(base, 'config.json');
+}
+
+/**
+ * Directory of lark-cli's file-based keychain on Linux
+ * (internal/keychain/keychain_other.go StorageDir, lark-cli 1.0.81):
+ * $LARKSUITE_CLI_DATA_DIR/lark-cli when that is an absolute path, else
+ * ~/.local/share/lark-cli (XDG_DATA_HOME is not honoured by lark-cli).
+ * Returns null on platforms where lark-cli uses the OS keychain
+ * (macOS Keychain, Windows registry/DPAPI), which we cannot inspect offline.
+ */
+export function getLarkCliKeychainDir(env = process.env, platform = process.platform) {
+  if (platform !== 'linux') return null;
+  const override = env.LARKSUITE_CLI_DATA_DIR;
+  // eslint-disable-next-line no-control-regex
+  if (override && path.isAbsolute(override) && !/[\x00-\x1f\x7f]/.test(override)) {
+    return path.join(path.resolve(override), LARK_CLI_KEYCHAIN_SERVICE);
+  }
+  return path.join(env.HOME || '', '.local', 'share', LARK_CLI_KEYCHAIN_SERVICE);
+}
+
+/**
+ * Cheap offline check that lark-cli's encrypted store still holds a secret
+ * for `appId`: master.key has the exact key size lark-cli requires and
+ * appsecret_<appId>.enc is at least iv+tag long. Nothing is decrypted or
+ * read beyond file sizes. Returns false when it cannot be verified.
+ */
+function larkCliSecretStorePresent(keychainDir, appId) {
+  if (!keychainDir) return false;
+  const account = `appsecret:${appId}`.replace(/[^a-zA-Z0-9._-]/g, '_'); // safeFileName
+  try {
+    const keyStat = fs.statSync(path.join(keychainDir, 'master.key'));
+    const encStat = fs.statSync(path.join(keychainDir, `${account}.enc`));
+    return keyStat.isFile() && keyStat.size === LARK_CLI_MASTER_KEY_BYTES
+      && encStat.isFile() && encStat.size >= LARK_CLI_MIN_ENC_BYTES;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -344,12 +387,15 @@ function secretMatchesState(state, secret) {
 /**
  * Decide whether `lark-cli config init` can be skipped: lark-cli's current
  * app already has the same appId / brand / lang, its secret points at the
- * keychain entry for that appId, and the .env secret matches the one we
+ * keychain entry for that appId, the .env secret matches the one we
  * last pushed (compared via a salted HMAC kept in our own state file —
- * lark-cli offers no way to compare the keychain secret, and we do not
- * read its keychain).
+ * lark-cli offers no offline command that resolves the stored secret, and
+ * we do not decrypt its keychain), and lark-cli's encrypted store still has
+ * the master key and the secret file for this appId. A secret changed by
+ * hand via `lark-cli config init` for the same appId is NOT detected; use
+ * ZYLOS_LARK_FORCE_CLI_INIT=1 for that.
  */
-function canSkipConfigInit({ config, state, appId, appSecret, brand, lang }) {
+function canSkipConfigInit({ config, state, appId, appSecret, brand, lang, keychainDir }) {
   if (!config) return false;
   const app = findCurrentApp(config);
   if (!app || app.appId !== appId || app.brand !== brand) return false;
@@ -362,7 +408,8 @@ function canSkipConfigInit({ config, state, appId, appSecret, brand, lang }) {
   if (!state || state.version !== SYNC_STATE_VERSION || state.appId !== appId || state.brand !== brand) {
     return false;
   }
-  return secretMatchesState(state, appSecret);
+  if (!secretMatchesState(state, appSecret)) return false;
+  return larkCliSecretStorePresent(keychainDir, appId);
 }
 
 /**
@@ -461,14 +508,19 @@ function writeSyncState(stateFile, { appId, brand, appSecret }) {
  * same appId / brand / lang and the same secret (see canSkipConfigInit).
  * When it does run, users logged in via `lark-cli auth login` for the same
  * appId are restored afterwards, and any user identity that is still lost
- * is reported with a warning (issue #112).
+ * is reported with a warning.
+ *
+ * Force a full re-sync (e.g. the lark-cli secret was changed by hand or its
+ * encrypted store was damaged in a way the offline check cannot detect) with
+ * ZYLOS_LARK_FORCE_CLI_INIT=1 or by deleting the sync state file
+ * (~/zylos/components/lark/lark-cli-sync.json). Users are still preserved.
  *
  * Throws only if `lark-cli config init` itself fails (non-zero exit).
  * Failures while preserving users or writing the sync state only warn.
  *
  * Secret is piped via stdin so it never appears in the process listing,
  * and it is never logged. Test seams: opts.execFile, opts.configPath,
- * opts.stateFile.
+ * opts.stateFile, opts.keychainDir, opts.env.
  */
 export function syncCredentialsToLarkCli(opts = {}) {
   let { appId, appSecret, lang, envFile = DEFAULT_ENV_FILE } = opts;
@@ -476,7 +528,10 @@ export function syncCredentialsToLarkCli(opts = {}) {
     execFile = execFileSync,
     configPath = getLarkCliConfigPath(),
     stateFile = DEFAULT_SYNC_STATE_FILE,
+    keychainDir = getLarkCliKeychainDir(),
+    env = process.env,
   } = opts;
+  const forceInit = env[FORCE_INIT_ENV] === '1';
 
   if (fs.existsSync(envFile)) {
     const parsed = parseDotenv(fs.readFileSync(envFile));
@@ -492,7 +547,7 @@ export function syncCredentialsToLarkCli(opts = {}) {
     console.warn(
       `${LOG_PREFIX} LARK_APP_ID / LARK_APP_SECRET not found in ${envFile} ` +
       `or process.env; skipping lark-cli keychain sync. ` +
-      `Add the variables to ${envFile} and re-run this hook (or 'zylos upgrade lark') to sync.`
+      `Add the variables to ${envFile} and run 'zylos upgrade lark' (or re-run this hook) to sync.`
     );
     return { skipped: true, reason: 'credentials_missing' };
   }
@@ -513,10 +568,15 @@ export function syncCredentialsToLarkCli(opts = {}) {
   const stateRes = readJsonFile(stateFile);
   const state = stateRes.status === 'ok' ? stateRes.data : null;
 
-  if (canSkipConfigInit({ config: beforeConfig, state, appId, appSecret, brand: LARK_BRAND, lang })) {
+  if (forceInit) {
+    console.log(`${LOG_PREFIX} ${FORCE_INIT_ENV}=1 set; forcing lark-cli config init`);
+  } else if (canSkipConfigInit({
+    config: beforeConfig, state, appId, appSecret, brand: LARK_BRAND, lang, keychainDir,
+  })) {
     console.log(
       `${LOG_PREFIX} lark-cli already configured for this app (brand=${LARK_BRAND}, lang=${lang}); ` +
-      `skipping config init`
+      `skipping config init. To force a re-sync, re-run with ${FORCE_INIT_ENV}=1 ` +
+      `or delete ${stateFile}.`
     );
     result.initSkipped = true;
     return result;

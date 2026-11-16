@@ -369,7 +369,9 @@ if (fs.existsSync(configPath)) {
 //                                upgrade lark`; users logged in via
 //                                `lark-cli auth login` are preserved for the
 //                                same appId and a lost identity is warned
-//                                about (issue #112)
+//                                about. ZYLOS_LARK_FORCE_CLI_INIT=1 (or
+//                                deleting ~/zylos/components/lark/
+//                                lark-cli-sync.json) forces a re-sync.
 //
 // On failure: hard-fail with exit(1) to abort the upgrade, matching the
 // config migration block above and §4.4 "abort + rollback" policy.
