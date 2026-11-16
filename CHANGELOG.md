@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-11-16
+
+### Fixed
+- **Install/upgrade no longer wipes lark-cli logged-in users (#112).**
+  `syncCredentialsToLarkCli()` used to run `lark-cli config init` on every
+  install and upgrade, which rewrites `~/.lark-cli/config.json` with
+  `users: []` and silently dropped identities authorized via
+  `lark-cli auth login`. Now `config init` is skipped when lark-cli is already
+  configured with the same appId / brand / lang and the same secret (compared
+  via a salted HMAC in `~/zylos/components/lark/lark-cli-sync.json`, mode
+  0600; lark-cli's keychain is never read). When init does run (first run
+  after this upgrade, secret rotation, lang change, ...), the users of the
+  same appId (plus `defaultAs` / `strictMode` and the workspace
+  `strictMode` / `riskControl`) are restored afterwards with an atomic write;
+  users are never carried over to a different appId. A warning is printed if
+  a user identity present before the sync is missing after it
+  (`hooks/post-install-shared.js`).
+
 ## [0.4.0] - 2026-11-10
 
 ### Added
