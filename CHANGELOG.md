@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after this upgrade, secret rotation, lang change, ...), the users of the
   same appId (plus `defaultAs` / `strictMode` and the workspace
   `strictMode` / `riskControl`) are restored afterwards with an atomic write;
-  users are never carried over to a different appId. A warning is printed if
+  users are never carried over to a different appId. The restore also runs
+  when `config init` exits non-zero after saving (lark-cli probes the app
+  after writing config.json), then the error is rethrown. A warning is printed if
   a user identity present before the sync is missing after it
   (`hooks/post-install-shared.js`).
 

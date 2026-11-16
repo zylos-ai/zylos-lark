@@ -255,6 +255,17 @@ describe('lark-cli credential sync: preserve users across config init (#112)', (
     assert.deepEqual(readConfig().apps[0].users, [USER], 'config left as lark-cli left it');
   });
 
+  it('config init saves config then fails its server probe: users restored, error rethrown', () => {
+    writeConfig({ apps: [appEntry()] });
+    const saveThenFail = (file, args, options) => {
+      fakeLarkCli(file, args, options);
+      throw new Error('Command failed: lark-cli config init (probe: network error)');
+    };
+    assert.throws(() => sync({ execFile: saveThenFail }), /probe: network error/);
+    assert.deepEqual(readConfig().apps[0].users, [USER]);
+    assert.equal(fs.existsSync(stateFile), false, 'state must not be recorded on failure');
+  });
+
   it('restored config.json is written atomically and keeps mode 0600', () => {
     writeConfig({ apps: [appEntry()] });
     sync();

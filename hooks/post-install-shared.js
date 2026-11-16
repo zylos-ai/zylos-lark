@@ -524,18 +524,24 @@ export function syncCredentialsToLarkCli(opts = {}) {
 
   const snapshot = snapshotPreservedState(beforeConfig, appId);
 
-  execFile('lark-cli', [
-    'config', 'init',
-    '--app-id', appId,
-    '--app-secret-stdin',
-    '--brand', LARK_BRAND,
-    '--lang', lang,
-  ], {
-    input: appSecret + '\n',
-    stdio: ['pipe', 'inherit', 'inherit'],
-  });
-
-  console.log(`${LOG_PREFIX} synced App credentials to lark-cli (brand=${LARK_BRAND}, lang=${lang})`);
+  // lark-cli saves config.json *before* probing the app against the server
+  // (cmd/config/init.go runProbe), so a non-zero exit can still have wiped
+  // the user list: restore in both cases, then rethrow.
+  let initError = null;
+  try {
+    execFile('lark-cli', [
+      'config', 'init',
+      '--app-id', appId,
+      '--app-secret-stdin',
+      '--brand', LARK_BRAND,
+      '--lang', lang,
+    ], {
+      input: appSecret + '\n',
+      stdio: ['pipe', 'inherit', 'inherit'],
+    });
+  } catch (err) {
+    initError = err;
+  }
 
   if (snapshot) {
     try {
@@ -547,6 +553,10 @@ export function syncCredentialsToLarkCli(opts = {}) {
       console.warn(`${LOG_PREFIX} failed to restore lark-cli user list after config init: ${err.message}`);
     }
   }
+
+  if (initError) throw initError;
+
+  console.log(`${LOG_PREFIX} synced App credentials to lark-cli (brand=${LARK_BRAND}, lang=${lang})`);
 
   try {
     writeSyncState(stateFile, { appId, brand: LARK_BRAND, appSecret });
