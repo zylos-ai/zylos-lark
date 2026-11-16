@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-11-16
+
+### Fixed
+- **Install/upgrade no longer wipes lark-cli logged-in users (#112).**
+  `syncCredentialsToLarkCli()` used to run `lark-cli config init` on every
+  install and upgrade, which rewrites `~/.lark-cli/config.json` with
+  `users: []` and silently dropped identities authorized via
+  `lark-cli auth login`. Now `config init` is skipped when lark-cli is already
+  configured with the same appId / brand / lang and the same secret (compared
+  via a salted HMAC in `~/zylos/components/lark/lark-cli-sync.json`, mode
+  0600; lark-cli's keychain is never read). When init does run (first run
+  after this upgrade, secret rotation, lang change, ...), the users of the
+  same appId (plus `defaultAs` / `strictMode` and the workspace
+  `strictMode` / `riskControl`) are restored afterwards with an atomic write;
+  users are never carried over to a different appId. The restore also runs
+  when `config init` exits non-zero after saving (lark-cli probes the app
+  after writing config.json), then the error is rethrown. A warning is printed if
+  a user identity present before the sync is missing after it
+  (`hooks/post-install-shared.js`).
+- The skip also requires lark-cli's local encrypted secret store to still be
+  present (Linux: `~/.local/share/lark-cli/master.key` and
+  `appsecret_<appId>.enc`, or under `$LARKSUITE_CLI_DATA_DIR/lark-cli`; on
+  macOS/Windows, where lark-cli uses the OS keychain, `config init` always
+  runs), so a missing or truncated store is re-created on the next sync (the
+  next real `zylos upgrade lark`, or the one-line sync command in SKILL.md →
+  Troubleshooting; `zylos upgrade lark` skips hooks when already up to date).
+
+### Added
+- `ZYLOS_LARK_FORCE_CLI_INIT=1` forces `lark-cli config init` during the
+  credential sync (logged-in users are still preserved); deleting
+  `~/zylos/components/lark/lark-cli-sync.json` has the same effect on the next
+  sync run (the SKILL.md command, or the next real upgrade). Needed when the
+  secret for the same App ID was changed by hand with `lark-cli config init`,
+  which the sync cannot detect. See SKILL.md
+  → Troubleshooting.
+
 ## [0.4.0] - 2026-11-10
 
 ### Added
