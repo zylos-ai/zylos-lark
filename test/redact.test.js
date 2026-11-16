@@ -24,10 +24,13 @@ process.env.LARK_APP_ID = 'cli_fakeappid0001';
 process.env.LARK_APP_SECRET = FAKE_SECRET;
 
 const {
-  redact, redactText, isSensitiveKey, createRedactingLogger, installConsoleRedaction,
+  redact, redactText, formatRedacted, isSensitiveKey, createRedactingLogger, installConsoleRedaction,
   registerSecrets, clearRegisteredSecrets, REDACTED,
 } = await import('../src/lib/redact.js');
 const { getClient, resetClient } = await import('../src/lib/client.js');
+
+// Opaque fakes: not t-/u- shaped, so only the rule under test can mask them.
+const OPAQUE = 'opaqueFakeValue9f8e7d6c5b4a';
 
 const ALL_FAKES = [FAKE_SECRET, FAKE_TENANT_TOKEN, FAKE_USER_TOKEN, FAKE_ENCRYPT_KEY, FAKE_VERIFY_TOKEN];
 
@@ -63,10 +66,12 @@ test.beforeEach(() => {
 test('isSensitiveKey matches secret/token/header keys in any casing', () => {
   for (const k of ['app_secret', 'appSecret', 'tenant_access_token', 'user_access_token', 'access_token',
     'refresh_token', 'Authorization', 'authorization', 'Proxy-Authorization', 'encrypt_key', 'encryptKey',
-    'verification_token', 'verificationToken', 'token', 'Cookie', 'x-internal-token', 'client_secret']) {
+    'verification_token', 'verificationToken', 'token', 'Cookie', 'x-internal-token', 'client_secret',
+    'secret_key', 'secretKey', 'api_key', 'apiKey', 'x-api-key', 'private_key', 'privateKey']) {
     assert.ok(isSensitiveKey(k), k);
   }
-  for (const k of ['app_id', 'url', 'method', 'code', 'msg', 'message', 'status', 'chat_id', 'page_token_x']) {
+  for (const k of ['app_id', 'url', 'method', 'code', 'msg', 'message', 'status', 'chat_id', 'page_token_x',
+    'file_token', 'page_token', 'keyboard']) {
     assert.ok(!isSensitiveKey(k), k);
   }
 });
@@ -230,4 +235,213 @@ test('installConsoleRedaction wraps console methods, is idempotent and restorabl
   restore();
   target.log(`raw ${FAKE_SECRET}`);
   assert.ok(lines[3].text.includes(FAKE_SECRET), 'restored to original');
+});
+
+// ---- Rules checked with opaque values (not token-shaped) ----
+
+test('Bearer / Basic values are masked even when opaque and without a header key', () => {
+  assert.equal(redactText(`sent Bearer ${OPAQUE} upstream`), `sent Bearer ${REDACTED} upstream`);
+  assert.equal(redactText(`basic ${OPAQUE}`), `basic ${REDACTED}`);
+});
+
+test('tenant/user/app access_token text keys mask opaque values', () => {
+  for (const key of ['tenant_access_token', 'user_access_token', 'app_access_token', 'tenantAccessToken']) {
+    assert.equal(redactText(`{"${key}":"${OPAQUE}"}`), `{"${key}":"${REDACTED}"}`, key);
+    assert.equal(redactText(`${key}=${OPAQUE}&x=1`), `${key}=${REDACTED}&x=1`, key);
+    assert.equal(redactText(`{ ${key}: '${OPAQUE}' }`), `{ ${key}: '${REDACTED}' }`, key);
+  }
+});
+
+test('secret_key, api_key, private_key and percent-encoded keys are masked', () => {
+  assert.equal(redactText(`secret_key=${OPAQUE} api_key: "${OPAQUE}" private_key='${OPAQUE}'`),
+    `secret_key=${REDACTED} api_key: "${REDACTED}" private_key='${REDACTED}'`);
+  assert.equal(redactText(`a=1&app%5Fsecret=${OPAQUE}&b=2`), `a=1&app%5Fsecret=${REDACTED}&b=2`);
+  assert.equal(redactText(`q=app%5fsecret%3D${OPAQUE}`), `q=app%5fsecret%3D${REDACTED}`);
+  const out = redact({ secret_key: OPAQUE, apiKey: OPAQUE, private_key: OPAQUE, keep: 'k' });
+  assert.deepEqual(out, { secret_key: REDACTED, apiKey: REDACTED, private_key: REDACTED, keep: 'k' });
+});
+
+test('authorization with any scheme (or none) is masked, scheme kept, idempotent', () => {
+  const cases = [
+    [`authorization=Token ${OPAQUE}`, `authorization=Token ${REDACTED}`],
+    [`Authorization: Digest ${OPAQUE}`, `Authorization: Digest ${REDACTED}`],
+    [`"Authorization":"Token ${OPAQUE}"`, `"Authorization":"Token ${REDACTED}"`],
+    [`{ authorization: '${OPAQUE}' }`, `{ authorization: '${REDACTED}' }`],
+    [`Proxy-Authorization: Basic ${OPAQUE}`, `Proxy-Authorization: Basic ${REDACTED}`],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(redactText(input), expected, input);
+    assert.equal(redactText(expected), expected, `idempotent: ${expected}`);
+  }
+});
+
+test('a secret inside an error cause chain is redacted', () => {
+  const inner = new Error(`token refresh failed: app_secret=${OPAQUE}`);
+  inner.tenant_access_token = OPAQUE;
+  const err = new Error('outer', { cause: new Error('middle', { cause: inner }) });
+  const out = redact(err);
+  assert.equal(out.cause.message, 'middle');
+  assert.equal(out.cause.cause.message, `token refresh failed: app_secret=${REDACTED}`);
+  assert.equal(out.cause.cause.tenant_access_token, REDACTED);
+  assert.ok(!util.inspect(out, { depth: 10 }).includes(OPAQUE));
+  assert.ok(err.cause.cause.message.includes(OPAQUE), 'input not mutated');
+});
+
+test('AggregateError keeps its errors, redacted', () => {
+  const err = new AggregateError([new Error(`app_secret=${OPAQUE}`), new Error('connect ETIMEDOUT')], 'all failed');
+  const out = redact(err);
+  assert.equal(out.message, 'all failed');
+  assert.deepEqual(out.errors.map(e => e.message), [`app_secret=${REDACTED}`, 'connect ETIMEDOUT']);
+});
+
+test('URL objects are printed as redacted strings, not {}', () => {
+  const out = redact({ url: new URL(`https://x.example/ws?device_id=1&access_key=${OPAQUE}`) });
+  assert.equal(out.url, `https://x.example/ws?device_id=1&access_key=${REDACTED}`);
+});
+
+test('redact() never throws, even for inputs that throw while walked', () => {
+  const hostile = new Proxy({}, { ownKeys() { throw new Error('boom'); } });
+  assert.equal(redact(hostile), '[unloggable value]');
+  assert.equal(redact({ nested: hostile }), '[unloggable value]');
+  const getter = { ok: 1, get bad() { throw new Error('boom'); } };
+  assert.deepEqual(redact(getter), { ok: 1, bad: '[unreadable]' });
+  assert.equal(formatRedacted(['x', hostile]), 'x [unloggable value]');
+});
+
+test('getClient() registers the configured app secret', () => {
+  const opaqueSecret = 'opaqueAppSecret7c6b5a4d3e2f';
+  const saved = process.env.LARK_APP_SECRET;
+  process.env.LARK_APP_SECRET = opaqueSecret;
+  try {
+    resetClient();
+    assert.equal(redactText(`x ${opaqueSecret} y`), `x ${opaqueSecret} y`, 'not registered yet');
+    getClient();
+    assert.equal(redactText(`x ${opaqueSecret} y`), `x ${REDACTED} y`);
+  } finally {
+    process.env.LARK_APP_SECRET = saved;
+    resetClient();
+  }
+});
+
+// ---- Console formatting keeps format strings and arguments together ----
+
+test('console arguments are formatted first, so key and value in different arguments are masked', () => {
+  const { lines, out } = captureOut();
+  const restore = installConsoleRedaction(out);
+  try {
+    out.log('token=%s', OPAQUE);
+    out.log('[x] token:', OPAQUE);
+    out.log('[x] app_secret: %s, encrypt_key: %s', OPAQUE, OPAQUE);
+    out.info('[lark] sent %d messages to %s', 3, 'oc_abc123', { chat: 'oc_abc123', n: [1, 2] });
+  } finally {
+    restore();
+  }
+  assert.equal(lines[0].text, `token=${REDACTED}`);
+  assert.equal(lines[1].text, `[x] token: ${REDACTED}`);
+  assert.equal(lines[2].text, `[x] app_secret: ${REDACTED}, encrypt_key: ${REDACTED}`);
+  assert.equal(lines[3].text, util.format('[lark] sent %d messages to %s', 3, 'oc_abc123', { chat: 'oc_abc123', n: [1, 2] }),
+    'non-secret output is identical to console');
+});
+
+test('the SDK logger also masks a value logged as the argument after its key', () => {
+  const { lines, out } = captureOut();
+  const logger = createRedactingLogger(out);
+  // LoggerProxy passes the SDK's arguments as one array.
+  logger.info(['[ws]', 'ticket:', OPAQUE, 'done']);
+  logger.warn(['[ws] access_key=', OPAQUE]);
+  logger.info(['[ws]', 'ws client ready']);
+  assert.equal(lines[0].text, `[info]: [ '[ws]', 'ticket:', '${REDACTED}', 'done' ]`);
+  assert.equal(lines[1].text, `[warn]: [ '[ws] access_key=', '${REDACTED}' ]`);
+  assert.equal(lines[2].text, `[info]: [ '[ws]', 'ws client ready' ]`, 'same text as the SDK default logger');
+  for (const l of lines) assert.equal(redactText(l.text), l.text, 'idempotent');
+});
+
+// ---- Narrower token shape ----
+
+test('the Lark token shape does not match inside paths or words', () => {
+  for (const s of [
+    '/tmp/u-ploads_0123456789abcdefghijklmnopqrstuvwxyz/file.png',
+    'C:\\tmp\\t-0123456789abcdefghijklmnopqrstuvwxyz.log',
+    'menu-0123456789abcdefghijklmnopqrstuvwxyz',
+    'a-very-long-hyphenated-identifier-name-without-digits',
+    'u-short0123456789',
+  ]) {
+    assert.equal(redactText(s), s, s);
+  }
+  // Real-shaped tokens (fake values) standing alone are still masked.
+  assert.equal(redactText('got t-g1044fakeTenantTokenABCDEFGHIJKLMNOPQRS ok'), `got ${REDACTED} ok`);
+  assert.equal(redactText('(u-fakeUserToken0123456789abcdefghijklmn)'), `(${REDACTED})`);
+  assert.equal(redactText('ur-fakeRefreshToken0123456789abcdefghij.'), `${REDACTED}`);
+});
+
+// ---- Bounded traversal ----
+
+test('large arrays are truncated with a marker and redact fast', () => {
+  const big = Array.from({ length: 200000 }, (_, i) => ({ id: i, secret: OPAQUE }));
+  const start = performance.now();
+  const out = redact(big);
+  const ms = performance.now() - start;
+  assert.ok(ms < 500, `took ${ms.toFixed(0)}ms`);
+  assert.equal(out.length, 101);
+  assert.deepEqual(out[0], { id: 0, secret: REDACTED });
+  assert.equal(out[100], '… 199900 more items');
+});
+
+test('wide graphs are bounded and shared references are walked once', () => {
+  const shared = (d) => (d === 0 ? { leaf: 'x', token: OPAQUE } : Array(8).fill(shared(d - 1)));
+  const distinct = (d) => (d === 0 ? { leaf: 'x', token: OPAQUE } : Array.from({ length: 8 }, () => distinct(d - 1)));
+  const results = {};
+  for (const [name, graph] of [['shared', shared(6)], ['distinct', distinct(6)]]) {
+    const start = performance.now();
+    results[name] = redact(graph);
+    const ms = performance.now() - start;
+    assert.ok(ms < 500, `${name} took ${ms.toFixed(0)}ms`);
+    const printed = util.inspect(results[name], { depth: Infinity, maxArrayLength: Infinity });
+    assert.ok(!printed.includes(OPAQUE), name);
+  }
+  assert.equal(results.shared[0], results.shared[1], 'shared reference copied once');
+  assert.match(util.inspect(results.distinct, { depth: Infinity, maxArrayLength: Infinity }), /… \d+ more items/,
+    'node budget cuts the distinct tree');
+});
+
+test('cycles still print as [Circular] with memoization; shared non-cyclic refs do not', () => {
+  const a = { name: 'a' };
+  const b = { name: 'b', a };
+  a.b = b;
+  const out = redact({ first: a, second: a, b });
+  assert.equal(out.first.b.a, '[Circular]');
+  assert.equal(out.second, out.first);
+  assert.notEqual(out.b, '[Circular]');
+});
+
+test('redact() limits can be lifted (used by admin show)', () => {
+  const list = Array.from({ length: 300 }, (_, i) => `ou_${i}`);
+  assert.equal(redact(list).length, 101);
+  assert.deepEqual(redact(list, { maxItems: Infinity, maxNodes: Infinity }), list);
+});
+
+test('admin show masks secret config fields and keeps the rest', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-admin-show-'));
+  try {
+    const dir = path.join(home, 'zylos/components/lark');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+      enabled: true,
+      bot: { encrypt_key: FAKE_ENCRYPT_KEY, verification_token: FAKE_VERIFY_TOKEN, app_id: 'cli_fakeappid0001' },
+      dmAllowFrom: Array.from({ length: 150 }, (_, i) => `ou_${i}`),
+    }));
+    const admin = path.join(path.dirname(new URL(import.meta.url).pathname), '../src/admin.js');
+    const text = execFileSync(process.execPath, [admin, 'show'], {
+      env: { ...process.env, HOME: home, ZYLOS_DIR: path.join(home, 'zylos') }, encoding: 'utf8',
+    });
+    const shown = JSON.parse(text);
+    assert.equal(shown.bot.encrypt_key, REDACTED);
+    assert.equal(shown.bot.verification_token, REDACTED);
+    assert.equal(shown.bot.app_id, 'cli_fakeappid0001');
+    assert.equal(shown.dmAllowFrom.length, 150, 'config dump is not truncated');
+    assertNoSecrets(text);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });

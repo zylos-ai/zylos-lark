@@ -17,13 +17,28 @@
  *   console methods of the service process as a safety net.
  *
  * `redact()` returns a sanitized copy and never mutates its input. Errors
- * keep their name, message, stack, code, cause and (for axios errors) method,
- * url, status and response data, so the log stays useful.
+ * keep their name, message, stack, code, cause, AggregateError `errors` and
+ * (for axios errors) method, url, status and response data, so the log stays
+ * useful. The walk is bounded: arrays, Maps and Sets keep their first
+ * MAX_ITEMS entries (plus a "… N more items" marker), objects their first
+ * MAX_ITEMS keys, nesting stops at MAX_DEPTH and the whole copy at
+ * MAX_NODES values. Shared references are copied once.
+ *
+ * The bare key `token` stays masked on purpose. It does sometimes hold a
+ * harmless Lark drive file token, but it is also the field that carries the
+ * verification token in v1 event callbacks (`{"token": "..."}`) and the
+ * generic name SDKs use for credentials, so a false positive (a masked file
+ * id) is the cheaper mistake. Specific keys such as `file_token` or
+ * `page_token` are not masked.
  */
+
+import util from 'node:util';
 
 export const REDACTED = '[REDACTED]';
 
 const MAX_DEPTH = 6;
+const MAX_ITEMS = 100;
+const MAX_NODES = 5000;
 const MIN_KNOWN_SECRET_LENGTH = 8;
 
 // Object keys whose values are always redacted. Compared after lowercasing
@@ -48,6 +63,9 @@ const SENSITIVE_KEYS = new Set([
   'ticket',
   'accesskey',
   'password',
+  'secretkey',
+  'apikey',
+  'privatekey',
   'xinternaltoken',
 ]);
 
@@ -59,29 +77,53 @@ export function isSensitiveKey(key) {
     || k.endsWith('secret')
     || k.endsWith('accesstoken')
     || k.endsWith('refreshtoken')
+    || k.endsWith('secretkey')
+    || k.endsWith('apikey')
+    || k.endsWith('privatekey')
     || k.endsWith('password');
 }
 
 // Key names recognised inside free text: JSON bodies ("app_secret":"..."),
-// inspected objects (app_secret: '...'), query strings (ticket=...).
+// inspected objects (app_secret: '...'), query strings (ticket=...), also
+// percent-encoded (app%5Fsecret%3D...). `_` stands for an optional '_' or %5F.
 const TEXT_KEYS = [
-  'app_?secret', 'client_?secret',
-  '(?:tenant|user|app)_?access_?token', 'access_?token', 'refresh_?token',
-  'encrypt_?key', 'verification_?token',
-  'app_?ticket', 'ticket', 'access_?key',
+  'app_secret', 'client_secret', 'secret_key', 'api_key', 'private_key',
+  '(?:tenant|user|app)_access_token', 'access_token', 'refresh_token',
+  'encrypt_key', 'verification_token',
+  'app_ticket', 'ticket', 'access_key',
   'x-internal-token', 'password', 'secret', 'token',
-].join('|');
+].map(k => k.replace(/_/g, '(?:_|%5F)?')).join('|');
 
-// prefix: optional (escaped) quote, key, optional quote, ':' or '='.
+// prefix: optional (escaped) quote, key, optional quote, ':' / '=' / %3D.
 // value: \"escaped\" | "double" | 'single' | bare word (not already redacted).
 const KEY_VALUE_RE = new RegExp(
-  `((?:\\\\?["'])?\\b(?:${TEXT_KEYS})(?:\\\\?["'])?\\s*[:=]\\s*)`
+  `((?:\\\\?["'])?\\b(?:${TEXT_KEYS})(?:\\\\?["'])?\\s*(?:[:=]|%3D)\\s*)`
+  + `(?!["']\\s*,)`
   + `(\\\\"[^"]*?\\\\"|"(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*'|(?!\\[REDACTED\\])[^\\s,&;}'"\\]]+)`,
   'gi',
 );
+// Key and value in adjacent elements of an inspected array, as the SDK logs
+// them (`logger.info('ticket:', v)` prints `[ 'ticket:', 'v' ]`).
+const ELEMENT_KEY_VALUE_RE = new RegExp(
+  `(\\b(?:${TEXT_KEYS})\\s*(?:[:=]|%3D)\\s*["']\\s*,\\s*)`
+  + `("(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*')`,
+  'gi',
+);
+// Authorization / Proxy-Authorization with any scheme (Bearer, Basic, Token,
+// ...) or none: `authorization=Token abc`, `"Authorization": "Bearer abc"`.
+// The scheme is kept, the credential masked.
+const AUTH_HEADER_RE = new RegExp(
+  `(\\b(?:proxy-)?authorization(?:\\\\?["'])?\\s*(?:[:=]|%3D)\\s*(?:\\\\?["'])?)`
+  + `(?:([A-Za-z][A-Za-z0-9-]*)(\\s+|%20|\\+))?(?![A-Za-z][A-Za-z0-9-]*(?:\\s+|%20|\\+)\\[REDACTED\\])(?!\\[REDACTED\\])[^\\s,;&"'}\\]\\\\]+`,
+  'gi',
+);
 const AUTH_SCHEME_RE = /\b(Bearer|Basic)\s+(?!\[REDACTED\])[A-Za-z0-9._~+/=-]+/gi;
-// Lark token shapes: t- (tenant), u- (user), a- (app), ur- (refresh).
-const LARK_TOKEN_RE = /\b(?:t|u|a|ur)-[A-Za-z0-9._]{20,}/g;
+// Lark token shapes: t- (tenant), u- (user), a- (app), ur- (refresh), e.g.
+// `t-g1044ghJRUIJJ5ELPPTE7XCBBM4MCHJ7ROSJKNQE` (prefix + ~40 characters).
+// Must stand alone (not inside a path, file name or longer word), be at
+// least 30 characters after the prefix and contain a digit, so names such as
+// `/tmp/u-ploads_...` or `a-very-long-hyphenated-identifier-name` survive.
+const LARK_TOKEN_RE = /(?<![\w./\\-])(?:t|u|a|ur)-(?=[A-Za-z0-9._-]*\d)[A-Za-z0-9._-]{30,}(?![\w/\\-])/g;
 
 const knownSecrets = new Set();
 
@@ -115,7 +157,9 @@ export function redactText(text) {
   for (const secret of knownSecrets) {
     if (out.includes(secret)) out = out.split(secret).join(REDACTED);
   }
+  out = out.replace(AUTH_HEADER_RE, (_m, prefix, scheme, sep) => prefix + (scheme ? scheme + sep : '') + REDACTED);
   out = out.replace(AUTH_SCHEME_RE, (_m, scheme) => `${scheme} ${REDACTED}`);
+  out = out.replace(ELEMENT_KEY_VALUE_RE, (_m, prefix, value) => prefix + redactQuotedValue(value));
   out = out.replace(KEY_VALUE_RE, (_m, prefix, value) => prefix + redactQuotedValue(value));
   out = out.replace(LARK_TOKEN_RE, REDACTED);
   return out;
@@ -125,7 +169,7 @@ function isBinary(v) {
   return Buffer.isBuffer(v) || ArrayBuffer.isView(v) || v instanceof ArrayBuffer;
 }
 
-function redactError(err, depth, seen) {
+function redactError(err, depth, ctx) {
   const out = new Error(redactText(String(err.message ?? '')));
   out.name = err.name;
   out.stack = typeof err.stack === 'string' ? redactText(err.stack) : out.stack;
@@ -141,54 +185,116 @@ function redactError(err, depth, seen) {
     const status = err.response?.status ?? err.status;
     if (status !== undefined) out.status = status;
     if (err.response && err.response.data !== undefined) {
-      out.responseData = redactValue(err.response.data, depth + 1, seen);
+      out.responseData = redactValue(err.response.data, depth + 1, ctx);
     }
   } else {
     for (const key of Object.keys(err)) {
       if (key === 'message' || key === 'stack') continue;
-      out[key] = isSensitiveKey(key) ? REDACTED : redactValue(err[key], depth + 1, seen);
+      out[key] = isSensitiveKey(key) ? REDACTED : redactValue(err[key], depth + 1, ctx);
     }
   }
-  if (err.cause !== undefined) out.cause = redactValue(err.cause, depth + 1, seen);
+  // AggregateError keeps `errors` as a non-enumerable own property.
+  if (Array.isArray(err.errors) && !Object.hasOwn(out, 'errors')) {
+    out.errors = redactValue(err.errors, depth + 1, ctx);
+  }
+  if (err.cause !== undefined) out.cause = redactValue(err.cause, depth + 1, ctx);
   return out;
 }
 
-function redactValue(value, depth, seen) {
-  if (typeof value === 'string') return redactText(value);
+function moreMarker(n, what) {
+  return `… ${n} more ${what}`;
+}
+
+function redactEntries(iterable, size, depth, ctx, each) {
+  let i = 0;
+  for (const entry of iterable) {
+    if (i >= ctx.maxItems || ctx.nodes >= ctx.maxNodes) return size - i;
+    each(entry);
+    i++;
+  }
+  return 0;
+}
+
+function redactObject(value, depth, ctx) {
+  if (value instanceof Error) return redactError(value, depth, ctx);
+  if (Array.isArray(value)) {
+    const out = [];
+    const rest = redactEntries(value, value.length, depth, ctx, v => out.push(redactValue(v, depth + 1, ctx)));
+    if (rest > 0) out.push(moreMarker(rest, 'items'));
+    return out;
+  }
+  if (value instanceof Map) {
+    const out = new Map();
+    const rest = redactEntries(value, value.size, depth, ctx,
+      ([k, v]) => out.set(k, isSensitiveKey(k) ? REDACTED : redactValue(v, depth + 1, ctx)));
+    if (rest > 0) out.set('…', moreMarker(rest, 'entries'));
+    return out;
+  }
+  if (value instanceof Set) {
+    const out = new Set();
+    const rest = redactEntries(value, value.size, depth, ctx, v => out.add(redactValue(v, depth + 1, ctx)));
+    if (rest > 0) out.add(moreMarker(rest, 'items'));
+    return out;
+  }
+  const out = {};
+  const keys = Object.keys(value);
+  const rest = redactEntries(keys, keys.length, depth, ctx, (key) => {
+    let v;
+    try { v = value[key]; } catch { v = '[unreadable]'; }
+    out[key] = isSensitiveKey(key) && v !== undefined && v !== null && v !== '' ? REDACTED : redactValue(v, depth + 1, ctx);
+  });
+  if (rest > 0) out['…'] = moreMarker(rest, 'keys');
+  return out;
+}
+
+function redactValue(value, depth, ctx) {
+  ctx.nodes++;
+  if (typeof value === 'string') return ctx.nodes > ctx.maxNodes ? '[Truncated]' : redactText(value);
   if (value === null || typeof value !== 'object') return value;
   if (isBinary(value)) return `[binary ${value.byteLength ?? value.length} bytes]`;
   if (value instanceof Date || value instanceof RegExp) return value;
-  if (seen.has(value)) return '[Circular]';
-  if (depth > MAX_DEPTH) return Array.isArray(value) ? '[Array]' : '[Object]';
-  seen.add(value);
+  if (value instanceof URL || value instanceof URLSearchParams) return redactText(String(value));
+  if (ctx.active.has(value)) return '[Circular]';
+  if (ctx.done.has(value)) return ctx.done.get(value);
+  if (depth > ctx.maxDepth) return Array.isArray(value) ? '[Array]' : '[Object]';
+  if (ctx.nodes > ctx.maxNodes) return '[Truncated]';
+  ctx.active.add(value);
   try {
-    if (value instanceof Error) return redactError(value, depth, seen);
-    if (Array.isArray(value)) return value.map(v => redactValue(v, depth + 1, seen));
-    if (value instanceof Map) {
-      const out = new Map();
-      for (const [k, v] of value) out.set(k, isSensitiveKey(k) ? REDACTED : redactValue(v, depth + 1, seen));
-      return out;
-    }
-    if (value instanceof Set) return new Set([...value].map(v => redactValue(v, depth + 1, seen)));
-    const out = {};
-    for (const key of Object.keys(value)) {
-      let v;
-      try { v = value[key]; } catch { v = '[unreadable]'; }
-      out[key] = isSensitiveKey(key) && v !== undefined && v !== null && v !== '' ? REDACTED : redactValue(v, depth + 1, seen);
-    }
+    const out = redactObject(value, depth, ctx);
+    ctx.done.set(value, out);
     return out;
   } finally {
-    seen.delete(value);
+    ctx.active.delete(value);
   }
 }
 
 /**
  * Return a log-safe copy of `value` (string, Error, AxiosError, array or
- * nested object). The input is not modified.
+ * nested object). The input is not modified. Never throws: a value that
+ * cannot be walked becomes '[unloggable value]'.
+ *
+ * `options.maxDepth` / `maxItems` / `maxNodes` override the size bounds (e.g.
+ * `Infinity` for a config dump that must stay complete).
  */
-export function redact(value) {
+export function redact(value, { maxDepth = MAX_DEPTH, maxItems = MAX_ITEMS, maxNodes = MAX_NODES } = {}) {
   try {
-    return redactValue(value, 0, new Set());
+    return redactValue(value, 0, { active: new Set(), done: new WeakMap(), nodes: 0, maxDepth, maxItems, maxNodes });
+  } catch {
+    return '[unloggable value]';
+  }
+}
+
+/**
+ * Redact a console-style argument list and format it into one string, so
+ * a format string and its arguments are checked together
+ * (`('token=%s', v)` or `('[x] token:', v)`). Objects are first redacted by
+ * key, then everything is `util.format`ted and redactText() runs once over
+ * the result. For non-secret content the text equals what console prints.
+ */
+export function formatRedacted(args) {
+  try {
+    const safe = args.map(a => (a !== null && typeof a === 'object' ? redact(a) : a));
+    return redactText(util.format(...safe));
   } catch {
     return '[unloggable value]';
   }
@@ -200,13 +306,13 @@ export function redact(value) {
  * logger, with every argument passed through redact().
  */
 export function createRedactingLogger(out = console) {
-  const r = (args) => args.map(redact);
+  const f = (level, msg) => formatRedacted([`[${level}]:`, ...msg]);
   return {
-    error: (...msg) => out.log('[error]:', ...r(msg)),
-    warn: (...msg) => out.warn('[warn]:', ...r(msg)),
-    info: (...msg) => out.info('[info]:', ...r(msg)),
-    debug: (...msg) => out.debug('[debug]:', ...r(msg)),
-    trace: (...msg) => out.trace('[trace]:', ...r(msg)),
+    error: (...msg) => out.log(f('error', msg)),
+    warn: (...msg) => out.warn(f('warn', msg)),
+    info: (...msg) => out.info(f('info', msg)),
+    debug: (...msg) => out.debug(f('debug', msg)),
+    trace: (...msg) => out.trace(f('trace', msg)),
   };
 }
 
@@ -214,7 +320,8 @@ const CONSOLE_METHODS = ['log', 'info', 'warn', 'error', 'debug', 'trace'];
 const INSTALLED = Symbol.for('zylos-lark.consoleRedaction');
 
 /**
- * Wrap console methods so every argument is redacted before printing.
+ * Wrap console methods so their output is redacted before printing: the
+ * arguments are formatted into one string by formatRedacted().
  * Idempotent. Returns a function that restores the original methods.
  */
 export function installConsoleRedaction(target = console) {
@@ -225,7 +332,7 @@ export function installConsoleRedaction(target = console) {
     if (typeof orig !== 'function') continue;
     originals[name] = orig;
     target[name] = function redactedConsole(...args) {
-      return orig.apply(this, args.map(redact));
+      return orig.call(this, formatRedacted(args));
     };
   }
   const restore = () => {

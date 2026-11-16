@@ -42,12 +42,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `app_secret`. Every SDK client (`Client`, `WSClient`, `EventDispatcher`) now
   gets a redacting logger with the same `[error]:` / `[info]:` format, and the
   service and `scripts/send.js` wrap `console` with the same redaction
-  (`src/lib/redact.js`). Axios errors are logged as name, message, code,
-  method, url, status, cause and redacted response data (no raw
-  config/request/headers). Values of secret keys (`app_secret`, access/refresh
-  tokens, `Authorization`, `encrypt_key`, `verification_token`, `ticket`, ...)
-  are masked in nested objects, JSON strings, query strings and `Bearer`
-  headers, as are the configured secret values themselves.
+  (`src/lib/redact.js`). Log arguments are formatted into one line first and
+  then redacted, so `console.log('token=%s', v)` and `('[x] token:', v)` are
+  masked too. Axios errors are logged as name, message, code, method, url,
+  status, cause and redacted response data (no raw config/request/headers);
+  AggregateError `errors` and URL objects are kept (redacted). Values of
+  secret keys (`app_secret`, access/refresh tokens, `Authorization` with any
+  scheme, `encrypt_key`, `verification_token`, `ticket`, `secret_key`,
+  `api_key`, `private_key`, ...) are masked in nested objects, JSON strings,
+  query strings (also percent-encoded) and `Bearer` headers, as are
+  standalone Lark-shaped tokens (`t-`/`u-`/`a-`/`ur-`, not inside paths) and
+  the configured secret values themselves. The bare `token` key stays masked
+  (it carries the verification token in v1 event callbacks). Log copies are
+  bounded (first 100 items per array/object with a "… N more" marker, depth
+  6, 5000 values in all) and shared references are copied once, so large
+  payloads no longer slow logging down. `admin.js show` masks the same
+  secret fields (`bot.encrypt_key`, `bot.verification_token`) and prints the
+  rest of the config unchanged.
 
 ### Added
 - While the bot identity is unknown, an error is logged every 10 minutes
