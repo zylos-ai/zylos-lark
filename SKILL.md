@@ -1,6 +1,6 @@
 ---
 name: lark
-version: 0.4.1
+version: 0.4.2
 description: >-
   Lark (international) communication channel.
   For Feishu (飞书, China) use the separate feishu component instead.
@@ -526,6 +526,10 @@ ZYLOS_LARK_FORCE_CLI_INIT=1 node -e "import('$HOME/zylos/.claude/skills/lark/hoo
 ```
 
 The same command without the variable re-syncs normally, e.g. after fixing `LARK_APP_ID` / `LARK_APP_SECRET` in `~/zylos/.env` or after the store was deleted. Deleting `~/zylos/components/lark/lark-cli-sync.json` also forces `config init` on the next sync run (that command, or the hooks of the next real lark upgrade).
+
+### Group @mentions ignored (bot identity unknown)
+
+Group @mention detection needs the bot's own `open_id`. It is fetched once at startup (`getBotInfo`) and cached in `config.json` as `bot.open_id` + `bot.app_id`; later starts use the cache immediately (ignored if `bot.app_id` differs from `LARK_APP_ID`). If the startup fetch fails and there is no usable cache, the first received message triggers exactly one more fetch; there are no further retries. While the identity is unknown, `[lark] ERROR bot identity unknown ...` is logged every 10 minutes and `curl -s localhost:3457/health` shows `botIdentity.status: "unknown"` (otherwise `cached` / `fetched`). Fix the network or credentials, then `pm2 restart zylos-lark`.
 
 ## Service Management
 

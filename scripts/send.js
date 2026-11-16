@@ -17,7 +17,8 @@ import fs from 'fs';
 import path from 'path';
 dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 
-import { getConfig, DATA_DIR } from '../src/lib/config.js';
+import { getConfig, getCredentials, DATA_DIR } from '../src/lib/config.js';
+import { cachedBotOpenId } from '../src/lib/bot-identity.js';
 import { hasMarkdownContent } from '../src/lib/markdown.js';
 import { chooseReplyTarget } from '../src/lib/reply-target.js';
 import { convertAtMentionsForCard, assembleMentions } from '../src/lib/at-mention.js';
@@ -200,10 +201,12 @@ async function sendText(endpoint, text) {
   // text/card fork and BEFORE splitMessage — so both send paths behave
   // identically, the produced <at> tags are never split across chunks, and the
   // (possibly one) members lookup runs exactly once per message. Group chats
-  // only; p2p and anything unresolved pass through unchanged. `botOpenId` (from
-  // config, persisted by index.js at startup) enforces self-mention suppression;
-  // if absent, assembly still runs and simply skips suppression. See at-mention.js.
-  text = await assembleMentions(text, parsedEndpoint, { botOpenId: config.bot?.open_id });
+  // only; p2p and anything unresolved pass through unchanged. `botOpenId` (the
+  // identity index.js caches in config, ignored if it belongs to another app)
+  // enforces self-mention suppression; if absent, assembly still runs and
+  // simply skips suppression. See at-mention.js.
+  const botOpenId = cachedBotOpenId(config.bot, getCredentials().app_id);
+  text = await assembleMentions(text, parsedEndpoint, { botOpenId });
   const useCard = config.message?.useMarkdownCard && hasMarkdownContent(text);
   const maxLen = useCard ? CARD_MAX_LENGTH : MAX_LENGTH;
   const chunks = splitMessage(text, maxLen);

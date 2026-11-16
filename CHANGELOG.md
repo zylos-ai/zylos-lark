@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-11-16
+
+### Fixed
+- **Group @mentions no longer stay silently ignored when the startup bot
+  identity fetch fails (#102).** Previously `getBotInfo` ran once at startup;
+  if it failed (e.g. the service started before the network), the bot's
+  `open_id` stayed empty and every group @mention was treated as "not
+  mentioned" until a manual restart. Now:
+  - the bot identity cached in `config.json` (`bot.open_id`) is used
+    immediately at startup when `bot.app_id` matches `LARK_APP_ID` (older
+    configs without `bot.app_id` also use it); a successful fetch writes back
+    `bot.open_id` + `bot.app_id`, and a fetched value replaces a different
+    cached one;
+  - if the startup fetch fails and there is no usable cached identity, the
+    first received message triggers exactly one more `getBotInfo` call,
+    awaited (up to 5s) before the mention check, so that message is not
+    missed. Concurrent messages share the request; it is never repeated,
+    whatever the result (at most 2 `getBotInfo` calls per process, no timed
+    retries);
+  - messages arriving while the startup call is still in flight share one
+    bounded (5s) wait for it. If startup is still pending after that, the
+    message is handled with the unknown identity (a group @mention counts as
+    "not mentioned") and the next message uses the one-shot refetch; if
+    startup fails within that wait, the same message uses the refetch right
+    away and waits up to 5s more. A message waits at most two 5s windows
+    (under 10s). `getBotInfo` itself is now bounded
+    (10s timeout);
+  - all identity readers share one object, so a recovery applies without a
+    restart (`src/lib/bot-identity.js`). `scripts/send.js` applies the same
+    `bot.app_id` check to the cached `bot.open_id` it uses for self-mention
+    suppression.
+
+### Added
+- While the bot identity is unknown, an error is logged every 10 minutes
+  (log only, no requests), and `/health` reports
+  `botIdentity: { status: cached | fetched | unknown, since, attempts, refetchUsed }`.
+- The SDK's `Cannot destructure property 'tenant_access_token'` error now
+  carries a hint (tenant token fetch failed: network unreachable or bad app
+  credentials).
+
 ## [0.4.1] - 2026-11-16
 
 ### Fixed
