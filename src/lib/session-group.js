@@ -16,8 +16,18 @@
  * Nothing is guessed, rewritten, truncated or hashed: an endpoint without a
  * known type, an id with unexpected characters, or a name Core would reject
  * throws. The component never adds the `lark:` namespace; Core does.
+ *
+ * A bare chat id (no `|`, as used for proactive sends) is resolved by
+ * resolveSessionGroup: the chat type comes from a local cache (written by
+ * index.js for every inbound message and after each successful lookup) or,
+ * on a miss, from Lark's im.chat.get `chat_mode`. A bare id always maps to
+ * the DM or the group itself, never to a topic. If the lookup fails, nothing
+ * is guessed: it throws.
  */
-import { parseEndpoint } from './endpoint.js';
+import fs from 'fs';
+import path from 'path';
+import { DATA_DIR } from './config.js';
+import { buildEndpoint, parseEndpoint } from './endpoint.js';
 
 /** Core's limits for the name a component passes (Core adds `<namespace>:`). */
 export const SESSION_GROUP_MAX_LENGTH = 95;
@@ -73,4 +83,134 @@ export function sessionGroupFromEndpoint(endpoint) {
     throw new Error(`session group would be invalid for Core (length ${name.length}, max ${SESSION_GROUP_MAX_LENGTH})`);
   }
   return name;
+}
+
+// ============================================================
+// Bare chat id: chat type cache + Lark lookup
+// ============================================================
+
+/** chat_id -> 'p2p' | 'group' */
+export const CHAT_TYPE_CACHE_PATH = path.join(DATA_DIR, 'chat-type-cache.json');
+// Core kills the session-group query after 6.5s; stay well under it so a slow
+// Lark API fails cleanly here instead of being cut off.
+export const CHAT_LOOKUP_TIMEOUT_MS = 4000;
+
+const CHAT_TYPES = new Set(['p2p', 'group']);
+
+/**
+ * Chat type for a Lark im.chat.get `chat_mode`.
+ * @param {string} chatMode - 'p2p' | 'group' | 'topic'
+ * @returns {'p2p'|'group'|null} null for anything else
+ */
+export function chatTypeFromChatMode(chatMode) {
+  if (chatMode === 'p2p') return 'p2p';
+  if (chatMode === 'group' || chatMode === 'topic') return 'group';
+  return null;
+}
+
+/**
+ * Read the chat type cache. A missing, unreadable or malformed file is an
+ * empty cache.
+ * @param {string} [cachePath]
+ * @returns {Record<string, string>}
+ */
+export function readChatTypeCache(cachePath = CHAT_TYPE_CACHE_PATH) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch {}
+  return {};
+}
+
+/**
+ * Record a chat's type (tmp + rename). Writes only when the entry changes.
+ * Caching is an optimization: invalid input or a failed write is ignored.
+ * @param {string} chatId
+ * @param {string} chatType - 'p2p' | 'group'
+ * @param {string} [cachePath]
+ * @returns {boolean} true when the file was written
+ */
+export function recordChatType(chatId, chatType, cachePath = CHAT_TYPE_CACHE_PATH) {
+  if (!LARK_ID.test(String(chatId ?? '')) || !CHAT_TYPES.has(chatType)) return false;
+  const cache = readChatTypeCache(cachePath);
+  if (cache[chatId] === chatType) return false;
+  cache[chatId] = chatType;
+  const tmpPath = `${cachePath}.${process.pid}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+    fs.writeFileSync(tmpPath, JSON.stringify(cache, null, 2));
+    fs.renameSync(tmpPath, cachePath);
+    return true;
+  } catch {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+    return false;
+  }
+}
+
+async function defaultFetchChatMode(chatId) {
+  // Dynamic import keeps the Lark SDK (chat.js -> client.js) out of the module
+  // load path, so the inbound mapping stays testable without credentials.
+  const { getChatInfo } = await import('./chat.js');
+  const result = await getChatInfo(chatId);
+  if (!result.success) throw new Error(result.message || 'im.chat.get failed');
+  return result.chat.chatMode;
+}
+
+/**
+ * Look up a chat's type via Lark im.chat.get, raced against a timeout.
+ * @returns {Promise<'p2p'|'group'>}
+ * @throws {Error} on API failure, timeout or an unknown chat_mode
+ */
+async function lookupChatType(chatId, fetchChatMode, timeoutMs) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`im.chat.get timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  try {
+    const chatMode = await Promise.race([fetchChatMode(chatId), timeout]);
+    const chatType = chatTypeFromChatMode(chatMode);
+    if (!chatType) throw new Error(`unknown chat_mode from im.chat.get: ${quote(chatMode, 32)}`);
+    return chatType;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Session group for any endpoint, including a bare chat id.
+ * - With `|type:` (or any `|` part): exactly sessionGroupFromEndpoint.
+ * - Bare chat id: type from the cache, else from im.chat.get (then cached);
+ *   maps to dm-<id> or group-<id>, never a topic.
+ * @param {string} endpoint
+ * @param {object} [opts]
+ * @param {string} [opts.cachePath]
+ * @param {function} [opts.fetchChatMode] - Test hook: chatId -> Promise<chat_mode>
+ * @param {number} [opts.timeoutMs]
+ * @returns {Promise<string>} group name without namespace
+ * @throws {Error} when the endpoint cannot be mapped or the lookup fails
+ */
+export async function resolveSessionGroup(endpoint, {
+  cachePath = CHAT_TYPE_CACHE_PATH,
+  fetchChatMode = defaultFetchChatMode,
+  timeoutMs = CHAT_LOOKUP_TIMEOUT_MS,
+} = {}) {
+  if (typeof endpoint !== 'string' || endpoint.includes('|')) {
+    return sessionGroupFromEndpoint(endpoint);
+  }
+  const chatId = endpoint;
+  if (!LARK_ID.test(chatId)) {
+    throw new Error(`invalid Lark chat id in endpoint: ${quote(endpoint)}`);
+  }
+  let chatType = readChatTypeCache(cachePath)[chatId];
+  if (!CHAT_TYPES.has(chatType)) {
+    try {
+      chatType = await lookupChatType(chatId, fetchChatMode, timeoutMs);
+    } catch (err) {
+      throw new Error(`cannot look up chat type for ${quote(chatId)}: ${err.message}`);
+    }
+    recordChatType(chatId, chatType, cachePath);
+  }
+  return sessionGroupFromEndpoint(buildEndpoint(chatId, { chatType }));
 }

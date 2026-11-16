@@ -25,6 +25,7 @@ import { createMessageDeduper, MESSAGE_DEDUP_TTL_MS } from './lib/message-dedup.
 import { startWebSocket, stopWebSocket, getConnectionState } from './lib/transport/websocket.js';
 import { sendToC4, createRejectReply } from './lib/c4.js';
 import { buildEndpoint } from './lib/endpoint.js';
+import { recordChatType } from './lib/session-group.js';
 
 const INTERNAL_TOKEN = crypto.randomBytes(24).toString('hex');
 process.env.LARK_INTERNAL_TOKEN = INTERNAL_TOKEN;
@@ -1128,6 +1129,9 @@ async function handleMessageEvent(event) {
 
   // Build structured endpoint with routing metadata
   const endpoint = buildEndpoint(chatId, { chatType, rootId, parentId, messageId, threadId });
+  // Remember DM vs group so a bare chat id (proactive send) maps to its
+  // session group without an API call (scripts/session-group.js).
+  recordChatType(chatId, chatType);
 
   let quotedContent = null;
   let threadContext = null;

@@ -22,8 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as before and no endpoint is rejected for lacking a group (`src/lib/session-group.js`,
   `src/lib/c4.js`, `src/lib/endpoint.js`).
 - `scripts/session-group.js <endpoint>` prints the session group for an
-  endpoint (exit 0), or exits 1 with empty stdout for bad input, including a
-  bare `<chat_id>` without `|type:` (DM vs group is never guessed).
+  endpoint (exit 0), or exits 1 with empty stdout for bad input. A bare
+  `<chat_id>` without `|type:` (as used for proactive sends) maps to
+  `dm-<chat_id>` or `group-<chat_id>` (never a topic). The type comes from a
+  local cache (`~/zylos/components/lark/chat-type-cache.json`, written for
+  every inbound message and after each successful lookup; a missing or
+  corrupt file counts as empty), or on a cache miss from Lark `im.chat.get`
+  (`chat_mode` `p2p` -> DM, `group`/`topic` -> group) with a 4s timeout, under
+  Core's 6.5s limit for this query. If the lookup fails the script logs to
+  stderr and exits 1 with empty stdout; DM vs group is never guessed. This
+  fixes proactive sends to a bare chat id failing on a multi-session Core
+  (`src/lib/session-group.js`, `src/index.js`, `src/lib/chat.js`).
+- SKILL.md proactive-send examples use `<chat_id>|type:p2p` /
+  `<chat_id>|type:group`. Older Cores accept them, and `scripts/send.js` sends
+  them as plain messages to the chat, as before. With `|type:group`, a plain-text
+  `@name` is turned into a real mention, as in group replies.
 
 ### Changed
 These also apply on older Cores:

@@ -1,17 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { buildEndpoint } from '../src/lib/endpoint.js';
 import {
+  CHAT_LOOKUP_TIMEOUT_MS,
+  chatTypeFromChatMode,
   isValidSessionGroup,
+  readChatTypeCache,
+  recordChatType,
+  resolveSessionGroup,
   SESSION_GROUP_MAX_LENGTH,
   sessionGroupFromEndpoint
 } from '../src/lib/session-group.js';
 
-const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'session-group.js');
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const SCRIPT = path.join(ROOT, 'scripts', 'session-group.js');
+
+// Every script run gets its own HOME, so it never touches this host's cache,
+// credentials or the Lark API.
+const tmpHome = () => fs.mkdtempSync(path.join(os.tmpdir(), 'lark-session-group-'));
+const cacheFileIn = home => path.join(home, 'zylos/components/lark/chat-type-cache.json');
+const tmpCachePath = () => path.join(tmpHome(), 'chat-type-cache.json');
 
 // Realistic shapes: chat_id is oc_ + 32 chars, thread_id is omt_ + 16 chars.
 const CHAT = 'oc_0123456789abcdef0123456789abcdef';
@@ -112,11 +126,13 @@ test('throws on non-string input', () => {
 });
 
 // Query script agrees with the inbound mapping
-const runScript = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' });
+const scriptEnv = home => ({ ...process.env, HOME: home, LARK_APP_ID: '', LARK_APP_SECRET: '' });
+const runScript = (...args) => spawnSync(process.execPath, [SCRIPT, ...args],
+  { encoding: 'utf8', env: scriptEnv(tmpHome()) });
 
 test('scripts/session-group.js prints the same group as the inbound mapping', () => {
   for (const [, endpoint, expected] of MAPPING) {
-    const out = execFileSync(process.execPath, [SCRIPT, endpoint], { encoding: 'utf8' });
+    const out = execFileSync(process.execPath, [SCRIPT, endpoint], { encoding: 'utf8', env: scriptEnv(tmpHome()) });
     assert.equal(out, `${sessionGroupFromEndpoint(endpoint)}\n`);
     assert.equal(out.trim(), expected);
   }
@@ -127,7 +143,8 @@ test('scripts/session-group.js exits 1 with empty stdout on bad usage or input',
     [],
     ['a', 'b'],
     [`${CHAT}|type:p2p`, 'extra'], // valid endpoint plus an extra argument
-    [CHAT], // bare chat id: no type, never guessed
+    [CHAT], // bare chat id, cache miss and the lookup fails (no credentials): never guessed
+    ['oc_a.b'], // bare id with unexpected characters: no lookup
     [''],
     [`${CHAT}|type:topic`],
     [`${chatForLength(96)}|type:group|thread:omt_x`],
@@ -138,4 +155,139 @@ test('scripts/session-group.js exits 1 with empty stdout on bad usage or input',
     assert.equal(r.stdout, '', `args ${JSON.stringify(args)}`);
     assert.ok(r.stderr.length > 0, `args ${JSON.stringify(args)}`);
   }
+});
+
+// Bare chat id (proactive sends): chat type cache, then Lark im.chat.get
+
+test('chatTypeFromChatMode maps p2p, group and topic chats only', () => {
+  assert.equal(chatTypeFromChatMode('p2p'), 'p2p');
+  assert.equal(chatTypeFromChatMode('group'), 'group');
+  assert.equal(chatTypeFromChatMode('topic'), 'group');
+  assert.equal(chatTypeFromChatMode(''), null);
+  assert.equal(chatTypeFromChatMode(undefined), null);
+  assert.equal(chatTypeFromChatMode('private'), null);
+});
+
+test('lookup timeout stays well under Core\'s 6.5s session-group query limit', () => {
+  assert.ok(CHAT_LOOKUP_TIMEOUT_MS <= 5000);
+});
+
+const noFetch = async () => { throw new Error('API must not be called'); };
+
+test('endpoint with |type: is unchanged and never looks anything up', async () => {
+  const cachePath = tmpCachePath();
+  for (const [, endpoint, expected] of MAPPING) {
+    assert.equal(await resolveSessionGroup(endpoint, { cachePath, fetchChatMode: noFetch }), expected);
+  }
+  // a typed endpoint wins over a cached type
+  recordChatType(CHAT, 'group', cachePath);
+  assert.equal(await resolveSessionGroup(`${CHAT}|type:p2p`, { cachePath, fetchChatMode: noFetch }), `dm-${CHAT}`);
+});
+
+test('endpoint with | parts but no type still throws without a lookup', async () => {
+  await assert.rejects(resolveSessionGroup(`${CHAT}|thread:${THREAD}`, { cachePath: tmpCachePath(), fetchChatMode: noFetch }));
+  await assert.rejects(resolveSessionGroup(`${CHAT}|type:topic`, { cachePath: tmpCachePath(), fetchChatMode: noFetch }));
+});
+
+test('bare chat id: cache hit maps p2p to dm- and group to group- without an API call', async () => {
+  const cachePath = tmpCachePath();
+  recordChatType(CHAT, 'p2p', cachePath);
+  recordChatType(GROUP_CHAT, 'group', cachePath);
+  assert.equal(await resolveSessionGroup(CHAT, { cachePath, fetchChatMode: noFetch }), `dm-${CHAT}`);
+  assert.equal(await resolveSessionGroup(GROUP_CHAT, { cachePath, fetchChatMode: noFetch }), `group-${GROUP_CHAT}`);
+});
+
+for (const [chatMode, expected] of [['p2p', `dm-${CHAT}`], ['group', `group-${CHAT}`], ['topic', `group-${CHAT}`]]) {
+  test(`bare chat id: cache miss, im.chat.get chat_mode ${chatMode} -> ${expected.split('-')[0]}- (and cached)`, async () => {
+    const cachePath = tmpCachePath();
+    const calls = [];
+    const fetchChatMode = async id => { calls.push(id); return chatMode; };
+    assert.equal(await resolveSessionGroup(CHAT, { cachePath, fetchChatMode }), expected);
+    assert.deepEqual(calls, [CHAT]);
+    assert.equal(readChatTypeCache(cachePath)[CHAT], chatMode === 'p2p' ? 'p2p' : 'group');
+    // second call is served from the cache
+    assert.equal(await resolveSessionGroup(CHAT, { cachePath, fetchChatMode }), expected);
+    assert.equal(calls.length, 1);
+  });
+}
+
+test('bare chat id: API failure, timeout or unknown chat_mode throws and caches nothing', async () => {
+  const failures = [
+    async () => { throw new Error('Failed to get chat info: no permission'); },
+    () => new Promise(() => {}), // never answers
+    async () => 'unknown_mode',
+    async () => undefined,
+  ];
+  for (const fetchChatMode of failures) {
+    const cachePath = tmpCachePath();
+    await assert.rejects(resolveSessionGroup(CHAT, { cachePath, fetchChatMode, timeoutMs: 50 }), /cannot look up chat type/);
+    assert.deepEqual(readChatTypeCache(cachePath), {});
+  }
+});
+
+test('bare chat id with unexpected characters throws without a lookup', async () => {
+  for (const id of ['oc_a.b', 'oc_a b', '-oc_a', '']) {
+    await assert.rejects(resolveSessionGroup(id, { cachePath: tmpCachePath(), fetchChatMode: noFetch }));
+  }
+});
+
+test('missing or corrupt cache file is tolerated (treated as empty, then rewritten)', async () => {
+  const missing = tmpCachePath();
+  assert.deepEqual(readChatTypeCache(missing), {});
+  for (const content of ['{not json', '[1,2]', 'null', '']) {
+    const cachePath = tmpCachePath();
+    fs.writeFileSync(cachePath, content);
+    assert.deepEqual(readChatTypeCache(cachePath), {});
+    assert.equal(await resolveSessionGroup(CHAT, { cachePath, fetchChatMode: async () => 'p2p' }), `dm-${CHAT}`);
+    assert.deepEqual(readChatTypeCache(cachePath), { [CHAT]: 'p2p' });
+  }
+  // a cached value that is not p2p/group is ignored and looked up again
+  const cachePath = tmpCachePath();
+  fs.writeFileSync(cachePath, JSON.stringify({ [CHAT]: 'topic' }));
+  assert.equal(await resolveSessionGroup(CHAT, { cachePath, fetchChatMode: async () => 'group' }), `group-${CHAT}`);
+});
+
+test('recordChatType writes atomically, only on change, and ignores invalid input', () => {
+  const cachePath = path.join(tmpHome(), 'nested', 'chat-type-cache.json');
+  assert.equal(recordChatType(CHAT, 'p2p', cachePath), true);
+  assert.equal(recordChatType(CHAT, 'p2p', cachePath), false); // unchanged: no write
+  assert.equal(recordChatType(CHAT, 'group', cachePath), true);
+  assert.equal(recordChatType('oc_a.b', 'p2p', cachePath), false);
+  assert.equal(recordChatType(GROUP_CHAT, 'topic', cachePath), false);
+  assert.equal(recordChatType(GROUP_CHAT, undefined, cachePath), false);
+  assert.deepEqual(readChatTypeCache(cachePath), { [CHAT]: 'group' });
+  assert.deepEqual(fs.readdirSync(path.dirname(cachePath)), ['chat-type-cache.json']); // no tmp left
+});
+
+test('inbound handler records the chat type for every message, right after building the endpoint', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'src', 'index.js'), 'utf8');
+  assert.match(src, /import \{ recordChatType \} from '\.\/lib\/session-group\.js';/);
+  const handler = src.slice(src.indexOf('async function handleMessageEvent('));
+  const build = handler.indexOf('const endpoint = buildEndpoint(chatId, { chatType,');
+  const record = handler.indexOf('recordChatType(chatId, chatType);');
+  assert.ok(build > 0 && record > build, 'recordChatType must follow buildEndpoint');
+  // before any DM/group branch, so every inbound message is recorded
+  assert.ok(record < handler.indexOf("if (chatType === 'p2p')"));
+});
+
+test('scripts/session-group.js: bare chat id from the cache prints dm-/group-', () => {
+  const home = tmpHome();
+  recordChatType(CHAT, 'p2p', cacheFileIn(home));
+  recordChatType(GROUP_CHAT, 'group', cacheFileIn(home));
+  const run = id => spawnSync(process.execPath, [SCRIPT, id], { encoding: 'utf8', env: scriptEnv(home) });
+  const dm = run(CHAT);
+  assert.equal(dm.status, 0, dm.stderr);
+  assert.equal(dm.stdout, `dm-${CHAT}\n`);
+  const group = run(GROUP_CHAT);
+  assert.equal(group.status, 0, group.stderr);
+  assert.equal(group.stdout, `group-${GROUP_CHAT}\n`);
+});
+
+test('scripts/session-group.js: bare chat id whose lookup fails logs to stderr, exits 1, prints nothing', () => {
+  const home = tmpHome();
+  const r = spawnSync(process.execPath, [SCRIPT, CHAT], { encoding: 'utf8', env: scriptEnv(home) });
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /cannot look up chat type/);
+  assert.ok(!fs.existsSync(cacheFileIn(home)), 'nothing cached on failure');
 });

@@ -153,19 +153,28 @@ Skipping step 1 risks calling wrong subcommand names or missing required flags â
 
 ## Sending Messages
 
+For a proactive send (not a reply), use `<chat_id>|type:p2p` for a private chat
+and `<chat_id>|type:group` for a group. The type tells a multi-session Core which
+conversation the message belongs to. The message is still sent as a plain
+message to the chat (no reply/quote), as with a bare `<chat_id>`, which also
+still works (see [Session Groups](#session-groups-multi-session-core)). With
+`|type:group`, a plain-text `@name` is turned into a real mention, as in group
+replies.
+To reply, use the `reply via` path exactly as given.
+
 ```bash
 # Via C4 bridge (standard path â€” always use stdin form)
-cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>"
+cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>|type:p2p"
 Hello!
 EOF
 
-# Send image
-cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>"
+# Send image to a group
+cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>|type:group"
 [MEDIA:image]/path/to/image.png
 EOF
 
 # Send file
-cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>"
+cat <<'EOF' | node ~/zylos/.claude/skills/comm-bridge/scripts/c4-send.js "lark" "<chat_id>|type:p2p"
 [MEDIA:file]/path/to/file.pdf
 EOF
 ```
@@ -472,10 +481,20 @@ node ~/zylos/.claude/skills/lark/scripts/session-group.js "<endpoint>"
 # prints e.g. group-oc_xxx:topic-omt_yyy (without "lark:"), exit 0
 ```
 
-Use the full inbound endpoint (the `reply via` value with `|type:`). A bare
-`<chat_id>` like the one used for proactive sends above has no type, so the
-script cannot tell a DM from a group: it prints an error to stderr and exits 1
-(it never guesses). Wrong argument count also exits 1 with empty stdout.
+An endpoint with `|type:` (the `reply via` value, or `<chat_id>|type:p2p` /
+`<chat_id>|type:group` for proactive sends) is mapped directly. A bare
+`<chat_id>` is resolved to `dm-<chat_id>` or `group-<chat_id>` (never a topic):
+
+- First from a local cache, `~/zylos/components/lark/chat-type-cache.json`
+  (chat id -> `p2p`/`group`). The service records every inbound message's chat
+  type there, and the script records each successful lookup. A missing or
+  corrupt file counts as empty.
+- On a cache miss, from Lark `im.chat.get` (`chat_mode`: `p2p` -> DM,
+  `group`/`topic` -> group), with a 4s timeout so it fails cleanly before Core's
+  6.5s limit for this query.
+- If the lookup fails (API error, timeout, unknown `chat_mode`), it prints an
+  error to stderr and exits 1 with empty stdout; nothing is guessed. Wrong
+  argument count or an unmappable endpoint also exits 1 with empty stdout.
 
 ## Group Context
 
