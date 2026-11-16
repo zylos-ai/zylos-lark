@@ -24,8 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     missed. Concurrent messages share the request; it is never repeated,
     whatever the result (at most 2 `getBotInfo` calls per process, no timed
     retries);
+  - messages arriving while the startup call is still in flight share one
+    bounded (5s) wait for it; if it is still pending after that, the next
+    message uses the one-shot refetch. `getBotInfo` itself is now bounded
+    (10s timeout);
   - all identity readers share one object, so a recovery applies without a
-    restart (`src/lib/bot-identity.js`).
+    restart (`src/lib/bot-identity.js`). `scripts/send.js` applies the same
+    `bot.app_id` check to the cached `bot.open_id` it uses for self-mention
+    suppression.
 
 ### Added
 - While the bot identity is unknown, an error is logged every 10 minutes
