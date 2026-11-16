@@ -498,7 +498,7 @@ export function createWebSocketTransport(deps = {}) {
     logPreviousRestarts();
     checkLockAtStartup();
 
-    eventDispatcher = new EventDispatcher({}).register({
+    eventDispatcher = new EventDispatcher({ logger: createSafeSdkLogger() }).register({
       'im.message.receive_v1': async (data) => {
         // SDK EventDispatcher flattens header + event fields into data top level.
         // data.message, data.sender, data.create_time are all at top level.

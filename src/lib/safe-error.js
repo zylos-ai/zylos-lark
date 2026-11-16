@@ -11,6 +11,13 @@
 
 const SENSITIVE_KEY = /secret|token|authorization|password|cookie|credential/i;
 const MAX_STRING = 500;
+// Credential-bearing query params inside free-form log strings (e.g. the
+// WSClient debug line `ws url: wss://...?access_key=...&ticket=...`).
+const SENSITIVE_PARAM = /\b([\w-]*(?:access_key|ticket|token|secret)[\w-]*)=[^&\s"']+/gi;
+
+function scrubString(text) {
+  return text.replace(SENSITIVE_PARAM, '$1=[REDACTED]');
+}
 
 function urlPath(url, baseURL) {
   if (!url || typeof url !== 'string') return undefined;
@@ -74,9 +81,17 @@ export function formatSafeError(err) {
 
 function redactObject(value) {
   try {
-    const json = JSON.stringify(value, (key, v) => (key && SENSITIVE_KEY.test(key) ? '[REDACTED]' : v));
+    // Nested errors are reduced before JSON.stringify can call
+    // AxiosError.toJSON(), which would include config.data (a JSON string
+    // that may carry app_secret under a non-sensitive key).
+    const json = JSON.stringify(value, (key, v) => {
+      if (key && SENSITIVE_KEY.test(key)) return '[REDACTED]';
+      if (key && isErrorLike(v)) return safeError(v);
+      return v;
+    });
     if (json === undefined) return String(value);
-    return json.length > MAX_STRING ? `${json.slice(0, MAX_STRING)}...` : json;
+    const safe = scrubString(json);
+    return safe.length > MAX_STRING ? `${safe.slice(0, MAX_STRING)}...` : safe;
   } catch {
     return '[unserializable]';
   }
@@ -86,7 +101,7 @@ function redactObject(value) {
  * Make an arbitrary log argument safe to print.
  */
 export function sanitizeLogArg(arg) {
-  if (typeof arg === 'string') return arg;
+  if (typeof arg === 'string') return scrubString(arg);
   if (arg === null || typeof arg !== 'object') return String(arg);
   if (Array.isArray(arg)) return arg.map(sanitizeLogArg).join(' ');
   if (isErrorLike(arg)) return formatSafeError(arg);
@@ -97,11 +112,13 @@ export function sanitizeLogArg(arg) {
  * Logger for the Lark SDK (`logger` option of Client / WSClient).
  * The SDK's LoggerProxy passes all arguments as one array; the default
  * logger prints raw axios errors (incl. config.data with app_secret).
+ * Stream routing matches the SDK default logger: error goes to console.log
+ * (stdout / PM2 out.log), not console.error.
  */
 export function createSafeSdkLogger(base = console) {
   const emit = (fn, tag) => (...args) => fn.call(base, tag, sanitizeLogArg(args));
   return {
-    error: emit(base.error, '[error]:'),
+    error: emit(base.log, '[error]:'),
     warn: emit(base.warn, '[warn]:'),
     info: emit(base.info, '[info]:'),
     debug: emit(base.debug, '[debug]:'),
