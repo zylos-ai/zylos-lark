@@ -28,15 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   present (Linux: `~/.local/share/lark-cli/master.key` and
   `appsecret_<appId>.enc`, or under `$LARKSUITE_CLI_DATA_DIR/lark-cli`; on
   macOS/Windows, where lark-cli uses the OS keychain, `config init` always
-  runs), so a missing or truncated store is still repaired by
-  `zylos upgrade lark`.
+  runs), so a missing or truncated store is re-created on the next sync (the
+  next real `zylos upgrade lark`, or the one-line sync command in SKILL.md →
+  Troubleshooting; `zylos upgrade lark` skips hooks when already up to date).
 
 ### Added
 - `ZYLOS_LARK_FORCE_CLI_INIT=1` forces `lark-cli config init` during the
   credential sync (logged-in users are still preserved); deleting
   `~/zylos/components/lark/lark-cli-sync.json` has the same effect on the next
-  run. Needed when the secret for the same App ID was changed by hand with
-  `lark-cli config init`, which the sync cannot detect. See SKILL.md
+  sync run (the SKILL.md command, or the next real upgrade). Needed when the
+  secret for the same App ID was changed by hand with `lark-cli config init`,
+  which the sync cannot detect. See SKILL.md
   → Troubleshooting.
 
 ## [0.4.0] - 2026-11-10

@@ -547,7 +547,8 @@ export function syncCredentialsToLarkCli(opts = {}) {
     console.warn(
       `${LOG_PREFIX} LARK_APP_ID / LARK_APP_SECRET not found in ${envFile} ` +
       `or process.env; skipping lark-cli keychain sync. ` +
-      `Add the variables to ${envFile} and run 'zylos upgrade lark' (or re-run this hook) to sync.`
+      `Add the variables to ${envFile}, then re-run the sync (see SKILL.md → Troubleshooting; ` +
+      `'zylos upgrade lark' only runs it when a newer version is installed).`
     );
     return { skipped: true, reason: 'credentials_missing' };
   }
