@@ -13,16 +13,21 @@
  *    successful result wins over the cached value and is written back
  *    (open_id + app_id).
  * 3. One-shot refetch: if the startup fetch failed and there is no usable
- *    cached identity, the first received group message triggers exactly
- *    one more getBotInfo call, awaited (bounded by a timeout) before its
- *    mention check (DMs need no identity and never wait). It is marked used before the request starts and never repeated,
- *    whatever the outcome. At most 2 getBotInfo calls per process; there is
- *    deliberately no timed or periodic retry. Group messages that arrive
- *    while the startup call is still in flight share one bounded wait for
- *    it; if that wait times out, startup counts as failed for message
- *    handling, that message is handled with the unknown identity, and the
- *    next group message uses the one-shot refetch. A group message therefore
- *    waits at most one timeout window.
+ *    cached identity, the first received message event triggers exactly one
+ *    more getBotInfo call, awaited (bounded by a timeout) before the mention
+ *    check. The message handler awaits ensureForMessage() once per message
+ *    at its entry. The refetch is marked used before the request starts and
+ *    never repeated, whatever the outcome. At most 2 getBotInfo calls per
+ *    process; there is deliberately no timed or periodic retry.
+ *    Messages that arrive while the startup call is still in flight share
+ *    one bounded wait for it:
+ *    - if startup is still pending when that wait times out, startup counts
+ *      as failed for message handling, the message is handled with the
+ *      unknown identity, and the next message uses the one-shot refetch
+ *      (that message waits at most one timeout window);
+ *    - if startup fails within the wait, the same message then issues the
+ *      one-shot refetch and waits for it too, so it waits at most two
+ *      timeout windows (under 10s with the default 5s).
  * 4. While the identity stays unknown, an error is logged every 10 minutes
  *    (log only, no requests) and status() exposes it for /health.
  */
@@ -69,15 +74,6 @@ export function isBotMentioned(mentions, botId) {
     const mentionId = m.id?.open_id || m.id?.user_id || m.id?.app_id || '';
     return (normalizedBotId && String(mentionId) === normalizedBotId) || m.key === '@_all';
   });
-}
-
-/**
- * Group mention check used by the message handler: resolves the identity
- * first (one-shot refetch when unknown) so the triggering @mention counts.
- */
-export async function checkBotMention(identity, mentions) {
-  await identity.ensureForMessage();
-  return isBotMentioned(mentions, identity.openId);
 }
 
 /**
@@ -240,7 +236,7 @@ export function createBotIdentity({
       if (state.status === 'cached') {
         log('[lark] Continuing with cached bot identity');
       } else {
-        logError('[lark] @mention detection in groups will not work until the bot identity is recovered (one retry on the first received group message)');
+        logError('[lark] @mention detection in groups will not work until the bot identity is recovered (one retry on the first received message)');
         startUnknownLog();
       }
     })();
@@ -254,7 +250,7 @@ export function createBotIdentity({
     if (state.status === 'fetched') return;
     if (result.ok) {
       applyFetched(result.info);
-      log(`[lark] Bot identity recovered on first group message: ${state.appName} (${state.openId}, ${state.appId})`);
+      log(`[lark] Bot identity recovered on first message: ${state.appName} (${state.openId}, ${state.appId})`);
       return;
     }
     logError(`[lark] ERROR bot identity refetch failed: ${result.message} — no further attempts; group @mentions are NOT detected until restart`);
@@ -262,8 +258,8 @@ export function createBotIdentity({
   }
 
   /**
-   * Called (through checkBotMention) before the mention check of every
-   * received group message, once per message. Resolves
+   * Called once per received message event, at the handler's entry, before
+   * any mention check. Resolves
    * immediately unless the identity is unknown; the first such call issues
    * the one-shot refetch and every caller waits on that same request (up to
    * refetchTimeoutMs).
@@ -283,11 +279,11 @@ export function createBotIdentity({
       if (state.status !== 'unknown') return;
       if (outcome.timedOut && !startupSettled) {
         // Startup is hung. Handle this message with the unknown identity and
-        // let the next group message use the single refetch. A late startup success
+        // let the next message use the single refetch. A late startup success
         // is still applied when it arrives.
         if (!startupGaveUp) {
           startupGaveUp = true;
-          logError(`[lark] Warning: startup bot info fetch still pending after ${refetchTimeoutMs}ms; @mention detection in groups will not work until the bot identity is recovered (one retry on the next received group message)`);
+          logError(`[lark] Warning: startup bot info fetch still pending after ${refetchTimeoutMs}ms; @mention detection in groups will not work until the bot identity is recovered (one retry on the next received message)`);
           startUnknownLog();
         }
         return;

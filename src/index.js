@@ -21,7 +21,7 @@ import { extractInteractiveText } from './lib/card-text.js';
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
 import { getBotInfo, setBotIdentity } from './lib/client.js';
-import { createBotIdentity, checkBotMention, botIdentityConfigUpdate } from './lib/bot-identity.js';
+import { createBotIdentity, isBotMentioned, botIdentityConfigUpdate } from './lib/bot-identity.js';
 import { createMessageDeduper, MESSAGE_DEDUP_TTL_MS } from './lib/message-dedup.js';
 import { startWebSocket, stopWebSocket, getConnectionState } from './lib/transport/websocket.js';
 import { sendToC4, createRejectReply } from './lib/c4.js';
@@ -1113,6 +1113,11 @@ async function handleMessageEvent(event) {
   const parentId = message.parent_id || null;
   const threadId = message.thread_id || null;
 
+  // If the startup getBotInfo failed and no cached identity exists, the first
+  // received message triggers one bounded refetch before any mention check.
+  // This is the only place a message waits for the bot identity.
+  await botIdentity.ensureForMessage();
+
   // Dedup is already checked in the webhook handler (line ~1013)
 
   const extracted = await extractMessageContent(message);
@@ -1271,7 +1276,7 @@ async function handleMessageEvent(event) {
 
   // Group chat handling
   if (chatType === 'group') {
-    const mentioned = await checkBotMention(botIdentity, mentions);
+    const mentioned = isBotMentioned(mentions, botIdentity.openId);
     const senderIsOwner = isOwner(senderUserId, senderOpenId);
     const groupPolicy = config.groupPolicy || 'allowlist';
     if (groupPolicy === 'disabled') {

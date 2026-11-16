@@ -6,7 +6,9 @@ import path from 'node:path';
 import * as lark from '@larksuiteoapi/node-sdk';
 
 // Isolate from the real ~/zylos config: config.js reads HOME at import time.
-process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-client-test-'));
+const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-client-test-'));
+process.env.HOME = tmpHome;
+test.after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
 process.env.LARK_APP_ID = 'cli_test';
 process.env.LARK_APP_SECRET = 'secret_test';
 const { getBotInfo, resetClient, BOT_INFO_TIMEOUT_MS } = await import('../src/lib/client.js');

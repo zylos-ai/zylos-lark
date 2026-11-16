@@ -19,15 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `bot.open_id` + `bot.app_id`, and a fetched value replaces a different
     cached one;
   - if the startup fetch fails and there is no usable cached identity, the
-    first received group message triggers exactly one more `getBotInfo`
-    call, awaited (up to 5s) before its mention check, so that message is not
-    missed (DMs need no bot identity and never wait). Concurrent messages share the request; it is never repeated,
+    first received message triggers exactly one more `getBotInfo` call,
+    awaited (up to 5s) before the mention check, so that message is not
+    missed. Concurrent messages share the request; it is never repeated,
     whatever the result (at most 2 `getBotInfo` calls per process, no timed
     retries);
-  - group messages arriving while the startup call is still in flight share
-    one bounded (5s) wait for it; if it is still pending after that, that
-    message is handled as "not mentioned" and the next group message uses the
-    one-shot refetch, so a group message waits at most 5s. `getBotInfo` itself is now bounded
+  - messages arriving while the startup call is still in flight share one
+    bounded (5s) wait for it. If startup is still pending after that, the
+    message is handled with the unknown identity (a group @mention counts as
+    "not mentioned") and the next message uses the one-shot refetch; if
+    startup fails within that wait, the same message uses the refetch right
+    away and waits up to 5s more. A message waits at most two 5s windows
+    (under 10s). `getBotInfo` itself is now bounded
     (10s timeout);
   - all identity readers share one object, so a recovery applies without a
     restart (`src/lib/bot-identity.js`). `scripts/send.js` applies the same

@@ -5,7 +5,6 @@ import {
   createBotIdentity,
   explainBotInfoError,
   isBotMentioned,
-  checkBotMention,
   cachedBotOpenId,
   botIdentityConfigUpdate,
   UNKNOWN_LOG_INTERVAL_MS,
@@ -47,10 +46,12 @@ function setup({ results = [], appId = APP_ID, fetchImpl, ...overrides } = {}) {
   return { identity, calls, persisted, changes, logs, errors };
 }
 
-// The real group path: index.js calls checkBotMention once per group message
-// (DMs never touch the identity).
-function groupMessage(identity, mentions = []) {
-  return checkBotMention(identity, mentions);
+// The real path: index.js awaits ensureForMessage() once at the entry of
+// every message event, then a group message runs isBotMentioned on the
+// (possibly recovered) identity without waiting again.
+async function groupMessage(identity, mentions = []) {
+  await identity.ensureForMessage();
+  return isBotMentioned(mentions, identity.openId);
 }
 
 test('uses cached identity when cached app_id matches the current app', () => {
@@ -123,7 +124,7 @@ test('startup failure without cache: first message refetches and recovers before
   assert.equal(identity.status().refetchUsed, true);
   assert.equal(mentionsBot(identity, 'ou_fetched'), true);
   assert.deepEqual(persisted, [{ openId: 'ou_fetched', appId: APP_ID }]);
-  assert.ok(logs.some((l) => l.includes('recovered on first group message')));
+  assert.ok(logs.some((l) => l.includes('recovered on first message')));
 
   await groupMessage(identity);
   assert.equal(calls.length, 2);
@@ -400,8 +401,37 @@ test('group mention check waits for the one-shot refetch so the triggering @ment
   await identity.fetchAtStartup();
   const mentions = [{ key: '@_user_1', id: { open_id: 'ou_fetched' } }];
   assert.equal(isBotMentioned(mentions, identity.openId), false);
-  assert.equal(await checkBotMention(identity, mentions), true);
-  assert.equal(await checkBotMention(identity, [{ key: '@_user_2', id: { open_id: 'ou_other' } }]), false);
+  assert.equal(await groupMessage(identity, mentions), true);
+  assert.equal(await groupMessage(identity, [{ key: '@_user_2', id: { open_id: 'ou_other' } }]), false);
+});
+
+test('startup failing within the wait: the same message refetches and waits at most one more window', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const resolvers = [];
+  const { identity, calls } = setup({
+    refetchTimeoutMs: 5_000,
+    fetchImpl: () => new Promise((resolve) => { resolvers.push(resolve); }),
+  });
+  identity.fetchAtStartup();
+  let done = false;
+  const message = groupMessage(identity).then(() => { done = true; });
+  await Promise.resolve();
+  t.mock.timers.tick(4_000);
+  resolvers[0](FAILED); // startup fails inside the first window
+  await new Promise((resolve) => setImmediate(resolve));
+  // The same message issued the one-shot refetch and is waiting on it.
+  assert.equal(calls.length, 2);
+  assert.equal(identity.status().refetchUsed, true);
+  assert.equal(done, false);
+  t.mock.timers.tick(4_999);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(done, false);
+  t.mock.timers.tick(1);
+  await message;
+  // Second window ended: total wait 4s + 5s, under two full windows.
+  assert.equal(done, true);
+  assert.equal(calls.length, 2);
+  identity.stop();
 });
 
 test('mention matching: empty id never matches, @all always does', () => {
