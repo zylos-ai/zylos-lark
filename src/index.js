@@ -21,7 +21,7 @@ import { extractInteractiveText } from './lib/card-text.js';
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
 import { getBotInfo, setBotIdentity } from './lib/client.js';
-import { createBotIdentity } from './lib/bot-identity.js';
+import { createBotIdentity, checkBotMention, botIdentityConfigUpdate } from './lib/bot-identity.js';
 import { createMessageDeduper, MESSAGE_DEDUP_TTL_MS } from './lib/message-dedup.js';
 import { startWebSocket, stopWebSocket, getConnectionState } from './lib/transport/websocket.js';
 import { sendToC4, createRejectReply } from './lib/c4.js';
@@ -112,9 +112,10 @@ const botIdentity = createBotIdentity({
   // Persist open_id + app_id so the next start (and the short-lived send.js
   // process, which suppresses self-mentions) has the identity without an API
   // call. Skipped when already current.
-  persist: ({ openId, appId }) => {
-    if (config.bot?.open_id === openId && (!appId || config.bot?.app_id === appId)) return;
-    config.bot = { ...config.bot, open_id: openId, ...(appId ? { app_id: appId } : {}) };
+  persist: (identity) => {
+    const next = botIdentityConfigUpdate(config, identity);
+    if (!next) return;
+    config = next;
     saveConfig(config);
   },
 });
@@ -707,16 +708,6 @@ function getGroupName(chatId) {
   return String(chatId || 'unknown');
 }
 
-// Check if bot is mentioned
-function isBotMentioned(mentions, botId) {
-  if (!mentions || !Array.isArray(mentions)) return false;
-  const normalizedBotId = botId === undefined || botId === null ? '' : String(botId);
-  return mentions.some(m => {
-    const mentionId = m.id?.open_id || m.id?.user_id || m.id?.app_id || '';
-    return (normalizedBotId && String(mentionId) === normalizedBotId) || m.key === '@_all';
-  });
-}
-
 /**
  * Resolve @_user_N placeholders in message text to real names.
  */
@@ -1284,7 +1275,7 @@ async function handleMessageEvent(event) {
 
   // Group chat handling
   if (chatType === 'group') {
-    const mentioned = isBotMentioned(mentions, botIdentity.openId);
+    const mentioned = await checkBotMention(botIdentity, mentions);
     const senderIsOwner = isOwner(senderUserId, senderOpenId);
     const groupPolicy = config.groupPolicy || 'allowlist';
     if (groupPolicy === 'disabled') {

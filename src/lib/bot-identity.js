@@ -17,7 +17,10 @@
  *    more getBotInfo call, awaited (bounded by a timeout) before the mention
  *    check. It is marked used before the request starts and never repeated,
  *    whatever the outcome. At most 2 getBotInfo calls per process; there is
- *    deliberately no timed or periodic retry.
+ *    deliberately no timed or periodic retry. Messages that arrive while the
+ *    startup call is still in flight share one bounded wait for it; if that
+ *    wait times out, startup counts as failed for message handling and the
+ *    next message uses the one-shot refetch.
  * 4. While the identity stays unknown, an error is logged every 10 minutes
  *    (log only, no requests) and status() exposes it for /health.
  */
@@ -54,6 +57,51 @@ function withTimeout(promise, ms, setTimer, clearTimer) {
 }
 
 /**
+ * Whether the message mentions the bot (or @all). Mentions match on the
+ * bot's open_id; an empty id never matches.
+ */
+export function isBotMentioned(mentions, botId) {
+  if (!mentions || !Array.isArray(mentions)) return false;
+  const normalizedBotId = botId === undefined || botId === null ? '' : String(botId);
+  return mentions.some(m => {
+    const mentionId = m.id?.open_id || m.id?.user_id || m.id?.app_id || '';
+    return (normalizedBotId && String(mentionId) === normalizedBotId) || m.key === '@_all';
+  });
+}
+
+/**
+ * Group mention check used by the message handler: resolves the identity
+ * first (one-shot refetch when unknown) so the triggering @mention counts.
+ */
+export async function checkBotMention(identity, mentions) {
+  await identity.ensureForMessage();
+  return isBotMentioned(mentions, identity.openId);
+}
+
+/**
+ * The cached bot open_id from config.bot when it belongs to the given app
+ * (an older config without bot.app_id is accepted), else ''.
+ */
+export function cachedBotOpenId(botConfig, appId) {
+  const cachedOpenId = botConfig?.open_id ? String(botConfig.open_id) : '';
+  if (!cachedOpenId) return '';
+  const cachedAppId = botConfig?.app_id ? String(botConfig.app_id) : '';
+  if (cachedAppId && cachedAppId !== String(appId || '')) return '';
+  return cachedOpenId;
+}
+
+/**
+ * Config with bot.open_id / bot.app_id set to the given identity, or null
+ * when the config is already current (no write needed).
+ */
+export function botIdentityConfigUpdate(config, { openId, appId } = {}) {
+  if (!openId) return null;
+  const bot = config?.bot || {};
+  if (bot.open_id === openId && (!appId || bot.app_id === appId)) return null;
+  return { ...config, bot: { ...bot, open_id: openId, ...(appId ? { app_id: appId } : {}) } };
+}
+
+/**
  * @param {object} opts
  * @param {() => Promise<{success:boolean, open_id?:string, app_name?:string, message?:string}>} opts.fetchBotInfo
  * @param {string} [opts.appId] current LARK_APP_ID
@@ -86,6 +134,11 @@ export function createBotIdentity({
   };
   let startupPromise = null;
   let startupSettled = false;
+  // One bounded wait on an in-flight startup call, shared by all messages.
+  let startupWait = null;
+  // Set when that shared wait timed out: message handling then treats the
+  // startup attempt as ended without an identity.
+  let startupGaveUp = false;
   let refetchUsed = false;
   let refetchWait = null;
   let unknownTimer = null;
@@ -154,11 +207,10 @@ export function createBotIdentity({
    * when a cached identity was applied.
    */
   function loadCached(botConfig) {
-    const cachedOpenId = botConfig?.open_id ? String(botConfig.open_id) : '';
-    if (!cachedOpenId) return false;
-    const cachedAppId = botConfig?.app_id ? String(botConfig.app_id) : '';
-    if (cachedAppId && cachedAppId !== normalizedAppId) {
-      log(`[lark] Ignoring cached bot identity: cached app_id ${cachedAppId} does not match current app ${normalizedAppId || '(unset)'}`);
+    if (!botConfig?.open_id) return false;
+    const cachedOpenId = cachedBotOpenId(botConfig, normalizedAppId);
+    if (!cachedOpenId) {
+      log(`[lark] Ignoring cached bot identity: cached app_id ${botConfig.app_id} does not match current app ${normalizedAppId || '(unset)'}`);
       return false;
     }
     state.openId = cachedOpenId;
@@ -174,6 +226,9 @@ export function createBotIdentity({
     startupPromise = (async () => {
       const result = await callFetch();
       startupSettled = true;
+      // A hung startup call that returns after the refetch already resolved
+      // the identity changes nothing.
+      if (state.status === 'fetched') return;
       if (result.ok) {
         applyFetched(result.info);
         log(`[lark] Bot identity: ${state.appName} (${state.openId}, ${state.appId})`);
@@ -214,11 +269,23 @@ export function createBotIdentity({
       return;
     }
     if (refetchUsed) return;
-    if (startupPromise && !startupSettled) {
-      // The startup call is still in flight: wait for it (bounded) instead of
-      // issuing a parallel request.
-      await withTimeout(startupPromise, refetchTimeoutMs, setTimer, clearTimer);
-      if (state.status !== 'unknown' || !startupSettled) return;
+    if (startupPromise && !startupSettled && !startupGaveUp) {
+      // The startup call is still in flight: all messages share one bounded
+      // wait for it instead of issuing a parallel request.
+      startupWait ??= withTimeout(startupPromise, refetchTimeoutMs, setTimer, clearTimer);
+      const outcome = await startupWait;
+      if (state.status !== 'unknown') return;
+      if (outcome.timedOut && !startupSettled) {
+        // Startup is hung. Handle this message with the unknown identity and
+        // let the next message use the single refetch. A late startup success
+        // is still applied when it arrives.
+        if (!startupGaveUp) {
+          startupGaveUp = true;
+          logError(`[lark] Warning: startup bot info fetch still pending after ${refetchTimeoutMs}ms; @mention detection in groups will not work until the bot identity is recovered (one retry on the next received message)`);
+          startUnknownLog();
+        }
+        return;
+      }
       if (refetchWait) {
         await refetchWait;
         return;

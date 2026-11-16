@@ -4,6 +4,10 @@ import assert from 'node:assert/strict';
 import {
   createBotIdentity,
   explainBotInfoError,
+  isBotMentioned,
+  checkBotMention,
+  cachedBotOpenId,
+  botIdentityConfigUpdate,
   UNKNOWN_LOG_INTERVAL_MS,
 } from '../src/lib/bot-identity.js';
 
@@ -11,9 +15,8 @@ const APP_ID = 'cli_current';
 const FETCHED = { success: true, open_id: 'ou_fetched', app_name: 'TestBot' };
 const FAILED = { success: false, message: 'network down' };
 
-// Mirrors isBotMentioned in src/index.js: mention matches the identity's open_id.
 function mentionsBot(identity, mentionId) {
-  return Boolean(identity.openId) && mentionId === identity.openId;
+  return isBotMentioned([{ key: '@_user_1', id: { open_id: mentionId } }], identity.openId);
 }
 
 function setup({ results = [], appId = APP_ID, fetchImpl, ...overrides } = {}) {
@@ -159,12 +162,170 @@ test('concurrent messages share one refetch request', async () => {
     },
   });
   await identity.fetchAtStartup();
-  const pending = [groupMessage(identity), groupMessage(identity), groupMessage(identity)];
+  const seen = [];
+  const pending = [1, 2, 3].map(() => groupMessage(identity).then(() => seen.push(identity.openId)));
   await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(seen, []);
   release();
   await Promise.all(pending);
   assert.equal(calls.length, 2);
-  assert.equal(identity.openId, 'ou_fetched');
+  // Every concurrent caller waited for the shared request before continuing.
+  assert.deepEqual(seen, ['ou_fetched', 'ou_fetched', 'ou_fetched']);
+});
+
+test('startup fetch that never resolves: messages share one wait, next message uses the single refetch', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  let count = 0;
+  let releaseStartup;
+  const { identity, calls, errors } = setup({
+    refetchTimeoutMs: 5_000,
+    fetchImpl: async () => {
+      count += 1;
+      if (count === 1) {
+        await new Promise((resolve) => { releaseStartup = resolve; });
+        return FAILED;
+      }
+      return FETCHED;
+    },
+  });
+  identity.fetchAtStartup();
+
+  // Three messages during the hung startup share one 5s window.
+  let done = 0;
+  const waiting = [1, 2, 3].map(() => groupMessage(identity).then(() => { done += 1; }));
+  await Promise.resolve();
+  t.mock.timers.tick(4_999);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(done, 0);
+  t.mock.timers.tick(1);
+  await Promise.all(waiting);
+  assert.equal(done, 3);
+  assert.equal(calls.length, 1);
+  assert.equal(identity.status().status, 'unknown');
+  assert.ok(errors.some((e) => e.includes('still pending')));
+
+  // A later message returns at once from the refetch (no further 5s wait).
+  await groupMessage(identity);
+  assert.equal(calls.length, 2);
+  assert.equal(identity.status().status, 'fetched');
+  assert.equal(identity.status().refetchUsed, true);
+
+  // The 10-minute error log had started while the identity was unknown and
+  // stopped on recovery; further messages make no requests.
+  await groupMessage(identity);
+  releaseStartup();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.length, 2);
+  assert.equal(identity.status().status, 'fetched');
+  t.mock.timers.tick(UNKNOWN_LOG_INTERVAL_MS);
+  assert.equal(errors.filter((e) => e.includes('unknown for')).length, 0);
+});
+
+test('a message arriving later during a hung startup does not get a fresh 5s wait', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const { identity, calls } = setup({
+    refetchTimeoutMs: 5_000,
+    fetchImpl: () => new Promise(() => {}),
+  });
+  identity.fetchAtStartup();
+  let firstDone = false;
+  let secondDone = false;
+  const first = groupMessage(identity).then(() => { firstDone = true; });
+  await Promise.resolve();
+  t.mock.timers.tick(3_000);
+  const second = groupMessage(identity).then(() => { secondDone = true; });
+  await Promise.resolve();
+  t.mock.timers.tick(2_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(firstDone, true);
+  // The second message shares the window that ends 5s after the first one.
+  assert.equal(secondDone, true);
+  await Promise.all([first, second]);
+  assert.equal(calls.length, 1);
+  identity.stop();
+});
+
+test('hung startup starts the 10-minute error log once the shared wait times out', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  let count = 0;
+  const { identity, calls, errors } = setup({
+    refetchTimeoutMs: 5_000,
+    fetchImpl: async () => {
+      count += 1;
+      if (count === 1) return new Promise(() => {});
+      return FAILED;
+    },
+  });
+  identity.fetchAtStartup();
+  const first = groupMessage(identity);
+  await Promise.resolve();
+  t.mock.timers.tick(5_000);
+  await first;
+  t.mock.timers.tick(UNKNOWN_LOG_INTERVAL_MS);
+  assert.equal(errors.filter((e) => e.includes('unknown for')).length, 1);
+  await groupMessage(identity);
+  await groupMessage(identity);
+  assert.equal(calls.length, 2);
+  identity.stop();
+});
+
+test('late startup success after the shared wait timed out is applied without extra requests', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  let releaseStartup;
+  const { identity, calls } = setup({
+    refetchTimeoutMs: 5_000,
+    fetchImpl: () => new Promise((resolve) => { releaseStartup = () => resolve(FETCHED); }),
+  });
+  identity.fetchAtStartup();
+  const first = groupMessage(identity);
+  await Promise.resolve();
+  t.mock.timers.tick(5_000);
+  await first;
+  releaseStartup();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(identity.status().status, 'fetched');
+  await groupMessage(identity);
+  assert.equal(calls.length, 1);
+});
+
+test('group mention check waits for the one-shot refetch so the triggering @mention counts', async () => {
+  const { identity } = setup({ results: [FAILED, FETCHED] });
+  await identity.fetchAtStartup();
+  const mentions = [{ key: '@_user_1', id: { open_id: 'ou_fetched' } }];
+  assert.equal(isBotMentioned(mentions, identity.openId), false);
+  assert.equal(await checkBotMention(identity, mentions), true);
+  assert.equal(await checkBotMention(identity, [{ key: '@_user_2', id: { open_id: 'ou_other' } }]), false);
+});
+
+test('mention matching: empty id never matches, @all always does', () => {
+  const mentions = [{ key: '@_user_1', id: { open_id: 'ou_bot' } }];
+  assert.equal(isBotMentioned(mentions, ''), false);
+  assert.equal(isBotMentioned(mentions, 'ou_bot'), true);
+  assert.equal(isBotMentioned([{ key: '@_all', id: {} }], ''), true);
+  assert.equal(isBotMentioned(undefined, 'ou_bot'), false);
+});
+
+test('cachedBotOpenId accepts matching or missing app_id and rejects another app', () => {
+  assert.equal(cachedBotOpenId({ open_id: 'ou_1', app_id: APP_ID }, APP_ID), 'ou_1');
+  assert.equal(cachedBotOpenId({ open_id: 'ou_1' }, APP_ID), 'ou_1');
+  assert.equal(cachedBotOpenId({ open_id: 'ou_1', app_id: 'cli_other' }, APP_ID), '');
+  assert.equal(cachedBotOpenId({}, APP_ID), '');
+  assert.equal(cachedBotOpenId(undefined, APP_ID), '');
+});
+
+test('config write-back sets open_id and app_id and is skipped when already current', () => {
+  const base = { enabled: true, bot: { verification_token: 'vt' } };
+  const next = botIdentityConfigUpdate(base, { openId: 'ou_1', appId: APP_ID });
+  assert.deepEqual(next, { enabled: true, bot: { verification_token: 'vt', open_id: 'ou_1', app_id: APP_ID } });
+  assert.equal(base.bot.open_id, undefined);
+  assert.equal(botIdentityConfigUpdate(next, { openId: 'ou_1', appId: APP_ID }), null);
+  // Old config with open_id but no app_id gets app_id added.
+  assert.deepEqual(
+    botIdentityConfigUpdate({ bot: { open_id: 'ou_1' } }, { openId: 'ou_1', appId: APP_ID }).bot,
+    { open_id: 'ou_1', app_id: APP_ID },
+  );
+  assert.equal(botIdentityConfigUpdate(next, { openId: 'ou_2', appId: APP_ID }).bot.open_id, 'ou_2');
+  assert.equal(botIdentityConfigUpdate(base, { openId: '' }), null);
 });
 
 test('message arriving while the startup fetch is in flight waits for it instead of a parallel request', async () => {
