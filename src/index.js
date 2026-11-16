@@ -21,6 +21,7 @@ import { extractInteractiveText } from './lib/card-text.js';
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
 import { getBotInfo, setBotIdentity } from './lib/client.js';
+import { createBotIdentity } from './lib/bot-identity.js';
 import { createMessageDeduper, MESSAGE_DEDUP_TTL_MS } from './lib/message-dedup.js';
 import { startWebSocket, stopWebSocket, getConnectionState } from './lib/transport/websocket.js';
 import { sendToC4, createRejectReply } from './lib/c4.js';
@@ -38,10 +39,6 @@ try {
   console.error(`[lark] Failed to write internal token file: ${err.message}`);
 }
 
-// Bot identity (fetched at startup)
-let botOpenId = '';
-let botAppName = '';
-let botAppId = '';
 
 // Initialize
 console.log(`[lark] Starting...`);
@@ -101,6 +98,27 @@ if (!config.enabled) {
   console.log(`[lark] Component disabled in config, exiting.`);
   process.exit(0);
 }
+
+// Bot identity: one object read by every consumer so a later recovery takes
+// effect without a restart (see src/lib/bot-identity.js).
+let currentAppId = '';
+try {
+  currentAppId = getCredentials().app_id || '';
+} catch {}
+const botIdentity = createBotIdentity({
+  fetchBotInfo: getBotInfo,
+  appId: currentAppId,
+  onChange: (identity) => setBotIdentity(identity),
+  // Persist open_id + app_id so the next start (and the short-lived send.js
+  // process, which suppresses self-mentions) has the identity without an API
+  // call. Skipped when already current.
+  persist: ({ openId, appId }) => {
+    if (config.bot?.open_id === openId && (!appId || config.bot?.app_id === appId)) return;
+    config.bot = { ...config.bot, open_id: openId, ...(appId ? { app_id: appId } : {}) };
+    saveConfig(config);
+  },
+});
+botIdentity.loadCached(config.bot);
 
 // Watch for config changes
 watchConfig((newConfig) => {
@@ -515,6 +533,7 @@ async function resolveUserName(userId) {
   const normalizedUserId = String(userId);
 
   // Recognize bot's own messages (exact open_id or app_id match)
+  const { openId: botOpenId, appId: botAppId, appName: botAppName } = botIdentity;
   if (botOpenId && normalizedUserId === String(botOpenId)) return botAppName || 'bot';
   if (botAppId && normalizedUserId === String(botAppId)) return botAppName || 'bot';
 
@@ -1103,6 +1122,10 @@ async function handleMessageEvent(event) {
   const parentId = message.parent_id || null;
   const threadId = message.thread_id || null;
 
+  // If the startup getBotInfo failed and no cached identity exists, the first
+  // received message triggers one bounded refetch before any mention check.
+  await botIdentity.ensureForMessage();
+
   // Dedup is already checked in the webhook handler (line ~1013)
 
   const extracted = await extractMessageContent(message);
@@ -1261,7 +1284,7 @@ async function handleMessageEvent(event) {
 
   // Group chat handling
   if (chatType === 'group') {
-    const mentioned = isBotMentioned(mentions, botOpenId);
+    const mentioned = isBotMentioned(mentions, botIdentity.openId);
     const senderIsOwner = isOwner(senderUserId, senderOpenId);
     const groupPolicy = config.groupPolicy || 'allowlist';
     if (groupPolicy === 'disabled') {
@@ -1546,6 +1569,7 @@ app.get('/health', (req, res) => {
     transport: healthConfig.transport || 'websocket',
     uptime: Math.floor(process.uptime()),
     cursors: Object.keys(groupCursors).length,
+    botIdentity: botIdentity.status(),
   };
   if (healthConfig.transport === 'websocket') {
     Object.assign(health, getConnectionState());
@@ -1565,8 +1589,8 @@ app.post('/internal/record-outgoing', (req, res) => {
   const entry = {
     timestamp: new Date().toISOString(),
     message_id: messageId || `bot_${Date.now()}`,
-    user_id: botOpenId || 'bot',
-    user_name: botAppName || 'bot',
+    user_id: botIdentity.openId || 'bot',
+    user_name: botIdentity.appName || 'bot',
     text
   };
   if (threadId) {
@@ -1589,6 +1613,7 @@ function gracefulCleanup() {
   clearInterval(dedupCleanupInterval);
   clearInterval(typingCheckInterval);
   clearInterval(userCachePersistInterval);
+  botIdentity.stop();
   persistUserCache();
   stopWatching();
 
@@ -1694,33 +1719,7 @@ async function startServerWithRetry(port, maxRetries = MAX_LISTEN_RETRIES) {
 }
 
 (async () => {
-  // Store app_id for exact bot identification
-  try {
-    const creds = getCredentials();
-    botAppId = creds.app_id || '';
-  } catch {}
-
-  try {
-    const botInfo = await getBotInfo();
-    if (botInfo.success) {
-      botOpenId = botInfo.open_id;
-      botAppName = botInfo.app_name || 'bot';
-      setBotIdentity({ openId: botInfo.open_id, appName: botAppName, appId: botAppId });
-      console.log(`[lark] Bot identity: ${botAppName} (${botOpenId}, ${botAppId})`);
-      // Persist the bot's own open_id into config so the short-lived send.js
-      // process can suppress self-mentions (mention assembly, owner decision 6)
-      // without an API call. Written once; skipped when already current.
-      if (botInfo.open_id && config.bot?.open_id !== botInfo.open_id) {
-        config.bot = { ...config.bot, open_id: botInfo.open_id };
-        saveConfig(config);
-      }
-    } else {
-      console.error(`[lark] Warning: Could not fetch bot info: ${botInfo.message}`);
-      console.error('[lark] @mention detection in groups will not work');
-    }
-  } catch (err) {
-    console.error(`[lark] Warning: getBotInfo failed: ${err.message}`);
-  }
+  await botIdentity.fetchAtStartup();
 
   server = await startServerWithRetry(PORT);
   server.on('error', (err) => {

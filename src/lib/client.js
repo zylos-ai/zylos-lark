@@ -9,6 +9,7 @@
 
 import * as lark from '@larksuiteoapi/node-sdk';
 import { getCredentials, getConfig } from './config.js';
+import { explainBotInfoError } from './bot-identity.js';
 
 const DOMAIN_MAP = {
   feishu: lark.Domain.Feishu,
@@ -17,7 +18,7 @@ const DOMAIN_MAP = {
 
 let clientInstance = null;
 
-// Bot identity — set once at startup, read by multiple modules
+// Bot identity — mirrored from src/lib/bot-identity.js, read by multiple modules
 let _botIdentity = { openId: '', appName: 'bot', appId: '' };
 export function setBotIdentity(identity) { _botIdentity = { ..._botIdentity, ...identity }; }
 export function getBotIdentity() { return _botIdentity; }
@@ -74,7 +75,7 @@ export async function getBotInfo() {
     }
     return { success: false, message: `API error: ${res.msg}` };
   } catch (err) {
-    return { success: false, message: err.message };
+    return { success: false, message: explainBotInfoError(err.message) };
   }
 }
 
