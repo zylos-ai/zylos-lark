@@ -36,6 +36,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     restart (`src/lib/bot-identity.js`). `scripts/send.js` applies the same
     `bot.app_id` check to the cached `bot.open_id` it uses for self-mention
     suppression.
+- **Secrets no longer reach the service logs.** When the tenant-access-token
+  request failed (e.g. `ECONNREFUSED`), the SDK's default logger printed the
+  whole AxiosError to `out.log`, including `config.data` with the plaintext
+  `app_secret`. Every SDK client (`Client`, `WSClient`, `EventDispatcher`) now
+  gets a redacting logger with the same `[error]:` / `[info]:` format, and the
+  service and `scripts/send.js` wrap `console` with the same redaction
+  (`src/lib/redact.js`). Axios errors are logged as name, message, code,
+  method, url, status, cause and redacted response data (no raw
+  config/request/headers). Values of secret keys (`app_secret`, access/refresh
+  tokens, `Authorization`, `encrypt_key`, `verification_token`, `ticket`, ...)
+  are masked in nested objects, JSON strings, query strings and `Bearer`
+  headers, as are the configured secret values themselves.
 
 ### Added
 - While the bot identity is unknown, an error is logged every 10 minutes

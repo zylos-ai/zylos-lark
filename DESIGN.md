@@ -136,6 +136,7 @@ zylos-lark is a Zylos communication component that enables bidirectional messagi
 | C4 | lib/c4.js | Call c4-receive, pass `--session-group` when Core supports it, handle rejections |
 | Session group | lib/session-group.js | Derive the session group from an endpoint (fixed rules) |
 | Endpoint | lib/endpoint.js | Build/parse the structured endpoint string |
+| Redact | lib/redact.js | Mask secrets (app_secret, tokens, Authorization, encrypt_key, verification_token) in SDK logger output and console logs |
 | Send | scripts/send.js | C4 standard interface for sending text and media |
 | Session group query | scripts/session-group.js | Print the session group for an endpoint |
 | Admin | src/admin.js | CLI for managing config (groups, whitelist, owner) |

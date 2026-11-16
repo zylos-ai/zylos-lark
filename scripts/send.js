@@ -22,7 +22,11 @@ import { cachedBotOpenId } from '../src/lib/bot-identity.js';
 import { hasMarkdownContent } from '../src/lib/markdown.js';
 import { chooseReplyTarget } from '../src/lib/reply-target.js';
 import { convertAtMentionsForCard, assembleMentions } from '../src/lib/at-mention.js';
+import { installConsoleRedaction } from '../src/lib/redact.js';
 import { sendToGroup, sendMessage, uploadImage, sendImage, uploadFile, sendFile, replyToMessage, sendMarkdownCard, replyMarkdownCard } from '../src/lib/message.js';
+
+// Same log redaction as the service (src/lib/redact.js).
+installConsoleRedaction();
 
 const TYPING_DIR = path.join(DATA_DIR, 'typing');
 

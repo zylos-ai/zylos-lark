@@ -65,6 +65,7 @@
 import path from 'node:path';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { DATA_DIR } from '../config.js';
+import { createRedactingLogger, registerSecrets } from '../redact.js';
 import { createRestartGuard, lockRecoveryHint, LOCK_RETRY_AFTER_MS, RESTART_STATE_FILENAME, RESTART_MAX_IN_WINDOW, RESTART_WINDOW_MS } from './restart-guard.js';
 
 export { RESTART_MAX_IN_WINDOW, RESTART_WINDOW_MS, RESTART_STATE_FILENAME };
@@ -497,7 +498,7 @@ export function createWebSocketTransport(deps = {}) {
     logPreviousRestarts();
     checkLockAtStartup();
 
-    eventDispatcher = new EventDispatcher({}).register({
+    eventDispatcher = new EventDispatcher({ logger: createRedactingLogger() }).register({
       'im.message.receive_v1': async (data) => {
         // SDK EventDispatcher flattens header + event fields into data top level.
         // data.message, data.sender, data.create_time are all at top level.
@@ -518,11 +519,13 @@ export function createWebSocketTransport(deps = {}) {
     });
 
     const domain = DOMAIN_MAP[config?.domain] || lark.Domain.Lark;
+    registerSecrets(credentials.app_secret);
     const client = new WSClient({
       appId: credentials.app_id,
       appSecret: credentials.app_secret,
       domain,
       loggerLevel: lark.LoggerLevel.info,
+      logger: createRedactingLogger(),
       autoReconnect: true,
     });
     instrument(client);

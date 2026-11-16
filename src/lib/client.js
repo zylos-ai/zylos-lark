@@ -10,6 +10,7 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 import { getCredentials, getConfig } from './config.js';
 import { explainBotInfoError } from './bot-identity.js';
+import { createRedactingLogger, registerSecrets } from './redact.js';
 
 const DOMAIN_MAP = {
   feishu: lark.Domain.Feishu,
@@ -38,11 +39,15 @@ export function getClient() {
   }
 
   const cfg = getConfig();
+  registerSecrets(creds.app_secret);
   clientInstance = new lark.Client({
     appId: creds.app_id,
     appSecret: creds.app_secret,
     appType: lark.AppType.SelfBuild,
     domain: DOMAIN_MAP[cfg.domain] || lark.Domain.Lark,
+    // The SDK's default logger prints caught AxiosErrors verbatim, including
+    // the tenant-token request body (app_secret). See src/lib/redact.js.
+    logger: createRedactingLogger(),
   });
 
   return clientInstance;
