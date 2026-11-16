@@ -47,8 +47,10 @@ function setup({ results = [], appId = APP_ID, fetchImpl, ...overrides } = {}) {
   return { identity, calls, persisted, changes, logs, errors };
 }
 
-function groupMessage(identity) {
-  return identity.ensureForMessage();
+// The real group path: index.js calls checkBotMention once per group message
+// (DMs never touch the identity).
+function groupMessage(identity, mentions = []) {
+  return checkBotMention(identity, mentions);
 }
 
 test('uses cached identity when cached app_id matches the current app', () => {
@@ -121,7 +123,7 @@ test('startup failure without cache: first message refetches and recovers before
   assert.equal(identity.status().refetchUsed, true);
   assert.equal(mentionsBot(identity, 'ou_fetched'), true);
   assert.deepEqual(persisted, [{ openId: 'ou_fetched', appId: APP_ID }]);
-  assert.ok(logs.some((l) => l.includes('recovered on first message')));
+  assert.ok(logs.some((l) => l.includes('recovered on first group message')));
 
   await groupMessage(identity);
   assert.equal(calls.length, 2);
@@ -286,6 +288,111 @@ test('late startup success after the shared wait timed out is applied without ex
   assert.equal(identity.status().status, 'fetched');
   await groupMessage(identity);
   assert.equal(calls.length, 1);
+});
+
+test('hung startup: one group message waits a single 5s window and does not refetch', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const { identity, calls } = setup({
+    refetchTimeoutMs: 5_000,
+    fetchImpl: () => new Promise(() => {}),
+  });
+  identity.fetchAtStartup();
+  let done = false;
+  const mentions = [{ key: '@_user_1', id: { open_id: 'ou_fetched' } }];
+  const message = groupMessage(identity, mentions).then((mentioned) => { done = true; return mentioned; });
+  await Promise.resolve();
+  t.mock.timers.tick(5_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  // Done after exactly one window, handled as not mentioned, refetch unused.
+  assert.equal(done, true);
+  assert.equal(await message, false);
+  assert.equal(calls.length, 1);
+  assert.equal(identity.status().refetchUsed, false);
+  identity.stop();
+});
+
+test('refetch started after a hung startup: late startup success first, then refetch success applies once', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const resolvers = [];
+  const { identity, calls, changes, persisted, logs } = setup({
+    refetchTimeoutMs: 5_000,
+    fetchImpl: () => new Promise((resolve) => { resolvers.push(resolve); }),
+  });
+  identity.fetchAtStartup();
+  const first = groupMessage(identity);
+  await Promise.resolve();
+  t.mock.timers.tick(5_000);
+  await first;
+  const second = groupMessage(identity);
+  await Promise.resolve();
+  assert.equal(calls.length, 2);
+  resolvers[0](FETCHED); // startup succeeds late, while the refetch is in flight
+  await new Promise((resolve) => setImmediate(resolve));
+  resolvers[1](FETCHED);
+  await second;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(identity.status().status, 'fetched');
+  assert.equal(changes.length, 1);
+  assert.equal(persisted.length, 1);
+  assert.equal(logs.filter((l) => l.includes('Bot identity')).length, 1);
+  identity.stop();
+});
+
+test('refetch started after a hung startup: late startup success first, then refetch failure logs no error', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  const resolvers = [];
+  const { identity, calls, changes, errors } = setup({
+    refetchTimeoutMs: 5_000,
+    fetchImpl: () => new Promise((resolve) => { resolvers.push(resolve); }),
+  });
+  identity.fetchAtStartup();
+  const first = groupMessage(identity);
+  await Promise.resolve();
+  t.mock.timers.tick(5_000);
+  await first;
+  const errorsBefore = errors.length;
+  const second = groupMessage(identity);
+  await Promise.resolve();
+  assert.equal(calls.length, 2);
+  resolvers[0](FETCHED);
+  await new Promise((resolve) => setImmediate(resolve));
+  resolvers[1](FAILED);
+  await second;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(identity.status().status, 'fetched');
+  assert.equal(changes.length, 1);
+  assert.deepEqual(errors.slice(errorsBefore), []);
+  // No 10-minute "unknown" log after recovery.
+  t.mock.timers.tick(UNKNOWN_LOG_INTERVAL_MS);
+  assert.equal(errors.filter((e) => e.includes('unknown for')).length, 0);
+  identity.stop();
+});
+
+test('refetch success first, then a late startup success changes nothing', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const resolvers = [];
+  const { identity, calls, changes, persisted, logs } = setup({
+    refetchTimeoutMs: 5_000,
+    fetchImpl: () => new Promise((resolve) => { resolvers.push(resolve); }),
+  });
+  identity.fetchAtStartup();
+  const first = groupMessage(identity);
+  await Promise.resolve();
+  t.mock.timers.tick(5_000);
+  await first;
+  const second = groupMessage(identity);
+  await Promise.resolve();
+  assert.equal(calls.length, 2);
+  resolvers[1](FETCHED);
+  await second;
+  assert.equal(changes.length, 1);
+  resolvers[0]({ success: true, open_id: 'ou_late', app_name: 'Late' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(identity.openId, 'ou_fetched');
+  assert.equal(changes.length, 1);
+  assert.equal(persisted.length, 1);
+  assert.equal(logs.filter((l) => l.includes('Bot identity')).length, 1);
+  identity.stop();
 });
 
 test('group mention check waits for the one-shot refetch so the triggering @mention counts', async () => {

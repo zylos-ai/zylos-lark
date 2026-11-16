@@ -1113,10 +1113,6 @@ async function handleMessageEvent(event) {
   const parentId = message.parent_id || null;
   const threadId = message.thread_id || null;
 
-  // If the startup getBotInfo failed and no cached identity exists, the first
-  // received message triggers one bounded refetch before any mention check.
-  await botIdentity.ensureForMessage();
-
   // Dedup is already checked in the webhook handler (line ~1013)
 
   const extracted = await extractMessageContent(message);
