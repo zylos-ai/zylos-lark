@@ -445,3 +445,125 @@ test('admin show masks secret config fields and keeps the rest', async () => {
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+// ---- JWS-shaped tokens (OAuth v2 user_access_token / refresh_token) ----
+
+// Fake JWS built from fake base64url segments: `eyJ...`, no t-/u- prefix.
+const b64url = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+const FAKE_JWS = [
+  b64url({ alg: 'ES256', kid: 'fake-kid-0000', typ: 'JWT' }),
+  b64url({ sub: 'ou_fakeuser0000', scope: 'fake '.repeat(150), exp: 1 }),
+  Buffer.from('fake-signature-'.repeat(6)).toString('base64url'),
+].join('.');
+const FAKE_UNSIGNED_JWS = `${b64url({ alg: 'none', typ: 'JWT' })}.${b64url({ sub: 'fake-subject' })}.`;
+
+test('bare JWS-shaped tokens are masked: bare, after Bearer, inside JSON, unsigned', () => {
+  assert.ok(FAKE_JWS.startsWith('eyJ') && FAKE_JWS.length > 1000, 'realistic shape and length');
+  const cases = [
+    [`token refreshed: ${FAKE_JWS} ok`, `token refreshed: ${REDACTED} ok`],
+    [`got ${FAKE_JWS}`, `got ${REDACTED}`],
+    [`Authorization header was Bearer ${FAKE_JWS}`, `Authorization header was Bearer ${REDACTED}`],
+    [`sent Bearer ${FAKE_JWS}, done`, `sent Bearer ${REDACTED}, done`],
+    [JSON.stringify({ value: FAKE_JWS, n: 1 }), `{"value":"${REDACTED}","n":1}`],
+    [util.inspect({ value: FAKE_JWS }, { breakLength: Infinity }), `{ value: '${REDACTED}' }`],
+    [`unsigned ${FAKE_UNSIGNED_JWS} end`, `unsigned ${REDACTED} end`],
+  ];
+  for (const [input, expected] of cases) {
+    const once = redactText(input);
+    assert.equal(once, expected, input.slice(0, 40));
+    assert.equal(redactText(once), once, 'idempotent');
+    assert.ok(!once.includes(FAKE_JWS.slice(0, 40)));
+  }
+  assert.equal(formatRedacted(['[lark] user token', FAKE_JWS]), `[lark] user token ${REDACTED}`);
+  assert.deepEqual(redact({ data: [FAKE_JWS] }), { data: [REDACTED] });
+});
+
+test('dotted identifiers starting with eyJ are kept', () => {
+  for (const s of [
+    'eyJsonParser.load.parse',
+    'eyJsonParserFactory.load.parse',
+    'eyJsonParserFactory.loader.x',
+    'call eyJsonParser.load.parse() failed',
+    'xeyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig',
+    'eyJhbGciOiJIUzI1NiJ9',
+  ]) {
+    assert.equal(redactText(s), s, s);
+  }
+});
+
+test('legacy u-/ur- token minimum length: 29-char body kept, 30-char body masked', () => {
+  const body29 = 'fakeUserToken0123456789abcdef';
+  const body30 = `${body29}g`;
+  assert.equal(body29.length, 29);
+  assert.equal(body30.length, 30);
+  for (const prefix of ['u-', 'ur-', 't-']) {
+    assert.equal(redactText(`x ${prefix}${body29} y`), `x ${prefix}${body29} y`, `${prefix} 29 kept`);
+    assert.equal(redactText(`x ${prefix}${body30} y`), `x ${REDACTED} y`, `${prefix} 30 masked`);
+  }
+});
+
+// ---- Memo vs depth limit ----
+
+test('a shared object first met at the depth limit is copied in full when met shallower', () => {
+  const shared = { inner: { leaf: 'x', token: OPAQUE } };
+  const input = { deep: { a: { b: { c: { d: { e: shared } } } } }, shallow: shared };
+  const out = redact(input);
+  // Met at depth 6 first: its children are cut off there.
+  assert.equal(out.deep.a.b.c.d.e.inner, '[Object]');
+  // Met at depth 1 next: not the truncated copy.
+  assert.deepEqual(out.shallow, { inner: { leaf: 'x', token: REDACTED } });
+  // Met deeper again after that: reuses a copy (no extra walk), still safe.
+  const again = redact({ shallow: shared, deep: { a: { b: shared } } });
+  assert.equal(again.deep.a.b, again.shallow, 'deeper meeting reuses the memoized copy');
+  assert.ok(!util.inspect(out, { depth: Infinity }).includes(OPAQUE));
+});
+
+// ---- util.format parity for non-secret values ----
+
+test('non-secret values format exactly like util.format (class names, symbols, cause, errors)', () => {
+  class Foo { constructor() { this.a = 1; this.nested = { b: [1, 2] }; } }
+  class LarkError extends Error { constructor(m) { super(m); this.name = 'LarkError'; this.code = 42; } }
+  class PlainSub extends Error {}
+  const sym = Symbol('meta');
+  const nullProto = Object.assign(Object.create(null), { a: 1 });
+  const values = [
+    { a: 1, b: 'two', c: [1, 2, 3], d: { e: null, f: undefined } },
+    new Foo(),
+    [new Foo(), { x: new Foo() }],
+    { [sym]: 'v', plain: 1 },
+    nullProto,
+    new Map([['k', { v: 1 }]]),
+    new Set([1, 'a']),
+    new Error('outer', { cause: new Error('inner', { cause: new TypeError('root') }) }),
+    new AggregateError([new Error('first'), new RangeError('second')], 'all failed'),
+    new TypeError('bad type'),
+    new LarkError('lark failed'),
+    new PlainSub('sub failed'),
+    Object.assign(new Error('with props'), { code: 'E_FAKE', status: 500 }),
+    Array.from({ length: 100 }, (_, i) => i),
+  ];
+  for (const v of values) {
+    assert.equal(formatRedacted([v]), util.format(v));
+    assert.equal(formatRedacted(['%s: %o', 'label', v]), util.format('%s: %o', 'label', v));
+  }
+});
+
+test('symbol keys and class instances are still redacted', () => {
+  class Creds { constructor() { this.app_secret = OPAQUE; this.id = 'cli_x'; } }
+  const out = redact({ [Symbol('app_secret')]: OPAQUE, [Symbol('note')]: `secret=${OPAQUE}`, creds: new Creds() });
+  const printed = util.inspect(out);
+  assert.ok(!printed.includes(OPAQUE), printed);
+  assert.match(printed, /\[Symbol\(app_secret\)\]: '\[REDACTED\]'/);
+  assert.match(printed, /creds: Creds \{ app_secret: '\[REDACTED\]', id: 'cli_x' \}/);
+});
+
+test('the copy never runs class code of the original', () => {
+  let ran = 0;
+  class Sneaky {
+    constructor() { this.a = 1; }
+    [util.inspect.custom]() { ran++; return 'custom'; }
+  }
+  const out = redact(new Sneaky());
+  assert.equal(util.inspect(out), 'Sneaky { a: 1 }');
+  assert.equal(ran, 0);
+});

@@ -51,12 +51,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scheme, `encrypt_key`, `verification_token`, `ticket`, `secret_key`,
   `api_key`, `private_key`, ...) are masked in nested objects, JSON strings,
   query strings (also percent-encoded) and `Bearer` headers, as are
-  standalone Lark-shaped tokens (`t-`/`u-`/`a-`/`ur-`, not inside paths) and
-  the configured secret values themselves. The bare `token` key stays masked
-  (it carries the verification token in v1 event callbacks). Log copies are
+  standalone tokens in either Lark shape (legacy `t-`/`u-`/`a-`/`ur-` plus at
+  least 30 characters including a digit, not inside paths; and JWS-shaped
+  `eyJ…` header.payload.signature values such as current OAuth v2 user and
+  refresh tokens, which have no prefix) and the configured secret values
+  themselves. The bare `token` key stays masked (it carries the verification
+  token in v1 event callbacks). Log copies are
   bounded (first 100 items per array/object with a "… N more" marker, depth
-  6, 5000 values in all) and shared references are copied once, so large
-  payloads no longer slow logging down. `admin.js show` masks the same
+  6, 5000 values in all) and shared references are copied once (never as a
+  depth-truncated copy at a shallower level), so large payloads no longer
+  slow logging down. Copies keep class names, symbol keys and the
+  `[cause]` / `[errors]` presentation; DESIGN.md lists the remaining
+  differences from plain `util.format` output. `admin.js show` masks the same
   secret fields (`bot.encrypt_key`, `bot.verification_token`) and prints the
   rest of the config unchanged.
 

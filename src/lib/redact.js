@@ -22,7 +22,11 @@
  * useful. The walk is bounded: arrays, Maps and Sets keep their first
  * MAX_ITEMS entries (plus a "… N more items" marker), objects their first
  * MAX_ITEMS keys, nesting stops at MAX_DEPTH and the whole copy at
- * MAX_NODES values. Shared references are copied once.
+ * MAX_NODES values. Shared references are copied once (a copy that was cut
+ * off by the depth limit is not reused at a shallower level). Copies keep the
+ * class name (`Foo { ... }`, `TypeError: ...`, null prototype), enumerable
+ * symbol keys and the `[cause]` / `[errors]` presentation of the original,
+ * without running any of its class code.
  *
  * The bare key `token` stays masked on purpose. It does sometimes hold a
  * harmless Lark drive file token, but it is also the field that carries the
@@ -124,6 +128,13 @@ const AUTH_SCHEME_RE = /\b(Bearer|Basic)\s+(?!\[REDACTED\])[A-Za-z0-9._~+/=-]+/g
 // least 30 characters after the prefix and contain a digit, so names such as
 // `/tmp/u-ploads_...` or `a-very-long-hyphenated-identifier-name` survive.
 const LARK_TOKEN_RE = /(?<![\w./\\-])(?:t|u|a|ur)-(?=[A-Za-z0-9._-]*\d)[A-Za-z0-9._-]{30,}(?![\w/\\-])/g;
+// JWS-shaped tokens: current OAuth v2 user_access_token / refresh_token values
+// (and any other JWT) have no t-/u- prefix. A JWS header is base64url JSON,
+// so it starts with `eyJ` (`{"`). Header and payload must each have at least
+// 10 characters, so dotted identifiers such as `eyJsonParser.load.parse`
+// survive; the signature may be empty (unsigned JWT). The lookbehind keeps
+// the match anchored at a token start, so the scan stays linear.
+const JWS_TOKEN_RE = /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*/g;
 
 const knownSecrets = new Set();
 
@@ -162,6 +173,7 @@ export function redactText(text) {
   out = out.replace(ELEMENT_KEY_VALUE_RE, (_m, prefix, value) => prefix + redactQuotedValue(value));
   out = out.replace(KEY_VALUE_RE, (_m, prefix, value) => prefix + redactQuotedValue(value));
   out = out.replace(LARK_TOKEN_RE, REDACTED);
+  out = out.replace(JWS_TOKEN_RE, REDACTED);
   return out;
 }
 
@@ -169,9 +181,66 @@ function isBinary(v) {
   return Buffer.isBuffer(v) || ArrayBuffer.isView(v) || v instanceof ArrayBuffer;
 }
 
+const BUILTIN_ERRORS = new Set([Error, TypeError, RangeError, SyntaxError, ReferenceError, EvalError, URIError]);
+const MAX_NAMED_CLASSES = 256;
+const namedClasses = new Map();
+
+function constructorOf(value) {
+  try {
+    const proto = Object.getPrototypeOf(value);
+    if (proto === null) return null;
+    const ctor = proto.constructor;
+    return typeof ctor === 'function' ? ctor : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * An empty class with the same name as `ctor` (extending `Base`), so that
+ * util.inspect prints the copy as `Foo { ... }` / `FooError: ...` without
+ * running any of the original class's code (constructors, getters, custom
+ * inspect). Cached per name and base; past MAX_NAMED_CLASSES names, undefined.
+ */
+function namedClass(ctor, Base) {
+  const name = ctor?.name;
+  if (typeof name !== 'string' || name === '' || name === Base.name) return undefined;
+  const key = `${Base.name}:${name}`;
+  let cls = namedClasses.get(key);
+  if (!cls) {
+    if (namedClasses.size >= MAX_NAMED_CLASSES) return undefined;
+    cls = Base === Object ? { [name]: class {} }[name] : { [name]: class extends Base {} }[name];
+    namedClasses.set(key, cls);
+  }
+  return cls;
+}
+
+/** Empty copy target with the same class name / null prototype as `value`. */
+function emptyLike(value) {
+  const ctor = constructorOf(value);
+  if (ctor === null) return Object.create(null);
+  if (ctor === undefined || ctor === Object) return {};
+  const cls = namedClass(ctor, Object);
+  return cls ? new cls() : {};
+}
+
+function newErrorLike(err, message) {
+  const ctor = constructorOf(err);
+  if (ctor === AggregateError) return new AggregateError([], message);
+  if (BUILTIN_ERRORS.has(ctor)) return new ctor(message);
+  const cls = namedClass(ctor, Error);
+  return cls ? new cls(message) : new Error(message);
+}
+
+// util.inspect prints non-enumerable own `cause` / `errors` as `[cause]` /
+// `[errors]`, as on the original error.
+function defineHidden(obj, key, value) {
+  Object.defineProperty(obj, key, { value, writable: true, configurable: true, enumerable: false });
+}
+
 function redactError(err, depth, ctx) {
-  const out = new Error(redactText(String(err.message ?? '')));
-  out.name = err.name;
+  const out = newErrorLike(err, redactText(String(err.message ?? '')));
+  if (out.name !== err.name) out.name = err.name;
   out.stack = typeof err.stack === 'string' ? redactText(err.stack) : out.stack;
 
   if (err.isAxiosError) {
@@ -194,10 +263,14 @@ function redactError(err, depth, ctx) {
     }
   }
   // AggregateError keeps `errors` as a non-enumerable own property.
-  if (Array.isArray(err.errors) && !Object.hasOwn(out, 'errors')) {
-    out.errors = redactValue(err.errors, depth + 1, ctx);
+  if (Array.isArray(err.errors) && !Object.propertyIsEnumerable.call(err, 'errors')) {
+    defineHidden(out, 'errors', redactValue(err.errors, depth + 1, ctx));
   }
-  if (err.cause !== undefined) out.cause = redactValue(err.cause, depth + 1, ctx);
+  if (err.cause !== undefined && !Object.hasOwn(out, 'cause')) {
+    const cause = redactValue(err.cause, depth + 1, ctx);
+    if (Object.hasOwn(err, 'cause') && Object.propertyIsEnumerable.call(err, 'cause')) out.cause = cause;
+    else defineHidden(out, 'cause', cause);
+  }
   return out;
 }
 
@@ -236,12 +309,18 @@ function redactObject(value, depth, ctx) {
     if (rest > 0) out.add(moreMarker(rest, 'items'));
     return out;
   }
-  const out = {};
+  const out = emptyLike(value);
+  // Own enumerable string keys, then enumerable symbol keys (as util.inspect
+  // shows them). A symbol key is judged by its description.
   const keys = Object.keys(value);
+  for (const sym of Object.getOwnPropertySymbols(value)) {
+    if (Object.prototype.propertyIsEnumerable.call(value, sym)) keys.push(sym);
+  }
   const rest = redactEntries(keys, keys.length, depth, ctx, (key) => {
     let v;
     try { v = value[key]; } catch { v = '[unreadable]'; }
-    out[key] = isSensitiveKey(key) && v !== undefined && v !== null && v !== '' ? REDACTED : redactValue(v, depth + 1, ctx);
+    const sensitive = isSensitiveKey(typeof key === 'symbol' ? key.description : key);
+    out[key] = sensitive && v !== undefined && v !== null && v !== '' ? REDACTED : redactValue(v, depth + 1, ctx);
   });
   if (rest > 0) out['…'] = moreMarker(rest, 'keys');
   return out;
@@ -255,13 +334,17 @@ function redactValue(value, depth, ctx) {
   if (value instanceof Date || value instanceof RegExp) return value;
   if (value instanceof URL || value instanceof URLSearchParams) return redactText(String(value));
   if (ctx.active.has(value)) return '[Circular]';
-  if (ctx.done.has(value)) return ctx.done.get(value);
+  // A memoized copy made at depth d is cut off MAX_DEPTH - d levels below it,
+  // so it is reused only at the same or a deeper level; met shallower, the
+  // value is walked again and the fuller copy replaces the memo entry.
+  const memo = ctx.done.get(value);
+  if (memo && memo.depth <= depth) return memo.out;
   if (depth > ctx.maxDepth) return Array.isArray(value) ? '[Array]' : '[Object]';
   if (ctx.nodes > ctx.maxNodes) return '[Truncated]';
   ctx.active.add(value);
   try {
     const out = redactObject(value, depth, ctx);
-    ctx.done.set(value, out);
+    ctx.done.set(value, { out, depth });
     return out;
   } finally {
     ctx.active.delete(value);
@@ -289,7 +372,24 @@ export function redact(value, { maxDepth = MAX_DEPTH, maxItems = MAX_ITEMS, maxN
  * a format string and its arguments are checked together
  * (`('token=%s', v)` or `('[x] token:', v)`). Objects are first redacted by
  * key, then everything is `util.format`ted and redactText() runs once over
- * the result. For non-secret content the text equals what console prints.
+ * the result.
+ *
+ * For plain objects, arrays, Maps, Sets, class instances, null-prototype
+ * objects, symbol keys and errors (including `[cause]`, AggregateError
+ * `[errors]` and Error subclasses) without secrets, the text equals
+ * `util.format` (tested). Known remaining differences:
+ * - arrays / Maps / Sets over 100 entries end with a `'… N more items'`
+ *   element, objects over 100 keys with a `'…'` key, and values past the
+ *   5000-value budget print as `'[Truncated]'`;
+ * - Buffers / typed arrays print as `'[binary N bytes]'`, URL and
+ *   URLSearchParams objects as their (quoted) string;
+ * - axios errors print as a summary (code, method, url, status, cause,
+ *   responseData) instead of config / request / response;
+ * - accessor properties print their value instead of `[Getter]`;
+ *   subclasses of Array / Map / Set lose their class name, as do classes
+ *   past the first 256 distinct names;
+ * - text that looks like a secret (`token=...`, a `t-`/`eyJ` token shape)
+ *   is masked even when it is harmless.
  */
 export function formatRedacted(args) {
   try {
