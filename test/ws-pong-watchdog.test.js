@@ -102,8 +102,12 @@ function createFakeSdk() {
       return this.handleControlData({ headers: [{ key: 'type', value: 'pong' }], payload: new Uint8Array() });
     }
   }
-  class FakeDispatcher { register() { return this; } }
-  return { clients, FakeWSClient, FakeDispatcher };
+  const dispatchers = [];
+  class FakeDispatcher {
+    constructor(params) { this.params = params; dispatchers.push(this); }
+    register() { return this; }
+  }
+  return { clients, dispatchers, FakeWSClient, FakeDispatcher };
 }
 
 function createLog() {
@@ -158,6 +162,25 @@ async function runHealthy(env, ms) {
     if (step === INTERVAL) await env.client().pong();
   }
 }
+
+test('WSClient and EventDispatcher get the redacting SDK logger (no secrets in SDK logs)', async () => {
+  const env = await setup();
+  for (const params of [env.client().params, env.sdk.dispatchers[0].params]) {
+    const { logger } = params;
+    assert.ok(logger, 'custom logger passed');
+    for (const m of ['error', 'warn', 'info', 'debug', 'trace']) assert.equal(typeof logger[m], 'function', m);
+    const seen = [];
+    const orig = console.log;
+    console.log = (...a) => seen.push(a);
+    try {
+      logger.error([{ config: { data: '{"app_id":"cli_fake","app_secret":"fake-secret-value-123"}' } }]);
+    } finally {
+      console.log = orig;
+    }
+    assert.equal(seen.length, 1);
+    assert.ok(!JSON.stringify(seen).includes('fake-secret-value-123'));
+  }
+});
 
 const halfOpenErrors = (env) => env.log.lines.error.filter((l) => l.includes('half-open detected'));
 

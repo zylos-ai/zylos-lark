@@ -36,6 +36,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     restart (`src/lib/bot-identity.js`). `scripts/send.js` applies the same
     `bot.app_id` check to the cached `bot.open_id` it uses for self-mention
     suppression.
+- **Secrets no longer reach the service logs.** When the tenant-access-token
+  request failed (e.g. `ECONNREFUSED`), the SDK's default logger printed the
+  whole AxiosError to `out.log`, including `config.data` with the plaintext
+  `app_secret`. Every SDK client (`Client`, `WSClient`, `EventDispatcher`) now
+  gets a redacting logger with the same `[error]:` / `[info]:` format, and the
+  service and `scripts/send.js` wrap `console` with the same redaction
+  (`src/lib/redact.js`). Log arguments are formatted into one line first and
+  then redacted, so `console.log('token=%s', v)` and `('[x] token:', v)` are
+  masked too. Axios errors are logged as name, message, code, method, url,
+  status, cause and redacted response data (no raw config/request/headers);
+  AggregateError `errors` and URL objects are kept (redacted). Values of
+  secret keys (`app_secret`, access/refresh tokens, `Authorization` with any
+  scheme, `encrypt_key`, `verification_token`, `ticket`, `secret_key`,
+  `api_key`, `private_key`, ...) are masked in nested objects, JSON strings,
+  query strings (also percent-encoded) and `Bearer` headers, as are
+  standalone tokens in either Lark shape (legacy `t-`/`u-`/`a-`/`ur-` plus at
+  least 30 characters including a digit, not inside paths; and JWS-shaped
+  `eyJ…` header.payload.signature values such as current OAuth v2 user and
+  refresh tokens, which have no prefix) and the configured secret values
+  themselves. The bare `token` key stays masked (it carries the verification
+  token in v1 event callbacks). Log copies are
+  bounded (first 100 items per array/object with a "… N more" marker, depth
+  6, 5000 values in all) and shared references are copied once (never as a
+  depth-truncated copy at a shallower level), so large payloads no longer
+  slow logging down. Copies keep class names, symbol keys and the
+  `[cause]` / `[errors]` presentation; DESIGN.md lists the remaining
+  differences from plain `util.format` output. `admin.js show` masks the same
+  secret fields (`bot.encrypt_key`, `bot.verification_token`) and prints the
+  rest of the config unchanged.
 
 ### Added
 - While the bot identity is unknown, an error is logged every 10 minutes

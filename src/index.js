@@ -27,9 +27,14 @@ import { startWebSocket, stopWebSocket, getConnectionState } from './lib/transpo
 import { sendToC4, createRejectReply } from './lib/c4.js';
 import { buildEndpoint } from './lib/endpoint.js';
 import { recordChatType } from './lib/session-group.js';
+import { installConsoleRedaction, registerSecrets } from './lib/redact.js';
+
+// Keep credentials out of the PM2 logs, whatever logs them (src/lib/redact.js).
+installConsoleRedaction();
 
 const INTERNAL_TOKEN = crypto.randomBytes(24).toString('hex');
 process.env.LARK_INTERNAL_TOKEN = INTERNAL_TOKEN;
+registerSecrets(INTERNAL_TOKEN);
 // Persist token to file so send.js (spawned by C4 in a separate process tree) can read it
 const TOKEN_FILE = path.join(DATA_DIR, '.internal-token');
 try {
@@ -92,6 +97,7 @@ const dedupCleanupInterval = setInterval(() => {
 
 // Load configuration
 let config = getConfig();
+registerSecrets(getCredentials().app_secret, config.bot?.encrypt_key, config.bot?.verification_token);
 console.log(`[lark] Config loaded, enabled: ${config.enabled}`);
 
 if (!config.enabled) {
@@ -125,6 +131,7 @@ botIdentity.loadCached(config.bot);
 watchConfig((newConfig) => {
   console.log(`[lark] Config reloaded`);
   config = newConfig;
+  registerSecrets(newConfig.bot?.encrypt_key, newConfig.bot?.verification_token);
   if (!newConfig.enabled) {
     console.log(`[lark] Component disabled, stopping...`);
     shutdown();
