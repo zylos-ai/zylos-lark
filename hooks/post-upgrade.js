@@ -363,8 +363,13 @@ if (fs.existsSync(configPath)) {
 // with the current install layout. All three steps are idempotent:
 //   - installLarkCliBinary:    no-op when `lark-cli` is already on PATH
 //   - installLarkCliSkills:    no-op when references/lark-im/SKILL.md exists
-//   - syncCredentialsToLarkCli: overwrites keychain every run, so secret
-//                                rotations propagate after `zylos upgrade lark`
+//   - syncCredentialsToLarkCli: re-runs `lark-cli config init` only when
+//                                appId / brand / lang / secret changed, so
+//                                secret rotations propagate after `zylos
+//                                upgrade lark`; users logged in via
+//                                `lark-cli auth login` are preserved for the
+//                                same appId and a lost identity is warned
+//                                about (issue #112)
 //
 // On failure: hard-fail with exit(1) to abort the upgrade, matching the
 // config migration block above and §4.4 "abort + rollback" policy.
