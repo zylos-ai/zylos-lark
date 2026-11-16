@@ -10,6 +10,7 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 import { getCredentials, getConfig } from './config.js';
 import { explainBotInfoError } from './bot-identity.js';
+import { createSafeSdkLogger } from './safe-error.js';
 
 const DOMAIN_MAP = {
   feishu: lark.Domain.Feishu,
@@ -43,6 +44,8 @@ export function getClient() {
     appSecret: creds.app_secret,
     appType: lark.AppType.SelfBuild,
     domain: DOMAIN_MAP[cfg.domain] || lark.Domain.Lark,
+    // SDK default logger dumps raw axios errors (config.data has app_secret)
+    logger: createSafeSdkLogger(),
   });
 
   return clientInstance;

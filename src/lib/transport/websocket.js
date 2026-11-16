@@ -65,6 +65,7 @@
 import path from 'node:path';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { DATA_DIR } from '../config.js';
+import { createSafeSdkLogger } from '../safe-error.js';
 import { createRestartGuard, lockRecoveryHint, LOCK_RETRY_AFTER_MS, RESTART_STATE_FILENAME, RESTART_MAX_IN_WINDOW, RESTART_WINDOW_MS } from './restart-guard.js';
 
 export { RESTART_MAX_IN_WINDOW, RESTART_WINDOW_MS, RESTART_STATE_FILENAME };
@@ -523,6 +524,8 @@ export function createWebSocketTransport(deps = {}) {
       appSecret: credentials.app_secret,
       domain,
       loggerLevel: lark.LoggerLevel.info,
+      // SDK default logger dumps raw axios errors (request body has AppSecret)
+      logger: createSafeSdkLogger(),
       autoReconnect: true,
     });
     instrument(client);
