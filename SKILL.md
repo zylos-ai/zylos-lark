@@ -1,6 +1,6 @@
 ---
 name: lark
-version: 0.4.1
+version: 0.4.2
 description: >-
   Lark (international) communication channel.
   For Feishu (飞书, China) use the separate feishu component instead.
