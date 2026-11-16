@@ -553,11 +553,28 @@ test('symbol keys and class instances are still redacted', () => {
   const out = redact({ [Symbol('app_secret')]: OPAQUE, [Symbol('note')]: `secret=${OPAQUE}`, creds: new Creds() });
   const printed = util.inspect(out);
   assert.ok(!printed.includes(OPAQUE), printed);
-  assert.match(printed, /\[Symbol\(app_secret\)\]: '\[REDACTED\]'/);
+  // util.inspect writes symbol keys as `[Symbol(x)]` on Node 22 and `Symbol(x)` on Node 24.
+  const expectedSym = util.inspect({ [Symbol('app_secret')]: '[REDACTED]' }).slice(2, -2);
+  assert.ok(printed.includes(expectedSym), printed);
   assert.match(printed, /creds: Creds \{ app_secret: '\[REDACTED\]', id: 'cli_x' \}/);
 });
 
-test('the copy never runs class code of the original', () => {
+test('a throwing static name getter only drops the class name', () => {
+  class Hostile { constructor() { this.app_secret = OPAQUE; } }
+  Object.defineProperty(Hostile, 'name', { get() { throw new Error('boom'); } });
+  const printed = formatRedacted([new Hostile()]);
+  assert.ok(!printed.includes(OPAQUE), printed);
+  assert.notEqual(printed, '[unloggable value]');
+  assert.match(printed, /app_secret: '\[REDACTED\]'/);
+});
+
+test('short dotted eyJ identifiers are not masked as JWS', () => {
+  for (const id of ['eyJab.cdefghijklmn.op', 'eyJabcd.cdefghijklmn.op', 'eyJabcdefgh.x.y']) {
+    assert.equal(redactText(`id=${id}`), `id=${id}`);
+  }
+});
+
+test('the copy never calls the original constructor or custom inspect', () => {
   let ran = 0;
   class Sneaky {
     constructor() { this.a = 1; }

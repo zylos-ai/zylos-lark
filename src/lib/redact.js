@@ -25,8 +25,9 @@
  * MAX_NODES values. Shared references are copied once (a copy that was cut
  * off by the depth limit is not reused at a shallower level). Copies keep the
  * class name (`Foo { ... }`, `TypeError: ...`, null prototype), enumerable
- * symbol keys and the `[cause]` / `[errors]` presentation of the original,
- * without running any of its class code.
+ * symbol keys and the `[cause]` / `[errors]` presentation of the original.
+ * The original's constructor and custom inspect are never called; property
+ * getters, `constructor` / `name` reads and Proxy traps on it still run.
  *
  * The bare key `token` stays masked on purpose. It does sometimes hold a
  * harmless Lark drive file token, but it is also the field that carries the
@@ -199,11 +200,17 @@ function constructorOf(value) {
 /**
  * An empty class with the same name as `ctor` (extending `Base`), so that
  * util.inspect prints the copy as `Foo { ... }` / `FooError: ...` without
- * running any of the original class's code (constructors, getters, custom
- * inspect). Cached per name and base; past MAX_NAMED_CLASSES names, undefined.
+ * calling the original's constructor or custom inspect. Reading `ctor.name`
+ * can still run a static `name` getter; if that throws, the class name is
+ * dropped. Cached per name and base; past MAX_NAMED_CLASSES names, undefined.
  */
 function namedClass(ctor, Base) {
-  const name = ctor?.name;
+  let name;
+  try {
+    name = ctor?.name;
+  } catch {
+    return undefined;
+  }
   if (typeof name !== 'string' || name === '' || name === Base.name) return undefined;
   const key = `${Base.name}:${name}`;
   let cls = namedClasses.get(key);
