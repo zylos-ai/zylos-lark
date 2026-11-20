@@ -5,6 +5,17 @@
 import { getClient } from './client.js';
 
 /**
+ * Lark API error code for "range goes past the sheet tail".
+ * This is the only failure a reader may treat as an empty read.
+ */
+export const SHEET_RANGE_OUT_OF_BOUNDS_CODE = 900015206;
+
+/**
+ * Fallback code attached to a thrown getSheetValues failure that carries none.
+ */
+export const SHEET_VALUES_REQUEST_FAILED = 'E_SHEET_VALUES_REQUEST_FAILED';
+
+/**
  * Get document raw content
  * @param {string} documentId - Document ID (e.g., doccnXXXX)
  */
@@ -169,13 +180,21 @@ export async function readSheetData(token, sheetId, range = '') {
  * Get values from spreadsheet range using drive API
  * @param {string} token - Spreadsheet token
  * @param {string} range - Range like "SheetId!A1:D10"
+ * @param {object} [options]
+ * @param {boolean} [options.throwOnError=false] - Throw instead of returning
+ *   `{ success: false }` when the read fails. The thrown error carries the API
+ *   `code`, or the original error code on the transport path.
+ *   Exception: with `throwOnError`, a range past the sheet tail (900015206)
+ *   resolves as an empty tail instead of throwing.
  */
-export async function getSheetValues(token, range) {
+export async function getSheetValues(token, range, options = {}) {
+  const { throwOnError = false } = options ?? {};
   const client = getClient();
 
+  let res;
   try {
     // Use the valueRange API to get actual cell values
-    const res = await client.request({
+    res = await client.request({
       method: 'GET',
       url: `/open-apis/sheets/v2/spreadsheets/${encodeURIComponent(token)}/values/${encodeURIComponent(range)}`,
       params: {
@@ -183,23 +202,47 @@ export async function getSheetValues(token, range) {
         dateTimeRenderOption: 'FormattedString',
       },
     });
-
-    if (res.code === 0) {
-      return {
-        success: true,
-        range: res.data.valueRange?.range,
-        values: res.data.valueRange?.values,
-      };
-    } else {
-      return {
-        success: false,
-        message: `Failed to get values: ${res.msg}`,
-        code: res.code,
-      };
-    }
   } catch (err) {
-    return { success: false, message: err.message };
+    if (!throwOnError) {
+      return { success: false, message: err.message };
+    }
+    // Preserve the original error (and its code) on the transport path.
+    const error = err instanceof Error ? err : new Error(String(err));
+    if (error.code === undefined) {
+      error.code = SHEET_VALUES_REQUEST_FAILED;
+    }
+    throw error;
   }
+
+  if (res?.code === 0) {
+    return {
+      success: true,
+      range: res.data.valueRange?.range,
+      values: res.data.valueRange?.values,
+    };
+  }
+
+  // A range past the sheet tail is not a failure for a tolerant reader: it
+  // reads as an empty tail. Default callers keep the historical failure shape.
+  if (throwOnError && res?.code === SHEET_RANGE_OUT_OF_BOUNDS_CODE) {
+    return {
+      success: true,
+      range: res.data?.valueRange?.range ?? range,
+      values: [],
+    };
+  }
+
+  const message = `Failed to get values: ${res?.msg}`;
+  if (throwOnError) {
+    const error = new Error(message);
+    error.code = res?.code;
+    throw error;
+  }
+  return {
+    success: false,
+    message,
+    code: res?.code,
+  };
 }
 
 /**
