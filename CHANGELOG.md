@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **C4 rejection notices in DMs are no longer silently dropped.** The
+  TRY_LATER / MAYBE_LOST notice replied to `parent || root` regardless of chat
+  type, so a notice for a DM quote-reply went out as a reply-to that Lark does
+  not show in the main DM view, and a notice for a DM topic thread was sent
+  without `reply_in_thread`. Notices now follow the same routing as outbound
+  sends: p2p base-sends, except inside a topic thread, where they reply to
+  `parent || root` with `reply_in_thread: true`. Group routing is unchanged.
+
 ## [0.4.3] - 2026-11-21
 
 ### Fixed
