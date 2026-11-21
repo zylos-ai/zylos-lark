@@ -157,15 +157,15 @@ function splitMessage(text, maxLength) {
 // Card max content length (Lark card body limit ~28KB JSON; keep text under 4000 for safety)
 const CARD_MAX_LENGTH = 4000;
 
-/**
- * Send a single chunk as a markdown card, with routing logic.
- * Falls back to plain text on card failure.
- */
 // Inside a Lark topic thread (endpoint has `thread:`), keep replies in the thread.
 function threadOpts() {
   return { replyInThread: Boolean(parsedEndpoint.thread) };
 }
 
+/**
+ * Send a single chunk as a markdown card, with routing logic.
+ * Falls back to plain text on card failure.
+ */
 async function sendCardChunk(chunk, isFirstChunk) {
   const { chatId } = parsedEndpoint;
   // The card API speaks a different @-mention syntax than text messages do
