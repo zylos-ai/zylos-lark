@@ -25,6 +25,7 @@ import { createBotIdentity, isBotMentioned, botIdentityConfigUpdate } from './li
 import { createMessageDeduper, MESSAGE_DEDUP_TTL_MS } from './lib/message-dedup.js';
 import { startWebSocket, stopWebSocket, getConnectionState } from './lib/transport/websocket.js';
 import { sendToC4, createRejectReply } from './lib/c4.js';
+import { deliverRejectNotice } from './lib/reject-notice.js';
 import { buildEndpoint } from './lib/endpoint.js';
 import { recordChatType } from './lib/session-group.js';
 import { installConsoleRedaction, registerSecrets } from './lib/redact.js';
@@ -1085,18 +1086,14 @@ function transcribeAudio(audioPath) {
 }
 
 /**
- * Send a C4 rejection notice (TRY_LATER / MAYBE_LOST) into the conversation,
- * replying in the parent/root thread when there is one.
+ * Send a C4 rejection notice into the conversation; routing lives in
+ * lib/reject-notice.js (p2p topic threads reply in-thread, other p2p base-send).
  */
-function deliverRejectNotice(chatId, errMsg, { parentId, rootId, threadId, messageId }) {
-  const rejectTarget = parentId || rootId || (threadId ? messageId : null);
-  if (rejectTarget) {
-    replyToMessage(rejectTarget, errMsg).then(r => {
-      if (!r.success) sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
-    }).catch(() => sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message)));
-  } else {
-    sendMessage(chatId, errMsg).catch(e => console.error('[lark] reject reply failed:', e.message));
-  }
+function sendRejectNotice(chatId, errMsg, { chatType, parentId, rootId, threadId, messageId }) {
+  deliverRejectNotice(
+    { chatId, text: errMsg, chatType, rootId, parentId, threadId, messageId },
+    { replyToMessage, sendMessage },
+  ).catch(e => console.error('[lark] reject reply failed:', e.message));
 }
 
 /**
@@ -1194,7 +1191,7 @@ async function handleMessageEvent(event) {
     const threadRootId = threadId ? rootId : null;
     const rejectReply = createRejectReply({
       removeTyping: () => removeTypingIndicator(messageId),
-      deliver: (errMsg) => deliverRejectNotice(chatId, errMsg, { parentId, rootId, threadId, messageId })
+      deliver: (errMsg) => sendRejectNotice(chatId, errMsg, { chatType, parentId, rootId, threadId, messageId })
     });
 
     if (imageKeys.length > 0) {
@@ -1368,7 +1365,7 @@ async function handleMessageEvent(event) {
     const groupRejectReply = createRejectReply({
       removeTyping: () => removeTypingIndicator(messageId),
       onStored: markCursorDelivered,
-      deliver: (errMsg) => deliverRejectNotice(chatId, errMsg, { parentId, rootId, threadId, messageId })
+      deliver: (errMsg) => sendRejectNotice(chatId, errMsg, { chatType, parentId, rootId, threadId, messageId })
     });
 
     if (imageKeys.length > 0) {
