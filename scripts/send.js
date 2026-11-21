@@ -157,6 +157,11 @@ function splitMessage(text, maxLength) {
 // Card max content length (Lark card body limit ~28KB JSON; keep text under 4000 for safety)
 const CARD_MAX_LENGTH = 4000;
 
+// Inside a Lark topic thread (endpoint has `thread:`), keep replies in the thread.
+function threadOpts() {
+  return { replyInThread: Boolean(parsedEndpoint.thread) };
+}
+
 /**
  * Send a single chunk as a markdown card, with routing logic.
  * Falls back to plain text on card failure.
@@ -169,13 +174,13 @@ async function sendCardChunk(chunk, isFirstChunk) {
   // text path — so convert here, or every mention in a markdown-bearing message
   // renders as literal text and notifies nobody. See src/lib/at-mention.js.
   const cardChunk = convertAtMentionsForCard(chunk);
-  // p2p DMs never reply-to (invisible in the 1:1 view); only groups reply.
+  // p2p DMs only reply-to inside a topic thread (see reply-target.js).
   const replyTarget = chooseReplyTarget(parsedEndpoint, { isFirstChunk });
   let result;
 
   if (replyTarget) {
     try {
-      result = await replyMarkdownCard(replyTarget, cardChunk);
+      result = await replyMarkdownCard(replyTarget, cardChunk, threadOpts());
     } catch (err) {
       console.log('[lark] Card reply threw, falling back:', err.message);
       result = { success: false };
@@ -258,13 +263,13 @@ async function sendText(endpoint, text) {
 async function sendPlainTextChunk(endpoint, chunk, isFirstChunk) {
   const { chatId, type } = parsedEndpoint;
   const isDM = type === 'p2p';
-  // p2p DMs never reply-to (invisible in the 1:1 view); only groups reply.
+  // p2p DMs only reply-to inside a topic thread (see reply-target.js).
   const replyTarget = chooseReplyTarget(parsedEndpoint, { isFirstChunk });
   let result;
 
   if (replyTarget) {
     try {
-      result = await replyToMessage(replyTarget, chunk);
+      result = await replyToMessage(replyTarget, chunk, 'text', threadOpts());
     } catch (err) {
       console.log('[lark] Reply threw, falling back:', err.message);
       result = { success: false };
@@ -291,7 +296,7 @@ async function sendPlainTextChunk(endpoint, chunk, isFirstChunk) {
 async function sendMedia(type, filePath) {
   const trimmedPath = filePath.trim();
   const { chatId, root, parent } = parsedEndpoint;
-  // p2p DMs never reply-to (invisible in the 1:1 view); only groups reply.
+  // p2p DMs only reply-to inside a topic thread (see reply-target.js).
   const replyTarget = chooseReplyTarget(parsedEndpoint);
 
   if (type === 'image') {
@@ -301,11 +306,11 @@ async function sendMedia(type, filePath) {
     }
     if (replyTarget) {
       try {
-        const result = await replyToMessage(replyTarget, JSON.stringify({ image_key: uploadResult.imageKey }), 'image');
+        const result = await replyToMessage(replyTarget, JSON.stringify({ image_key: uploadResult.imageKey }), 'image', threadOpts());
         if (result.success) return;
         console.log('[lark] Image reply failed, falling back to sendImage:', result.message);
         if (parent && root && parent !== root) {
-          const rootReply = await replyToMessage(root, JSON.stringify({ image_key: uploadResult.imageKey }), 'image');
+          const rootReply = await replyToMessage(root, JSON.stringify({ image_key: uploadResult.imageKey }), 'image', threadOpts());
           if (rootReply.success) return;
           console.log('[lark] Image root reply fallback failed, falling back to sendImage:', rootReply.message);
         }
@@ -313,7 +318,7 @@ async function sendMedia(type, filePath) {
         console.log('[lark] Image reply threw, falling back:', err.message);
         if (parent && root && parent !== root) {
           try {
-            const rootReply = await replyToMessage(root, JSON.stringify({ image_key: uploadResult.imageKey }), 'image');
+            const rootReply = await replyToMessage(root, JSON.stringify({ image_key: uploadResult.imageKey }), 'image', threadOpts());
             if (rootReply.success) return;
           } catch {}
         }
@@ -330,11 +335,11 @@ async function sendMedia(type, filePath) {
     }
     if (replyTarget) {
       try {
-        const result = await replyToMessage(replyTarget, JSON.stringify({ file_key: uploadResult.fileKey }), 'file');
+        const result = await replyToMessage(replyTarget, JSON.stringify({ file_key: uploadResult.fileKey }), 'file', threadOpts());
         if (result.success) return;
         console.log('[lark] File reply failed, falling back to sendFile:', result.message);
         if (parent && root && parent !== root) {
-          const rootReply = await replyToMessage(root, JSON.stringify({ file_key: uploadResult.fileKey }), 'file');
+          const rootReply = await replyToMessage(root, JSON.stringify({ file_key: uploadResult.fileKey }), 'file', threadOpts());
           if (rootReply.success) return;
           console.log('[lark] File root reply fallback failed, falling back to sendFile:', rootReply.message);
         }
@@ -342,7 +347,7 @@ async function sendMedia(type, filePath) {
         console.log('[lark] File reply threw, falling back:', err.message);
         if (parent && root && parent !== root) {
           try {
-            const rootReply = await replyToMessage(root, JSON.stringify({ file_key: uploadResult.fileKey }), 'file');
+            const rootReply = await replyToMessage(root, JSON.stringify({ file_key: uploadResult.fileKey }), 'file', threadOpts());
             if (rootReply.success) return;
           } catch {}
         }
