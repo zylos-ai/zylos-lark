@@ -301,6 +301,8 @@ node send.js "oc_xxx" "[MEDIA:file]/path/to/document.pdf"
 | smart_groups | object[] | Groups where all messages are monitored |
 | proxy.enabled | boolean | Proxy enable/disable toggle |
 | message.context_messages | number | Number of group context messages to include |
+| message.history_max_chats | number | Optional. Max group chats/threads kept in the in-memory reply-context history; least-recently-used are evicted beyond this. Default: 500 |
+| message.history_idle_ttl_hours | number | Optional. Drop a chat/thread's in-memory history after this many hours without a new message or context read (re-fetched from the API on next use). Default: 24 |
 | transport | string | `websocket` (long connection, default) or `webhook` |
 | ws_pong_timeout_sec | number | Optional. WebSocket half-open watchdog: controlled process restart when no pong arrives for this many seconds (only after at least one pong was seen in the process). Default: 3 x server ping interval (360s today). `0` disables watchdog restarts (monitoring and logs stay on). Values < 30 are rejected with a WARN (default used). Read at startup. |
 

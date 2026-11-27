@@ -23,6 +23,7 @@ import { listChatMembers } from './lib/chat.js';
 import { getBotInfo, setBotIdentity } from './lib/client.js';
 import { createBotIdentity, isBotMentioned, botIdentityConfigUpdate } from './lib/bot-identity.js';
 import { createMessageDeduper, MESSAGE_DEDUP_TTL_MS } from './lib/message-dedup.js';
+import { createChatHistoryStore } from './lib/chat-history-store.js';
 import { startWebSocket, stopWebSocket, getConnectionState } from './lib/transport/websocket.js';
 import { sendToC4, createRejectReply } from './lib/c4.js';
 import { buildEndpoint } from './lib/endpoint.js';
@@ -359,23 +360,26 @@ let groupCursors = loadCursors();
 // File logs are kept for audit; this Map is used for fast context.
 // ============================================================
 const DEFAULT_HISTORY_LIMIT = 5;
-const chatHistories = new Map();
+// Bounded by key count (LRU) and idle TTL; see src/lib/chat-history-store.js.
+// Both limits are read from config on each use, so hot-reload applies.
+const chatHistories = createChatHistoryStore({
+  maxChats: () => config.message?.history_max_chats,
+  idleTtlMs: () => {
+    const hours = Number(config.message?.history_idle_ttl_hours);
+    return Number.isFinite(hours) && hours > 0 ? hours * 60 * 60 * 1000 : undefined;
+  },
+  // Let an evicted container lazy-load from the API again on next use.
+  onEvict: (key) => _lazyLoadedContainers.delete(key),
+});
+
+// Hourly idle sweep so quiet processes also release expired histories
+// (writes sweep lazily as well).
+const chatHistorySweepInterval = setInterval(() => chatHistories.sweep(), 60 * 60 * 1000);
+chatHistorySweepInterval.unref();
 
 function recordHistoryEntry(chatId, entry) {
   const normalizedChatId = chatId === undefined || chatId === null ? '' : String(chatId);
-  if (!chatHistories.has(normalizedChatId)) {
-    chatHistories.set(normalizedChatId, []);
-  }
-  const history = chatHistories.get(normalizedChatId);
-  // Deduplicate by message_id (lazy load + real-time can overlap)
-  if (entry.message_id && history.some(m => m.message_id === entry.message_id)) {
-    return;
-  }
-  history.push(entry);
-  const limit = getGroupHistoryLimit(normalizedChatId);
-  if (history.length > limit * 2) {
-    chatHistories.set(normalizedChatId, history.slice(-limit));
-  }
+  chatHistories.record(normalizedChatId, entry, getGroupHistoryLimit(normalizedChatId));
 }
 
 function sortContextChronologically(messages) {
@@ -1612,6 +1616,7 @@ function gracefulCleanup() {
   clearInterval(dedupCleanupInterval);
   clearInterval(typingCheckInterval);
   clearInterval(userCachePersistInterval);
+  clearInterval(chatHistorySweepInterval);
   botIdentity.stop();
   persistUserCache();
   stopWatching();

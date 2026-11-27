@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **In-memory reply-context history no longer grows without bound.** Each
+  new group chat or thread used to add a history key that was never
+  removed for the life of the process. The history is now capped at
+  `message.history_max_chats` keys (default 500, least-recently-used
+  evicted) and keys idle for more than `message.history_idle_ttl_hours`
+  (default 24, measured from the last recorded message or context read)
+  are dropped by a lazy on-write sweep plus an hourly sweep. An evicted
+  chat/thread lazy-loads its recent messages from the API again on next use.
+
 ## [0.4.3] - 2026-11-21
 
 ### Fixed
