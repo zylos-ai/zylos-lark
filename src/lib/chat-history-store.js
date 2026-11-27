@@ -90,8 +90,10 @@ export function createChatHistoryStore({
     // Deduplicate by message_id (lazy load + real-time can overlap)
     if (!(entry.message_id && slot.entries.some(m => m.message_id === entry.message_id))) {
       slot.entries.push(entry);
-      if (Number.isFinite(limit) && limit > 0 && slot.entries.length > limit * 2) {
-        slot.entries = slot.entries.slice(-limit);
+      // Coerce like the old inline code did: a hand-edited "10" still trims.
+      const n = Number(limit);
+      if (Number.isFinite(n) && n > 0 && slot.entries.length > n * 2) {
+        slot.entries = slot.entries.slice(-n);
       }
     }
 
@@ -122,6 +124,5 @@ export function createChatHistoryStore({
     has: (key) => histories.has(normalizeKey(key)),
     keys: () => [...histories.keys()],
     size: () => histories.size,
-    clear: () => histories.clear(),
   };
 }

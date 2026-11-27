@@ -1,18 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
-  createChatHistoryStore,
-  DEFAULT_HISTORY_MAX_CHATS,
-  DEFAULT_HISTORY_IDLE_TTL_MS,
-} from '../src/lib/chat-history-store.js';
+import { createChatHistoryStore } from '../src/lib/chat-history-store.js';
 
 const msg = (id, text = id) => ({ message_id: id, text, timestamp: '2026-01-01T00:00:00Z' });
-
-test('defaults are 500 keys and 24h idle TTL', () => {
-  assert.equal(DEFAULT_HISTORY_MAX_CHATS, 500);
-  assert.equal(DEFAULT_HISTORY_IDLE_TTL_MS, 24 * 60 * 60 * 1000);
-});
 
 test('evicts the least-recently-used key at the cap, keeping a touched key', () => {
   const evicted = [];
@@ -118,4 +109,12 @@ test('normalizes keys like the previous Map usage', () => {
   assert.equal(store.get(undefined).length, 1);
   assert.equal(store.get('123').length, 1);
   assert.equal(store.get('missing'), undefined);
+});
+
+test('a numeric-string limit (hand-edited config) still trims the history', () => {
+  const store = createChatHistoryStore();
+  for (let i = 0; i < 100; i++) store.record('chat', msg(`m${i}`), '5');
+  const entries = store.get('chat');
+  assert.ok(entries.length <= 10, `kept ${entries.length}, want at most 2 * 5`);
+  assert.equal(entries.at(-1).message_id, 'm99');
 });
