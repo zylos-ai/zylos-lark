@@ -91,10 +91,10 @@ function isDuplicate(messageId) {
   return messageDeduper.checkAndMark(messageId);
 }
 
-// Periodic cleanup of expired dedup entries (avoids accumulation in low-traffic chats)
+// Hourly cleanup of expired dedup entries (avoids accumulation in low-traffic chats)
 const dedupCleanupInterval = setInterval(() => {
   messageDeduper.sweepExpired();
-}, MESSAGE_DEDUP_TTL_MS);
+}, 60 * 60 * 1000);
 
 // Load configuration
 let config = getConfig();

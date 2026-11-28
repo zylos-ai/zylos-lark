@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Lark re-pushes no longer reach the agent as new messages (#85).** In
+  WebSocket mode the event handler awaited the whole message pipeline, and
+  the SDK acknowledges an event only after the handler returns. Lark
+  re-pushes an event that is not processed within 3 seconds, and name
+  lookups, context loads, downloads or voice transcription often took
+  longer, so the same message came back about 5 minutes and 1 hour later
+  and the 5-minute `message_id` dedup let it through. Events are now
+  acknowledged right away and processed in the background (as in webhook
+  mode), and message ids are remembered for 12 hours, past the latest
+  re-push seen so far (about 7 hours, #106).
+
 ## [0.4.4] - 2026-11-27
 
 ### Fixed
