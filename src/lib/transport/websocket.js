@@ -510,11 +510,14 @@ export function createWebSocketTransport(deps = {}) {
           event: { message: data.message, sender: data.sender },
           header: { create_time: data.create_time || null },
         };
-        try {
-          await handleMessageEvent(event);
-        } catch (err) {
-          console.error(`[lark] WS pipeline error: ${err.message}`);
-        }
+        // Not awaited: the SDK acks the event only after this handler
+        // returns, and Lark re-pushes an event not processed within 3s.
+        // Name lookups, context loads, downloads and voice transcription
+        // often take longer, so the re-pushes reached the agent again (#85).
+        // Webhook mode likewise responds before processing.
+        Promise.resolve()
+          .then(() => handleMessageEvent(event))
+          .catch((err) => console.error(`[lark] WS pipeline error: ${err.message}`));
       },
     });
 

@@ -313,6 +313,13 @@ SDK's `WSClient` long connection. The SDK pings every server-provided interval
 (currently 120s) but has no pong timeout, so a half-open socket (stays OPEN, no
 close/error, no inbound frames) would never trigger its `autoReconnect`.
 
+The `im.message.receive_v1` handler checks the `message_id` dedup and then
+returns, running the message pipeline in the background: the SDK acknowledges
+an event only after the handler returns, and Lark re-pushes an event that is
+not processed within 3 seconds. Unacknowledged events are re-pushed about 5
+minutes, 1 hour and 7 hours later, so message ids stay in the dedup for 12
+hours (webhook mode uses the same dedup and responds before processing).
+
 **Recovery is a controlled process restart, not an in-process client swap.**
 SDK 1.59.0 cannot be reliably destroyed: `close()` does not cancel a
 `reConnect()` closure already awaiting `pullConnectConfig()` (it still opens a

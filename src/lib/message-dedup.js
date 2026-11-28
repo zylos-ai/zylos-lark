@@ -1,4 +1,7 @@
-export const MESSAGE_DEDUP_TTL_MS = 5 * 60 * 1000;
+// Lark re-pushes an event it did not see acknowledged. Re-deliveries have
+// arrived about 5 minutes, 1 hour and 7 hours after the original message
+// (#85, #106), so an id must be remembered past the last of them.
+export const MESSAGE_DEDUP_TTL_MS = 12 * 60 * 60 * 1000;
 export const MESSAGE_DEDUP_SWEEP_THRESHOLD = 200;
 
 export function createMessageDeduper({
@@ -13,11 +16,13 @@ export function createMessageDeduper({
     return currentTime - timestamp > ttlMs;
   }
 
+  // Every id is (re-)inserted with the current time and an expired id is
+  // deleted before it is added again, so Map order is oldest first: stop at
+  // the first id that has not expired.
   function sweepExpired(currentTime = now()) {
     for (const [messageId, timestamp] of processedMessages) {
-      if (isExpired(timestamp, currentTime)) {
-        processedMessages.delete(messageId);
-      }
+      if (!isExpired(timestamp, currentTime)) break;
+      processedMessages.delete(messageId);
     }
   }
 

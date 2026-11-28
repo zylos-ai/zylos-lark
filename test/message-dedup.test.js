@@ -56,3 +56,32 @@ test('ignores empty message ids', () => {
   assert.equal(deduper.checkAndMark(null), false);
   assert.equal(deduper.size(), 0);
 });
+
+test('the default TTL still catches Lark re-pushes up to ~7 h after the first delivery (#85)', () => {
+  let now = 0;
+  const deduper = createMessageDeduper({ now: () => now });
+
+  assert.equal(deduper.checkAndMark('om_3'), false);
+  for (const minutes of [5, 65, 7 * 60 + 5]) {
+    now = minutes * 60 * 1000;
+    assert.equal(deduper.checkAndMark('om_3'), true, `re-push after ${minutes} min`);
+  }
+});
+
+test('an expired id marked again outlives older ids in a later sweep', () => {
+  let now = 0;
+  const deduper = createMessageDeduper({ ttlMs: 5_000, now: () => now });
+
+  deduper.checkAndMark('first');
+  now = 2_000;
+  deduper.checkAndMark('second');
+  now = 5_001;
+  assert.equal(deduper.checkAndMark('first'), false); // expired, marked again
+  now = 7_001;
+
+  deduper.sweepExpired();
+
+  assert.equal(deduper.size(), 1);
+  assert.equal(deduper.checkAndMark('first'), true);
+  assert.equal(deduper.checkAndMark('second'), false);
+});
