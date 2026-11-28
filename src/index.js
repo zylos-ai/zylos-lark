@@ -23,6 +23,7 @@ import { listChatMembers } from './lib/chat.js';
 import { getBotInfo, setBotIdentity } from './lib/client.js';
 import { createBotIdentity, isBotMentioned, botIdentityConfigUpdate } from './lib/bot-identity.js';
 import { createMessageDeduper, MESSAGE_DEDUP_TTL_MS } from './lib/message-dedup.js';
+import { delayedDeliveryNotice, delayThresholdMs, messageSentAt } from './lib/delivery-delay.js';
 import { createChatHistoryStore } from './lib/chat-history-store.js';
 import { startWebSocket, stopWebSocket, getConnectionState } from './lib/transport/websocket.js';
 import { sendToC4, createRejectReply } from './lib/c4.js';
@@ -870,13 +871,13 @@ function formatMessage(
   text,
   contextMessages = [],
   mediaPath = null,
-  { quotedContent, threadContext, threadRootId, groupName, smartHint } = {}
+  { quotedContent, threadContext, threadRootId, groupName, smartHint, delayNotice } = {}
 ) {
   const prefix = chatType === 'p2p'
     ? '[Lark DM]'
     : `[Lark GROUP:${escapeXml(groupName || 'unknown')}]`;
   const safeUserName = escapeXml(userName);
-  const safeText = escapeXml(text);
+  const safeText = escapeXml(delayNotice ? [delayNotice, text].filter(Boolean).join(' ') : text);
   let parts = [`${prefix}\n`];
 
   if (threadContext && threadContext.length > 0) {
@@ -1124,6 +1125,13 @@ async function handleMessageEvent(event) {
   const parentId = message.parent_id || null;
   const threadId = message.thread_id || null;
 
+  // A message Lark delivers late (re-pushed after an outage) is marked so the
+  // agent does not answer it as if it were live (src/lib/delivery-delay.js).
+  const delayNotice = delayedDeliveryNotice(messageSentAt(message, event.header), {
+    thresholdMs: delayThresholdMs(config.message?.delayed_delivery_minutes),
+  });
+  if (delayNotice) console.log(`[lark] Late delivery of ${messageId}: ${delayNotice}`);
+
   // If the startup getBotInfo failed and no cached identity exists, the first
   // received message triggers one bounded refetch before any mention check.
   // This is the only place a message waits for the bot identity.
@@ -1213,10 +1221,10 @@ async function handleMessageEvent(event) {
       }
       if (mediaPaths.length > 0) {
         const mediaLabel = mediaPaths.length === 1 ? '[image]' : `[${mediaPaths.length} images]`;
-        const msg = formatMessage('p2p', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, [], mediaPaths[0], { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('p2p', senderName, `${mediaLabel}${cleanText ? ' ' + cleanText : ''}`, [], mediaPaths[0], { quotedContent, threadContext, threadRootId, delayNotice });
         sendToC4('lark', endpoint, msg, rejectReply);
       } else {
-        const msg = formatMessage('p2p', senderName, '[image download failed]', [], null, { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('p2p', senderName, '[image download failed]', [], null, { quotedContent, threadContext, threadRootId, delayNotice });
         sendToC4('lark', endpoint, msg, rejectReply);
       }
       return;
@@ -1224,7 +1232,7 @@ async function handleMessageEvent(event) {
 
     if (audioKey) {
       if (!VOICE_ENABLED) {
-        const msg = formatMessage('p2p', senderName, '[语音转文字暂不支持，请发送文字]', [], null, { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('p2p', senderName, '[语音转文字暂不支持，请发送文字]', [], null, { quotedContent, threadContext, threadRootId, delayNotice });
         sendToC4('lark', endpoint, msg, rejectReply);
         return;
       }
@@ -1235,7 +1243,7 @@ async function handleMessageEvent(event) {
       if (!dlResult.success) {
         console.error(`[lark] Audio download failed: ${dlResult.message}`);
         removeReaction(messageId, 'Loading').catch(() => {});
-        const msg = formatMessage('p2p', senderName, '[语音消息下载失败，请发送文字]', [], null, { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('p2p', senderName, '[语音消息下载失败，请发送文字]', [], null, { quotedContent, threadContext, threadRootId, delayNotice });
         sendToC4('lark', endpoint, msg, rejectReply);
         return;
       }
@@ -1246,14 +1254,14 @@ async function handleMessageEvent(event) {
         console.error(`[lark] Audio transcription failed: ${err.message}`);
         removeReaction(messageId, 'Loading').catch(() => {});
         fs.unlink(localPath, () => {});
-        const msg = formatMessage('p2p', senderName, '[语音转文字失败，请发送文字]', [], null, { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('p2p', senderName, '[语音转文字失败，请发送文字]', [], null, { quotedContent, threadContext, threadRootId, delayNotice });
         sendToC4('lark', endpoint, msg, rejectReply);
         return;
       }
       fs.unlink(localPath, () => {});
       removeReaction(messageId, 'Loading').catch(() => {});
       console.log(`[lark] Audio transcribed: "${transcript.substring(0, 60)}"`);
-      const msg = formatMessage('p2p', senderName, `[Voice] ${transcript}`, [], null, { quotedContent, threadContext, threadRootId });
+      const msg = formatMessage('p2p', senderName, `[Voice] ${transcript}`, [], null, { quotedContent, threadContext, threadRootId, delayNotice });
       sendToC4('lark', endpoint, msg, rejectReply);
       return;
     }
@@ -1265,22 +1273,22 @@ async function handleMessageEvent(event) {
         localPath = buildSafeDownloadPath(MEDIA_DIR, `lark-${timestamp}-`, fileName);
       } catch (err) {
         console.warn(`[lark] Invalid file path from API filename "${fileName}": ${err.message}`);
-        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent, threadContext, threadRootId, delayNotice });
         sendToC4('lark', endpoint, msg, rejectReply);
         return;
       }
       const result = await downloadFile(messageId, fileKey, localPath);
       if (result.success) {
-        const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath, { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('p2p', senderName, `[file: ${fileName}]`, [], localPath, { quotedContent, threadContext, threadRootId, delayNotice });
         sendToC4('lark', endpoint, msg, rejectReply);
       } else {
-        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent, threadContext, threadRootId });
+        const msg = formatMessage('p2p', senderName, `[file download failed: ${fileName}]`, [], null, { quotedContent, threadContext, threadRootId, delayNotice });
         sendToC4('lark', endpoint, msg, rejectReply);
       }
       return;
     }
 
-    const msg = formatMessage('p2p', senderName, cleanText, [], null, { quotedContent, threadContext, threadRootId });
+    const msg = formatMessage('p2p', senderName, cleanText, [], null, { quotedContent, threadContext, threadRootId, delayNotice });
     sendToC4('lark', endpoint, msg, rejectReply);
     return;
   }
@@ -1384,6 +1392,7 @@ async function handleMessageEvent(event) {
           threadContext,
           threadRootId,
           groupName,
+          delayNotice,
           smartHint: true
         });
         sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
@@ -1406,6 +1415,7 @@ async function handleMessageEvent(event) {
           threadContext,
           threadRootId,
           groupName,
+          delayNotice,
           smartHint: false
         });
         sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
@@ -1453,6 +1463,7 @@ async function handleMessageEvent(event) {
         threadContext,
         threadRootId,
         groupName,
+        delayNotice,
         smartHint: false
       });
       sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
@@ -1468,6 +1479,7 @@ async function handleMessageEvent(event) {
           threadContext,
           threadRootId,
           groupName,
+          delayNotice,
           smartHint: true
         });
         sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
@@ -1490,6 +1502,7 @@ async function handleMessageEvent(event) {
           threadContext,
           threadRootId,
           groupName,
+          delayNotice,
           smartHint: false
         });
         sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);
@@ -1504,6 +1517,7 @@ async function handleMessageEvent(event) {
       threadContext,
       threadRootId,
       groupName,
+      delayNotice,
       smartHint: smartNoMention
     });
     sendToC4('lark', endpoint, msg, groupRejectReply, markCursorDelivered);

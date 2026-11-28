@@ -240,6 +240,14 @@ node send.js "oc_xxx" "[MEDIA:file]/path/to/document.pdf"
 [Lark DM] Howard said: [image] What is this ---- file: ~/zylos/components/lark/media/lark-xxx.png
 ```
 
+A message that arrives more than `message.delayed_delivery_minutes` (default
+10) after it was sent, typically a Lark re-push after a connection outage, has
+its text prefixed with a notice (`src/lib/delivery-delay.js`):
+
+```
+Howard said: [delayed delivery: sent 2026-09-24 03:20 UTC, 7h05m ago] Hello
+```
+
 ---
 
 ## 5. Configuration
@@ -303,6 +311,7 @@ node send.js "oc_xxx" "[MEDIA:file]/path/to/document.pdf"
 | message.context_messages | number | Number of group context messages to include |
 | message.history_max_chats | number | Optional. Max group chats/threads kept in the in-memory reply-context history; least-recently-used are evicted beyond this. Default: 500 |
 | message.history_idle_ttl_hours | number | Optional. Drop a chat/thread's in-memory history after this many hours without a new message or context read (re-fetched from the API on next use). Default: 24 |
+| message.delayed_delivery_minutes | number | Optional. A message that arrives more than this many minutes after it was sent (its `create_time`, e.g. a Lark re-push after an outage) gets a `[delayed delivery: sent <UTC time>, <delay> ago]` notice in front of its text. Default: 10. `0` disables the notice; negative or non-numeric values use the default. Read for every message (hot-reload applies) |
 | transport | string | `websocket` (long connection, default) or `webhook` |
 | ws_pong_timeout_sec | number | Optional. WebSocket half-open watchdog: controlled process restart when no pong arrives for this many seconds (only after at least one pong was seen in the process). Default: 3 x server ping interval (360s today). `0` disables watchdog restarts (monitoring and logs stay on). Values < 30 are rejected with a WARN (default used). Read at startup. |
 
