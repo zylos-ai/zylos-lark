@@ -513,6 +513,29 @@ Configuration in `config.json`:
 
 Message logs are stored in `~/zylos/components/lark/logs/<chat_id>.log`.
 
+## Delayed Delivery
+
+Lark re-pushes messages it could not deliver (for example after a connection
+outage), sometimes hours later. When a message arrives more than
+`message.delayed_delivery_minutes` (default 10) after it was sent, its text
+starts with a notice:
+
+```
+Howard said: [delayed delivery: sent 2026-09-24 03:20 UTC, 7h05m ago] is the deploy done?
+```
+
+Answer such a message as one from that time: mention that it arrived late and
+check whether it still needs an answer before acting on it. Set the value to
+`0` to turn the notice off (read for every message, no restart needed):
+
+```json
+{
+  "message": {
+    "delayed_delivery_minutes": 10
+  }
+}
+```
+
 ## Troubleshooting
 
 ### lark-cli credentials / logged-in users

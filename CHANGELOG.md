@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Late deliveries are marked for the agent (#106).** Lark re-pushes
+  events it did not see acknowledged, e.g. after a half-open WebSocket,
+  and those re-pushes have arrived 1 to 7 hours after the message was
+  sent; the agent then answered them as if they were live. When a message
+  arrives more than `message.delayed_delivery_minutes` (default 10) after
+  its `create_time`, its text in `<current-message>` now starts with
+  `[delayed delivery: sent 2026-09-24 03:20 UTC, 7h05m ago]`, and the
+  service logs `Late delivery of <message_id>`. `0` turns the notice off;
+  the value is read for every message, so config hot-reload applies.
+
 ## [0.4.4] - 2026-11-27
 
 ### Fixed
