@@ -18,6 +18,7 @@ dotenv.config({ path: path.join(process.env.HOME, 'zylos/.env') });
 import { getConfig, watchConfig, saveConfig, stopWatching, DATA_DIR, getCredentials } from './lib/config.js';
 import { downloadImage, downloadFile, downloadAudio, sendMessage, replyToMessage, extractPermissionError, addReaction, removeReaction, listMessages } from './lib/message.js';
 import { extractInteractiveText } from './lib/card-text.js';
+import { SMART_MODE_HINT } from './lib/format.js';
 import { getUserInfo } from './lib/contact.js';
 import { listChatMembers } from './lib/chat.js';
 import { getBotInfo, setBotIdentity } from './lib/client.js';
@@ -904,9 +905,7 @@ function formatMessage(
   }
 
   if (smartHint) {
-    parts.push(`<smart-mode>
-Decide whether to respond. Reply with exactly [SKIP] when a response is unnecessary.
-</smart-mode>\n\n`);
+    parts.push(`<smart-mode>\n${SMART_MODE_HINT}\n</smart-mode>\n\n`);
   }
 
   parts.push(`<current-message>\n${safeUserName} said: ${safeText}\n</current-message>`);
