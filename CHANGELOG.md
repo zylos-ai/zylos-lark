@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Smart-mode hint uses the zylos-component-template standard text
+  (#110).** The `<smart-mode>` block sent with smart-group messages that do
+  not @mention the bot used to say only "Reply with exactly [SKIP] when a
+  response is unnecessary", so the bot chimed in more often than intended.
+  It now carries the standard text (`SMART_MODE_HINT` in
+  `src/lib/format.js`): do not reply to unrelated messages, casual chat or
+  messages that need no input; reply when someone asks a question you can
+  help with, the discussion is on a topic you can substantially help with,
+  or someone clearly needs assistance; when uncertain, prefer not to reply.
+
 ## [0.4.4] - 2026-11-27
 
 ### Fixed
